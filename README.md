@@ -8,7 +8,20 @@ The primary application validates related synthetic customer forms, reconciles c
 
 This is an independent student prototype using synthetic records only. It does not connect to OCBC, move money, change balances or post to a ledger.
 
-## Start with Docker Compose
+## AWS EC2 deployment preparation
+
+An opt-in AWS override is available for the existing EC2 Ubuntu 24.04, private RDS PostgreSQL and private S3 bucket. It uses RDS `verify-full` TLS with the official CA bundle, temporary EC2 IAM role credentials for S3, private Docker API services, and public Nginx port 80. Local development continues to use the original Compose file and filesystem storage.
+
+See [AWS setup, required EC2 commands and the later HTTPS path](infrastructure/aws/README.md). Set the required AWS environment values privately in `.env`, download the RDS CA bundle, then prepare the images:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.aws.yml config --quiet
+docker compose -f docker-compose.yml -f docker-compose.aws.yml build
+```
+
+These commands prepare configuration/images without starting the deployment. The guide separates the later startup commands. Do not publish backend, FastAPI or database ports, and do not place static AWS access keys in `.env`.
+
+## Start with Docker Compose locally
 
 Install Docker with Compose, then run from this directory:
 

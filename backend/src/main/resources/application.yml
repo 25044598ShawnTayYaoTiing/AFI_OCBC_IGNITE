@@ -37,6 +37,10 @@ afi:
   reviewer-password: ${REVIEWER_PASSWORD:reviewer-demo}
   rules-admin-password: ${RULES_ADMIN_PASSWORD:rules-admin-demo}
   document-storage: ${DOCUMENT_STORAGE:.local/documents}
+  storage-provider: ${DOCUMENT_STORAGE_PROVIDER:local}
+  s3-bucket: ${S3_BUCKET:}
+  s3-region: ${AWS_REGION:ap-southeast-1}
+  s3-prefix: ${S3_DOCUMENT_PREFIX:documents/}
   ai-url: ${AI_SERVICE_URL:http://localhost:8000}
   ai-key: ${AI_SERVICE_KEY:afi-internal-demo-key}
   cors-origin: ${FRONTEND_ORIGIN:http://localhost:5173}

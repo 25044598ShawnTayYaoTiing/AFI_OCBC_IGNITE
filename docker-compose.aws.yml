@@ -1,0 +1,50 @@
+# Requires Docker Compose >= 2.24.4 (!override support).
+# docker compose -f docker-compose.yml -f docker-compose.aws.yml ...
+services:
+  postgres:
+    # Excluded from normal AWS startup. No application service depends on it.
+    profiles: [local-database-only]
+
+  ai-service:
+    environment:
+      AI_SERVICE_KEY: ${AWS_AI_SERVICE_KEY:?Set AWS_AI_SERVICE_KEY in the private EC2 .env}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    ports: !reset []
+
+  backend:
+    environment:
+      SPRING_PROFILES_ACTIVE: aws${AWS_EXTRA_PROFILES:-}
+      DB_URL: jdbc:postgresql://${RDS_HOST:?Set RDS_HOST}:${RDS_PORT:-5432}/${RDS_DATABASE:-afi_resolve}?sslmode=verify-full&sslrootcert=/etc/afi/certs/rds-ca-bundle.pem&connectTimeout=10&socketTimeout=60
+      DB_USERNAME: ${DB_USERNAME:?Set the RDS application username}
+      DB_PASSWORD: ${DB_PASSWORD:?Set the RDS application password}
+      AI_SERVICE_URL: http://ai-service:8000
+      AI_SERVICE_KEY: ${AWS_AI_SERVICE_KEY:?Set AWS_AI_SERVICE_KEY}
+      OPERATOR_PASSWORD: ${AWS_OPERATOR_PASSWORD:?Set AWS_OPERATOR_PASSWORD}
+      REVIEWER_PASSWORD: ${AWS_REVIEWER_PASSWORD:?Set AWS_REVIEWER_PASSWORD}
+      RULES_ADMIN_PASSWORD: ${AWS_RULES_ADMIN_PASSWORD:?Set AWS_RULES_ADMIN_PASSWORD}
+      DEMO_ENABLED: ${AWS_DEMO_ENABLED:-false}
+      FRONTEND_ORIGIN: ${AWS_FRONTEND_ORIGIN:?Set the exact public frontend origin}
+      DOCUMENT_STORAGE_PROVIDER: s3
+      S3_BUCKET: ${S3_BUCKET:?Set the private documents bucket}
+      AWS_REGION: ${AWS_REGION:-ap-southeast-1}
+      S3_DOCUMENT_PREFIX: ${S3_DOCUMENT_PREFIX:-documents/}
+      AWS_EC2_METADATA_V1_DISABLED: "true"
+    depends_on: !override
+      ai-service:
+        condition: service_healthy
+    ports: !reset []
+    volumes: !override
+      - type: bind
+        source: ${RDS_CA_BUNDLE_PATH:-./infrastructure/aws/certs/rds-ca-bundle.pem}
+        target: /etc/afi/certs/rds-ca-bundle.pem
+        read_only: true
+        bind:
+          create_host_path: false
+
+  frontend:
+    build:
+      args:
+        NGINX_CONFIG: nginx.aws.conf
+    ports: !override
+      - "80:80"

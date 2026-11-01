@@ -1,0 +1,17 @@
+# Required values have no development credential fallback in the AWS profile.
+spring:
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+afi:
+  demo-enabled: ${DEMO_ENABLED:false}
+  operator-password: ${OPERATOR_PASSWORD}
+  reviewer-password: ${REVIEWER_PASSWORD}
+  rules-admin-password: ${RULES_ADMIN_PASSWORD}
+  ai-key: ${AI_SERVICE_KEY}
+  ai-url: ${AI_SERVICE_URL:http://ai-service:8000}
+  cors-origin: ${FRONTEND_ORIGIN}
+  storage-provider: s3
+  s3-bucket: ${S3_BUCKET}
+  s3-region: ${AWS_REGION:ap-southeast-1}

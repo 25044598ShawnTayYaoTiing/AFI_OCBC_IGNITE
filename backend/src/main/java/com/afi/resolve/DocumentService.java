@@ -19,7 +19,7 @@ import org.springframework.web.multipart.MultipartFile;
 public class DocumentService {
   final Store s;
   final AiClient ai;
-  final Path storage;
+  final DocumentStorage storage;
   final boolean demoEnabled;
   static final Set<String> TYPES =
       Set.of(
@@ -43,17 +43,16 @@ public class DocumentService {
   public DocumentService(
       Store s,
       AiClient ai,
-      @Value("${afi.document-storage:.local/documents}") String path,
+      DocumentStorage storage,
       @Value("${afi.demo-enabled}") boolean demoEnabled) {
     this.s = s;
     this.ai = ai;
-    this.storage = Path.of(path).toAbsolutePath().normalize();
+    this.storage = storage;
     this.demoEnabled = demoEnabled;
   }
 
   @PostConstruct
   void initialise() throws Exception {
-    Files.createDirectories(storage);
     for (String type :
         List.of(
             "CUSTOMER_INFORMATION", "ACCOUNT_APPLICATION", "TAX_RESIDENCY", "SUPPORTING_DOCUMENT"))
@@ -483,9 +482,7 @@ public class DocumentService {
             id,
             extracted.path("document_type").asText());
       String key = UUID.randomUUID() + ".pdf", versionId = s.id("VER");
-      Path destination = storage.resolve(key).normalize();
-      if (!destination.startsWith(storage)) throw new IllegalStateException("Invalid storage path");
-      Files.write(destination, bytes, StandardOpenOption.CREATE_NEW);
+      storage.put(key, bytes);
       // Remove newly created files on database rollback; accepted versions are immutable.
       if (org.springframework.transaction.support.TransactionSynchronizationManager
           .isSynchronizationActive())
@@ -495,8 +492,12 @@ public class DocumentService {
                   public void afterCompletion(int status) {
                     if (status != STATUS_COMMITTED)
                       try {
-                        Files.deleteIfExists(destination);
-                      } catch (Exception ignored) {
+                        storage.delete(key);
+                      } catch (Exception cleanupFailure) {
+                        org.slf4j.LoggerFactory.getLogger(DocumentService.class)
+                            .warn(
+                                "Private document rollback cleanup failed; reconcile orphan objects"
+                                    + " with document_versions");
                       }
                   }
                 });
@@ -561,10 +562,7 @@ public class DocumentService {
             version,
             id);
     if (rows.isEmpty()) throw new ApiException(404, "NOT_FOUND", "Document version not found");
-    Path path = storage.resolve((String) rows.getFirst().get("storage_key")).normalize();
-    if (!path.startsWith(storage))
-      throw new ApiException(403, "FORBIDDEN", "Invalid document path");
-    return Files.readAllBytes(path);
+    return storage.read((String) rows.getFirst().get("storage_key"));
   }
 
   List<Map<String, Object>> fields(List<Map<String, Object>> docs, String field) {

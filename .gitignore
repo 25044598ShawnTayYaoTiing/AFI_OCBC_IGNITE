@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 *.tsbuildinfo
+infrastructure/aws/certs/*.pem
 *.log
 .local/
 .tools/
