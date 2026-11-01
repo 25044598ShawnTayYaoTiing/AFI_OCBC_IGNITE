@@ -1,0 +1,72 @@
+name: afi-resolve
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-afi_resolve}
+      POSTGRES_USER: ${POSTGRES_USER:-afi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-afi-local-demo}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  ai-service:
+    build: ./ai-service
+    environment:
+      AI_SERVICE_KEY: ${AI_SERVICE_KEY:-afi-internal-demo-key}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      SPRING_PROFILES_ACTIVE: demo
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-afi_resolve}
+      DB_USERNAME: ${POSTGRES_USER:-afi}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-afi-local-demo}
+      AI_SERVICE_URL: http://ai-service:8000
+      AI_SERVICE_KEY: ${AI_SERVICE_KEY:-afi-internal-demo-key}
+      OPERATOR_PASSWORD: ${OPERATOR_PASSWORD:-operator-demo}
+      REVIEWER_PASSWORD: ${REVIEWER_PASSWORD:-reviewer-demo}
+      RULES_ADMIN_PASSWORD: ${RULES_ADMIN_PASSWORD:-rules-admin-demo}
+      DOCUMENT_STORAGE: /var/lib/afi/documents
+    volumes:
+      - document-files:/var/lib/afi/documents
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, -fsS, http://localhost:8080/actuator/health]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - '127.0.0.1:${FRONTEND_PORT:-5173}:80'
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  document-files:
+

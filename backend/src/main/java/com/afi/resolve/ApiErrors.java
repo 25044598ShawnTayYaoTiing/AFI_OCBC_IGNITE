@@ -1,0 +1,83 @@
+package com.afi.resolve;
+
+import static com.afi.resolve.Domain.*;
+
+import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.*;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+
+@RestControllerAdvice
+public class ApiErrors {
+  @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+  public ResponseEntity<?> uploadTooLarge() {
+    return ResponseEntity.status(413)
+        .body(
+            map(
+                "code",
+                "UPLOAD_TOO_LARGE",
+                "message",
+                "PDF limit is 10 MB per file and 105 MB per request"));
+  }
+
+  final FailureAudit audit;
+
+  public ApiErrors(FailureAudit audit) {
+    this.audit = audit;
+  }
+
+  @ExceptionHandler(ApiException.class)
+  public ResponseEntity<?> api(ApiException e, HttpServletRequest request) {
+    if (request.getMethod().equals("POST")) {
+      String[] parts = request.getRequestURI().split("/");
+      String id =
+          parts.length > 3 && parts[2].equals("exceptions") && parts[3].startsWith("EX-")
+              ? parts[3]
+              : null;
+      audit.record(
+          id,
+          request.getUserPrincipal() == null ? "ANONYMOUS" : request.getUserPrincipal().getName(),
+          e.code(),
+          e.getMessage());
+    }
+    return ResponseEntity.status(e.status()).body(map("code", e.code(), "message", e.getMessage()));
+  }
+
+  @ExceptionHandler({
+    MethodArgumentNotValidException.class,
+    HttpMessageNotReadableException.class,
+    MethodArgumentTypeMismatchException.class
+  })
+  public ResponseEntity<?> invalid(Exception e) {
+    return ResponseEntity.badRequest()
+        .body(
+            map(
+                "code",
+                "INVALID_REQUEST",
+                "message",
+                "Request fields are missing, malformed, or outside permitted limits"));
+  }
+
+  @ExceptionHandler(AccessDeniedException.class)
+  public ResponseEntity<?> denied() {
+    return ResponseEntity.status(403)
+        .body(map("code", "FORBIDDEN", "message", "This operation requires reviewer privileges"));
+  }
+
+  @ExceptionHandler(Exception.class)
+  public ResponseEntity<?> unexpected(Exception e) {
+    LoggerFactory.getLogger(ApiErrors.class)
+        .error("Request failed: {}", e.getClass().getSimpleName());
+    return ResponseEntity.status(500)
+        .body(
+            map(
+                "code",
+                "INTERNAL_ERROR",
+                "message",
+                "Operation failed safely. Refresh the case before retrying."));
+  }
+}
