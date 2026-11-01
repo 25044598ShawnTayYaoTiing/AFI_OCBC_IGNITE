@@ -29,6 +29,11 @@ public class DocumentController {
     return service.analytics(a);
   }
 
+  @GetMapping("/ai-status")
+  public Object aiStatus() {
+    return service.aiStatus();
+  }
+
   @GetMapping("/audit")
   public Object audit(Authentication a) {
     return service.audit(a);

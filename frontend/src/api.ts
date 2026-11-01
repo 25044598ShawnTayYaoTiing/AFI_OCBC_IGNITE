@@ -198,7 +198,18 @@ export function uploadPdfs<T>(path: string, files: File[], progress: (value: num
       try {
         const result = JSON.parse(request.responseText);
         if (request.status >= 200 && request.status < 300) resolve(result);
-        else reject(new Error(result.message || 'Upload failed'));
+        else {
+          const categories: Record<string, string> = {
+            INVALID_PDF: 'Invalid PDF',
+            UNSUPPORTED_FORMAT: 'Unsupported PDF format',
+            UNSUPPORTED_DOCUMENT: 'Unsupported document type',
+            EXTRACTION_FAILED: 'Extraction verification failed',
+            AI_NOT_CONFIGURED: 'AI configuration error',
+            AI_SERVICE_ERROR: 'AI service error',
+          };
+          const category = categories[result.code];
+          reject(new ApiError(`${category ? category + ': ' : ''}${result.message || 'Upload failed. Please retry.'}`, request.status));
+        }
       } catch { reject(new Error('Upload failed. Check the PDF size and service availability.')); }
     };
     const form = new FormData(); files.forEach(file => form.append('files', file)); request.send(form);
@@ -209,25 +220,36 @@ export function useResource<T>(path: string | null, refreshMs = 0) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const requestId = useRef(0);
+  const needsLoading = useRef(true);
   const refresh = useCallback(async () => {
     if (!path) {
       setData(null);
+      setError("");
       setLoading(false);
       return;
     }
     const current = ++requestId.current;
+    // Retry an unavailable resource in a loading state, rather than briefly
+    // rendering missing data as a successful empty response.
+    if (needsLoading.current) setLoading(true);
     setError("");
     try {
       const next = await api<T>(path);
-      if (current === requestId.current) setData(next);
+      if (current === requestId.current) {
+        needsLoading.current = false;
+        setData(next);
+      }
     } catch (e) {
-      if (current === requestId.current)
+      if (current === requestId.current) {
+        needsLoading.current = true;
         setError(e instanceof Error ? e.message : "Something went wrong");
+      }
     } finally {
       if (current === requestId.current) setLoading(false);
     }
   }, [path]);
   useEffect(() => {
+    needsLoading.current = true;
     setData(null);
     setLoading(Boolean(path));
     void refresh();

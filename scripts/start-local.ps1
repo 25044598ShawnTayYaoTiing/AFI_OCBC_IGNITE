@@ -1,7 +1,7 @@
 param(
-    [string]$DatabaseUrl = 'jdbc:postgresql://127.0.0.1:5432/afi_resolve',
-    [string]$DatabaseUser = 'afi',
-    [string]$DatabasePassword = 'afi-local-demo',
+    [string]$DatabaseUrl = '',
+    [string]$DatabaseUser = '',
+    [string]$DatabasePassword = '',
     [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
@@ -21,12 +21,6 @@ $maven = (Get-Command mvn.cmd -ErrorAction SilentlyContinue).Source
 if (-not $maven) {
     $maven = Join-Path $portableTools 'apache-maven-3.9.11\bin\mvn.cmd'
 }
-$env:DB_URL = $DatabaseUrl
-$env:DB_USERNAME = $DatabaseUser
-$env:DB_PASSWORD = $DatabasePassword
-$env:SPRING_PROFILES_ACTIVE = 'demo'
-$env:AI_SERVICE_URL = 'http://127.0.0.1:8000'
-if (-not $env:AI_SERVICE_KEY) { $env:AI_SERVICE_KEY = 'afi-internal-demo-key' }
 
 function Test-Endpoint([string]$Url) {
     try { return (Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200 }
@@ -42,6 +36,33 @@ if (-not $SkipBuild -and -not (Test-Endpoint 'http://127.0.0.1:8000/health')) {
     & $pythonExe -m pip install -r (Join-Path $repoRoot 'ai-service\requirements-dev.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed.' }
 }
+# Values are captured in memory; never log them or include them in process arguments.
+$envLoader = @'
+import json, sys
+from pathlib import Path
+from dotenv import dotenv_values
+allowed = {"DB_URL","DB_USERNAME","DB_PASSWORD","OPERATOR_PASSWORD","REVIEWER_PASSWORD","RULES_ADMIN_PASSWORD","AI_SERVICE_KEY","GEMINI_API_KEY","GEMINI_MODEL","GEMINI_TIMEOUT_MS","DOCUMENT_AUTOMATION_ENABLED","DOCUMENT_AUTOMATION_MAX_ATTEMPTS"}
+values={}
+root=Path(sys.argv[1])
+for path in [root / ".env", root / "ai-service" / ".env"]:
+    if path.exists():
+        values.update({k:v for k,v in dotenv_values(path,encoding="utf-8-sig").items() if k in allowed and v is not None and v != ""})
+print(json.dumps(values))
+'@
+$privateValues = $envLoader | & $pythonExe - $repoRoot | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'Private environment could not be loaded; install the updated AI requirements first.' }
+foreach ($property in $privateValues.PSObject.Properties) {
+    if (-not [Environment]::GetEnvironmentVariable($property.Name,'Process')) {
+        [Environment]::SetEnvironmentVariable($property.Name,[string]$property.Value,'Process')
+    }
+}
+if ($DatabaseUrl) { $env:DB_URL=$DatabaseUrl } elseif (-not $env:DB_URL) { $env:DB_URL='jdbc:postgresql://127.0.0.1:5432/afi_resolve' }
+if ($DatabaseUser) { $env:DB_USERNAME=$DatabaseUser } elseif (-not $env:DB_USERNAME) { $env:DB_USERNAME='afi' }
+if ($DatabasePassword) { $env:DB_PASSWORD=$DatabasePassword } elseif (-not $env:DB_PASSWORD) { $env:DB_PASSWORD='afi-local-demo' }
+$env:SPRING_PROFILES_ACTIVE='demo'
+$env:AI_SERVICE_URL='http://127.0.0.1:8000'
+if (-not $env:AI_SERVICE_KEY) { $env:AI_SERVICE_KEY='afi-internal-demo-key' }
+
 if (-not $SkipBuild -and -not (Test-Endpoint 'http://127.0.0.1:5173')) {
     Push-Location (Join-Path $repoRoot 'frontend')
     try {

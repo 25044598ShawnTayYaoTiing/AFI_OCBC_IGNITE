@@ -9,7 +9,7 @@ services:
     environment:
       AI_SERVICE_KEY: ${AWS_AI_SERVICE_KEY:?Set AWS_AI_SERVICE_KEY in the private EC2 .env}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
     ports: !reset []
 
   backend:

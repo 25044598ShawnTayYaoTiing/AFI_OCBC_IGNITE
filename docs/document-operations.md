@@ -1,6 +1,6 @@
 # AFI Resolve 2.0 - Document operations
 
-The primary workflow is now document intake, evidence reconciliation, correction and governed Operations handover. The existing transaction recovery workflow remains available at `/legacy`.
+The primary workflow is document intake, live Gemini extraction/investigation, autonomous administrative resolution, customer correction and governed Operations handover. See [the current autonomous workflow guide](autonomous-document-resolution.md) for the latest demonstration and configuration. The existing transaction recovery workflow remains available at `/legacy`.
 
 ## Run locally
 
@@ -24,7 +24,7 @@ Open <http://localhost:5173>. Demo accounts:
 | reviewer | reviewer-demo | All submission reviews; author or independently approve rule revisions |
 | rules-admin | rules-admin-demo | Second reviewer for independent rule approval |
 
-Environment variables override these defaults. `RULES_ADMIN_PASSWORD` is new. The existing script does not load `.env` into the shell; set environment variables before starting when using custom credentials or Gemini. Docker Compose uses `.env` as before. No Gemini key is needed for the supported synthetic forms.
+Environment variables override these defaults. `RULES_ADMIN_PASSWORD` is new. The local script now securely loads recognised private `.env` configuration into process memory without printing values. Existing process variables take precedence. Docker Compose uses `.env` as before. No Gemini key is needed for the supported synthetic forms.
 
 Docker Compose remains supported with a new private `document-files` volume owned by the non-root backend user. No document storage port or public static URL is exposed. This path was configured and inspected but Docker was not exercised during this implementation.
 
@@ -32,17 +32,14 @@ Stop application processes with `scripts/stop-local.ps1`; it preserves PostgreSQ
 
 ## Demonstration
 
-1. Sign in as **Demo operator**. Open **Demo Environment** and download the four sample PDFs. The corrected declaration is for step 6.
-2. Click **Restore fresh demo case**. This creates a new `SYN-ALEX-001` case with a case-scoped authorised supporting document in its repository. Existing demonstrations and audit records are preserved.
-3. Upload `customer-information.pdf`, `account-application.pdf` and `tax-residency.pdf` together using Choose PDFs or drag and drop.
-4. Click **Validate & route eligible**. The initial package passes **16 of 19 applicable checks**. Exactly three requirements fail: supporting attachment, matching mailing address, valid declaration date.
-5. Open **Preflight simulator** and run preflight. The unexecuted attachment is projected against an in-memory copy of the package: **18 of 20 checks**, with two blocking customer corrections still outstanding. The extra check verifies the attached supporting document's case reference. Counts are evaluated, not fixed constants.
-6. In **Exceptions**, select the missing supporting-document finding and click **Attach verified repository document**. The server verifies case reference, type, authorisation, validity and extraction certainty, attaches the document, revalidates and records the action. Select the address conflict to compare cited values and original source PDFs.
-7. In **Documents & evidence**, select Tax Residency, click **Replace this PDF**, and upload `tax-residency-corrected.pdf`. The former PDF remains accessible through the version selector. The corrected date and address are in the replacement PDF; the application never invents or writes customer values.
-8. Click **Validate & route eligible** again. All **20 checks** pass, all three correction tasks are resolved, and the case routes automatically to Operations in the same database transaction.
-9. Run preflight again: **20/20**, zero blockers, actual readiness. Review **Correction tasks** and **Audit & handover**. The Operations Review queue shows the package with its original PDFs, current evidence, resolved findings, document versions and routing history.
+1. Sign in as operator using the configured private-environment password, download the four synthetic sample PDFs and restore a fresh case in Demo Environment.
+2. Upload the three original forms together. Extraction, validation and autonomous resolution now run automatically on the backend.
+3. The original package records three findings: missing supporting attachment, inconsistent mailing address and missing declaration date. The backend runs preflight, checks the authorised repository document and automatically attaches/verifies it. Two customer corrections remain open.
+4. Open AI & autonomous resolution to inspect the actual model provenance, cited investigation, preflight, policy approval, action execution and verification timeline. Initial 16/19 intake results and the predicted 18/20 outcome are retained in the pre-attachment snapshot; current actual readiness is 18/20 with two blockers.
+5. Replace the tax declaration with the corrected PDF. The backend automatically revalidates; all 20 checks pass and the case routes to Operations. Versions and correction/audit history remain available.
+6. Run a fresh preflight to confirm actual 20/20 readiness. No manual attachment, revalidation or routing click is required.
 
-Normal new submissions can be created separately with fictional names and `SYN-` references. Automatic retrieval requires an existing authorised, case-scoped repository source; ordinary uploads cannot grant repository authorisation. Only the demo restore service provisions the synthetic repository example.
+The complete configuration, live-only acceptance command and safeguards are documented in [Autonomous document resolution](autonomous-document-resolution.md). Normal submissions still use fictional names and SYN- references; automatic retrieval requires a separately authorised case-scoped repository source.
 
 ## Reused architecture
 
@@ -98,28 +95,28 @@ All browser endpoints require the existing authenticated session credentials.
 | POST | `/demo/restore` | Fresh repeatable synthetic case; demo-enabled deployments only |
 | GET | `/demo/samples/{filename}` | Allowlisted sample PDFs |
 
-The internal FastAPI endpoint accepts a bounded base64 PDF payload with the existing `X-Service-Key`. It parses text using pypdf, classifies supported template titles, and returns schema-validated fields with page citations. Gemini is optional and tool-free. Gemini values must exactly agree with grounded template facts; unverified output is replaced by labelled deterministic extraction. Ambiguous classifications/duplicate field candidates require review. Extraction failures reject the upload transaction and do not fabricate successful results.
+The internal FastAPI endpoint accepts a bounded base64 PDF payload with the existing `X-Service-Key`. It parses text using pypdf, classifies supported template titles, and returns schema-validated fields with page citations. Gemini is optional and tool-free. Gemini field values must be grounded in the corresponding template source; unverified field output becomes explicitly labelled review-required fallback. Optional unsupported observations are discarded and never define policy. Ambiguous classifications/duplicate field candidates require review. Extraction failures reject the upload transaction and do not fabricate successful results.
 
 ## Verification performed
 
 - Frontend TypeScript and Vite production build passed.
 - Backend package build passed with Flyway V2 on the running local PostgreSQL database.
-- `python scripts/demo/document_acceptance.py` passed the live create/upload/extract/validate/attach/replace/revalidate/preflight/route scenario, including PDF authentication, duplicate rejection, invalid file rejection, operator rule-edit denial, blocked premature routing, attachment idempotency, retained versions, task closure and measured analytics.
+- `python scripts/demo/document_acceptance.py` passed the live create/upload/extract/automatically-validate/attach/replace/revalidate/preflight/route scenario, including PDF authentication, duplicate rejection, invalid file rejection, operator rule-edit denial, blocked premature routing, attachment idempotency, retained versions, task closure and measured analytics.
 - One existing legacy integration test passed: `WorkflowIntegrationTest#fullThousandRecordFlowPreservesCompletedRecordsAndVerifiesDatabase`. No comprehensive suite or performance tests were run.
 - Browser review verified the document overview, submission navigation and authenticated PDF review layout. All five generated sample forms were rendered and visually inspected.
 - A focused access check also confirmed that an operator cannot read or list a reviewer-owned case, cannot approve rules, and that a reviewer cannot approve their own draft. A same-policy TAX_DATE draft was left for independent review; active policy was not changed by that check.
 
-The acceptance script creates a new synthetic case instead of resetting or deleting existing data. It requires `requests` in the invoking Python environment. The sample generator requires `reportlab`; these are development utilities, not new runtime services.
+The acceptance script creates a new synthetic case instead of resetting or deleting existing data. It requires `requests` in the invoking Python environment. The walkthrough also uses the installed AI-service `pypdf` and `python-dotenv` packages. The sample generator requires `reportlab`; these are development utilities, not new runtime services.
 
 ## Deliberate MVP limits / remaining work
 
 - Supports the supplied labelled **text PDFs**, not general banking PDFs, OCR/scanned documents, handwriting or authenticity verification. A signature indicator is only a synthetic test value. Label checking is an MVP input restriction, not a privacy-detection guarantee; users must still upload synthetic data only.
 - Ambiguous evidence is escalated and corrected by replacing the source PDF. A dedicated reviewer field/classification-confirmation editor is not implemented.
 - Evidence values are highlighted beside original PDFs, with side-by-side source viewing. There are no bounding-box highlights painted over PDF content or interactive graph canvas.
-- Administrative attachment is an explicitly triggered approved action that performs automated retrieval/verification; no background scheduler executes it unattended. The engine cannot generate dates, signatures or customer declarations.
+- Administrative attachment is initiated automatically by backend upload/validation orchestration. It is synchronous with the request, with bounded attempts and no background scheduler. The engine cannot generate dates, signatures or customer declarations.
 - The repository is case-scoped and provisioned by the demo service. There is no general repository administration UI or integration with an external document management service.
 - Correction tasks are assigned to the RM/reviewer **role** and case owner, not a production staff-directory assignment system. Notifications show current correction/review cases. External customer communication is not implemented.
 - Reports calculate recurring requirement counts, current status distribution, replacement cycles, automatic resolutions and measured turnaround. Detailed form rejection-rate/trend visualisations and exports remain future work.
 - Rule conditions are allowlisted, and only supported revision fields are editable. New condition types and form templates require code changes and review.
-- Gemini integration is implemented but the live demonstration used deterministic template extraction; no paid external AI calls were required or verified. Model authentication/availability still depends on the configured development account.
+- Live Gemini extraction and investigation were verified with the configured development account. Explicitly labelled deterministic fallback remains available for provider failures. Model authentication and availability depend on the account.
 - Authentication uses existing local demo accounts. Production identity, storage encryption, malware scanning, retention policies and operational deployment hardening are outside this local synthetic prototype.

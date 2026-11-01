@@ -13,12 +13,15 @@ import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 /** Document policies and mutations live here, never in AI output or browser state. */
 @Service
 public class DocumentService {
   final Store s;
   final AiClient ai;
+  final DocumentOrchestrator orchestrator;
   final DocumentStorage storage;
   final boolean demoEnabled;
   static final Set<String> TYPES =
@@ -43,10 +46,12 @@ public class DocumentService {
   public DocumentService(
       Store s,
       AiClient ai,
+      DocumentOrchestrator orchestrator,
       DocumentStorage storage,
       @Value("${afi.demo-enabled}") boolean demoEnabled) {
     this.s = s;
     this.ai = ai;
+    this.orchestrator = orchestrator;
     this.storage = storage;
     this.demoEnabled = demoEnabled;
   }
@@ -203,11 +208,34 @@ public class DocumentService {
   }
 
   public List<Map<String, Object>> list(Authentication a) {
-    return reviewer(a)
-        ? s.db.queryForList("SELECT * FROM document_submissions ORDER BY created_at DESC")
-        : s.db.queryForList(
-            "SELECT * FROM document_submissions WHERE owner_name=? ORDER BY created_at DESC",
-            a.getName());
+    var cases =
+        reviewer(a)
+            ? s.db.queryForList("SELECT * FROM document_submissions ORDER BY created_at DESC")
+            : s.db.queryForList(
+                "SELECT * FROM document_submissions WHERE owner_name=? ORDER BY created_at DESC",
+                a.getName());
+    for (var c : cases) {
+      var methods =
+          s.db.queryForList(
+              "SELECT method FROM document_investigations WHERE submission_id=? ORDER BY"
+                  + " completed_at DESC LIMIT 1",
+              c.get("id"));
+      c.put("ai_method", methods.isEmpty() ? null : methods.getFirst().get("method"));
+      c.put(
+          "open_exceptions",
+          s.db.queryForObject(
+              "SELECT COUNT(*) FROM document_exceptions WHERE submission_id=? AND status='OPEN'",
+              Integer.class,
+              c.get("id")));
+      c.put(
+          "verified_automations",
+          s.db.queryForObject(
+              "SELECT COUNT(*) FROM document_automation_attempts WHERE submission_id=? AND"
+                  + " status='VERIFIED'",
+              Integer.class,
+              c.get("id")));
+    }
+    return cases;
   }
 
   public Object analytics(Authentication a) {
@@ -249,6 +277,11 @@ public class DocumentService {
         latency.add(
             Duration.between(instant(c.get("created_at")), instant(c.get("validated_at")))
                 .toSeconds());
+    var autonomousExceptions =
+        new HashSet<>(
+            s.db.queryForList(
+                "SELECT exception_id FROM document_automation_attempts WHERE status='VERIFIED'",
+                String.class));
     return map(
         "totalSubmissions",
         cases.size(),
@@ -256,7 +289,34 @@ public class DocumentService {
         types,
         "automaticallyResolved",
         exceptions.stream()
-            .filter(e -> "AUTOMATIC_VERIFIED_ATTACHMENT".equals(e.get("resolution_method")))
+            .filter(
+                e ->
+                    "RESOLVED".equals(e.get("status"))
+                        && autonomousExceptions.contains(e.get("id")))
+            .count(),
+        "humanInterventionRequired",
+        exceptions.stream()
+            .filter(
+                e ->
+                    "OPEN".equals(e.get("status"))
+                        && (!"ATTACH_VERIFIED_DOCUMENT".equals(e.get("action_type"))
+                            || s.db.queryForObject(
+                                    "SELECT COUNT(*) FROM document_automation_attempts WHERE"
+                                        + " exception_id=? AND status IN ('FAILED','BLOCKED')",
+                                    Integer.class,
+                                    e.get("id"))
+                                > 0))
+            .count(),
+        "successfullyRouted",
+        cases.stream().filter(c -> "OPERATIONS".equals(c.get("status"))).count(),
+        "failedOrBlockedAutomation",
+        s
+            .db
+            .queryForList(
+                "SELECT submission_id FROM document_automation_attempts WHERE status IN"
+                    + " ('BLOCKED','FAILED')")
+            .stream()
+            .filter(at -> ids.contains(at.get("submission_id")))
             .count(),
         "recurringErrors",
         counts,
@@ -268,6 +328,10 @@ public class DocumentService {
         tasks.size(),
         "averageSubmissionToValidationSeconds",
         latency.isEmpty() ? null : latency.stream().mapToLong(Long::longValue).average().orElse(0));
+  }
+
+  public Object aiStatus() {
+    return orchestrator.intelligence.status();
   }
 
   Instant instant(Object value) {
@@ -379,6 +443,19 @@ public class DocumentService {
         s.db.queryForList(
             "SELECT * FROM case_routing_history WHERE submission_id=? ORDER BY created_at DESC",
             id),
+        "investigations",
+        s.db.query(
+            "SELECT result_json FROM document_investigations WHERE submission_id=? ORDER BY"
+                + " completed_at DESC LIMIT 5",
+            (r, n) -> s.readMap(r.getString(1)),
+            id),
+        "automation",
+        s.db.queryForList(
+            "SELECT * FROM document_automation_attempts WHERE submission_id=? ORDER BY created_at"
+                + " DESC",
+            id),
+        "automationEnabled",
+        orchestrator.enabled,
         "simulations",
         s.db.query(
             "SELECT result_json FROM preflight_simulations WHERE submission_id=? ORDER BY"
@@ -387,20 +464,31 @@ public class DocumentService {
             id));
   }
 
-  JsonNode extraction(byte[] bytes) {
+  JsonNode extraction(byte[] bytes, String documentId) {
     try {
       String body =
           ai.client
               .post()
               .uri("/documents/extract")
-              .body(map("pdf_base64", Base64.getEncoder().encodeToString(bytes)))
+              .body(
+                  map(
+                      "document_id",
+                      documentId,
+                      "pdf_base64",
+                      Base64.getEncoder().encodeToString(bytes)))
               .retrieve()
               .body(String.class);
       JsonNode node = s.json.readTree(body);
-      if (!TYPES.contains(node.path("document_type").asText())
+      if (!documentId.equals(node.path("document_id").asText())
+          || !TYPES.contains(node.path("document_type").asText())
           || !node.path("fields").isArray()
           || !node.path("requires_review").isBoolean()
-          || !Set.of("SYNTHETIC_TEMPLATE", "GEMINI", "UNREADABLE")
+          || !Set.of(
+                  "SYNTHETIC_TEMPLATE",
+                  "GEMINI",
+                  "UNREADABLE",
+                  "DETERMINISTIC_FALLBACK",
+                  "HUMAN_REVIEW")
               .contains(node.path("method").asText())
           || node.path("fields").size() > 30) throw new IllegalArgumentException();
       Set<String> seen = new HashSet<>();
@@ -414,17 +502,44 @@ public class DocumentService {
             || f.path("page").asInt() < 1
             || f.path("page").asInt() > 30) throw new IllegalArgumentException();
       return node;
+    } catch (RestClientResponseException e) {
+      String code = "";
+      try {
+        code = s.json.readTree(e.getResponseBodyAsString()).path("code").asText();
+      } catch (Exception ignored) {
+        // Never expose upstream bodies or credentials in upload errors.
+      }
+      throw switch (code) {
+        case "INVALID_PDF" -> new ApiException(400, code,
+            "The PDF is invalid, encrypted or exceeds 10 MB / 30 pages. No document was accepted.");
+        case "UNSUPPORTED_FORMAT" -> new ApiException(422, code,
+            "Upload a text-readable PDF clearly labelled as synthetic demo data. Scans and oversized page text are unsupported. No document was accepted.");
+        case "UNSUPPORTED_DOCUMENT" -> new ApiException(422, code,
+            "The PDF is not one supported document type. Use a customer information form, account application, tax residency declaration or authorised supporting document. No document was accepted.");
+        case "EXTRACTION_FAILED", "VALIDATION_ERROR" -> new ApiException(422, "EXTRACTION_FAILED",
+            "Extracted fields did not pass schema or source-evidence verification. Retry or review the PDF text. No document was accepted.");
+        case "AI_NOT_CONFIGURED" -> new ApiException(503, code,
+            "Gemini is not configured for flexible PDF extraction. Check AI Integration settings. No document was accepted.");
+        default -> new ApiException(503, "AI_SERVICE_ERROR",
+            "The AI service could not complete extraction. Check its connection, service authentication and provider status, then retry. No document was accepted.");
+      };
+    } catch (RestClientException e) {
+      throw new ApiException(503, "AI_SERVICE_ERROR",
+          "The AI service is unreachable or timed out. Check that it is running, then retry. No document was accepted.");
     } catch (Exception e) {
-      throw new ApiException(
-          422,
-          "EXTRACTION_UNAVAILABLE",
-          "Extraction could not verify this PDF. Use the labelled synthetic sample forms and ensure"
-              + " the AI service is running. No document was accepted.");
+      throw new ApiException(422, "EXTRACTION_FAILED",
+          "Extracted fields did not pass schema or source-evidence verification. No document was accepted.");
     }
   }
 
   @Transactional
   public Object upload(String id, List<MultipartFile> files, String replace, Authentication a)
+      throws Exception {
+    return uploadInternal(id, files, replace, a, true);
+  }
+
+  Object uploadInternal(
+      String id, List<MultipartFile> files, String replace, Authentication a, boolean process)
       throws Exception {
     var c = access(id, a, true);
     editable(c);
@@ -458,8 +573,8 @@ public class DocumentService {
           > 0)
         throw new ApiException(
             409, "DUPLICATE_FILE", "This exact PDF already exists in the case's document history");
-      var extracted = extraction(bytes);
       String docId = replace == null ? s.id("FILE") : replace;
+      var extracted = extraction(bytes, docId);
       int version = 1;
       if (replace != null) {
         var old =
@@ -549,6 +664,10 @@ public class DocumentService {
         "UPDATE correction_tasks SET status='CORRECTION_SUBMITTED' WHERE submission_id=? AND"
             + " status<>'RESOLVED'",
         id);
+    if (process) {
+      validateInternal(id, a);
+      orchestrator.run(this, id, a);
+    }
     return detail(id, a);
   }
 
@@ -588,12 +707,22 @@ public class DocumentService {
   }
 
   boolean validDate(Object value) {
-    try {
-      var date = LocalDate.parse(String.valueOf(value));
-      return !date.isAfter(LocalDate.now(ZoneOffset.UTC)) && date.getYear() >= 2000;
-    } catch (Exception e) {
-      return false;
+    // Normalise unambiguous source date formats without changing the approved
+    // DATE rule, inventing a missing date or accepting ambiguous numeric dates.
+    for (var format : List.of(
+        java.time.format.DateTimeFormatter.ISO_LOCAL_DATE,
+        java.time.format.DateTimeFormatter.ofPattern("d MMMM uuuu", Locale.ENGLISH)
+            .withResolverStyle(java.time.format.ResolverStyle.STRICT),
+        java.time.format.DateTimeFormatter.ofPattern("d MMM uuuu", Locale.ENGLISH)
+            .withResolverStyle(java.time.format.ResolverStyle.STRICT))) {
+      try {
+        var date = LocalDate.parse(String.valueOf(value).trim(), format);
+        return !date.isAfter(LocalDate.now(ZoneOffset.UTC)) && date.getYear() >= 2000;
+      } catch (java.time.format.DateTimeParseException ignored) {
+        // Try the next explicit format. Raw source evidence remains unchanged.
+      }
     }
+    return false;
   }
 
   List<Map<String, Object>> evaluate(String id) {
@@ -666,7 +795,7 @@ public class DocumentService {
                   case "REQUIRED" -> !normal(value).isBlank();
                   case "CASE_REFERENCE" ->
                       normal(value).equals(normal(c.get("customer_reference")));
-                  case "EQUALS_PRESENT" -> normal(value).equals("present");
+                  case "EQUALS_PRESENT" -> normal(value).matches("present(?:\\s*[-]\\s*synthetic(?: demonstration)?(?: mark| indicator| example)?)?");
                   case "DATE" -> validDate(value);
                   default -> false;
                 };
@@ -724,6 +853,7 @@ public class DocumentService {
     var c = access(id, a, true);
     editable(c);
     validateInternal(id, a);
+    orchestrator.run(this, id, a);
     return detail(id, a);
   }
 
@@ -785,6 +915,20 @@ public class DocumentService {
             s.json(check.get("evidence")),
             action,
             ex);
+      if (existing.isEmpty())
+        event(
+            id,
+            a,
+            "EXCEPTION_DETECTED",
+            map(
+                "exceptionId",
+                ex,
+                "ruleId",
+                check.get("rule_id"),
+                "checkKey",
+                key,
+                "action",
+                action));
       if (s.db.queryForObject(
               "SELECT COUNT(*) FROM correction_tasks WHERE exception_id=?", Integer.class, ex)
           == 0)
@@ -866,6 +1010,27 @@ public class DocumentService {
     if (status.equals("READY")) routeInternal(id, a, checks);
   }
 
+  boolean currentRevisionValidated(Map<String, Object> c) {
+    return Objects.equals(c.get("revision"), c.get("validated_revision"));
+  }
+
+  boolean storageVerified(Map<String, Object> document) {
+    try {
+      String key =
+          s.db.queryForObject(
+              "SELECT storage_key FROM document_versions WHERE id=?",
+              String.class,
+              document.get("version_id"));
+      byte[] bytes = storage.read(key);
+      return bytes.length == ((Number) document.get("size_bytes")).longValue()
+          && HexFormat.of()
+              .formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))
+              .equals(document.get("sha256"));
+    } catch (Exception failure) {
+      return false;
+    }
+  }
+
   boolean repositoryEligible(Map<String, Object> c, Map<String, Object> d) {
     var values = fields(List.of(d), "customer_reference");
     return Boolean.TRUE.equals(d.get("authorised"))
@@ -881,6 +1046,12 @@ public class DocumentService {
 
   @Transactional
   public Object resolve(String id, String key, Authentication a) {
+    return resolveWithPreflight(id, key, a, null);
+  }
+
+  @SuppressWarnings("unchecked")
+  Object resolveWithPreflight(
+      String id, String key, Authentication a, Map<String, Object> proposed) {
     var c = access(id, a, true);
     if (key == null || !key.matches("[A-Za-z0-9-]{8,100}"))
       throw new ApiException(
@@ -918,8 +1089,26 @@ public class DocumentService {
                         "NO_AUTHORISED_SOURCE",
                         "No authorised, valid supporting document verified against this case"
                             + " reference"));
+    if (proposed == null) proposed = (Map<String, Object>) preflight(id, a);
+    PolicyService.requireDocumentSimulation(proposed, c, ruleSet(), candidate);
     PolicyService.requireDocumentAction(
         "ATTACH_VERIFIED_DOCUMENT", repositoryEligible(c, candidate));
+    if (!storageVerified(candidate))
+      throw new ApiException(
+          409, "SOURCE_UNVERIFIED", "Repository bytes do not match the authorised version");
+    event(
+        id,
+        a,
+        "POLICY_APPROVED",
+        map(
+            "action",
+            "ATTACH_VERIFIED_DOCUMENT",
+            "simulationId",
+            proposed.get("id"),
+            "documentId",
+            candidate.get("id"),
+            "versionId",
+            candidate.get("version_id")));
     s.db.update(
         "UPDATE submission_documents SET repository_only=FALSE WHERE id=? AND repository_only=TRUE",
         candidate.get("id"));
@@ -939,6 +1128,52 @@ public class DocumentService {
             "ATTACH_VERIFIED_DOCUMENT",
             "idempotencyKey",
             key));
+    event(
+        id,
+        a,
+        "ACTION_EXECUTED",
+        map(
+            "action",
+            "ATTACH_VERIFIED_DOCUMENT",
+            "documentId",
+            candidate.get("id"),
+            "versionId",
+            candidate.get("version_id")));
+    var persisted =
+        documents(id, false).stream()
+            .filter(d -> candidate.get("id").equals(d.get("id")))
+            .findFirst()
+            .orElseThrow();
+    boolean verified =
+        Objects.equals(persisted.get("version_id"), candidate.get("version_id"))
+            && repositoryEligible(c, persisted)
+            && storageVerified(persisted)
+            && evaluate(id).stream()
+                .anyMatch(
+                    ch ->
+                        "ATTACH_SUPPORTING_DOCUMENT".equals(ch.get("rule_key"))
+                            && Boolean.TRUE.equals(ch.get("passed")))
+            && evaluate(id).stream()
+                .filter(ch -> "REF_SUPPORTING".equals(ch.get("rule_key")))
+                .allMatch(ch -> Boolean.TRUE.equals(ch.get("passed")));
+    if (!verified)
+      throw new ApiException(
+          409,
+          "VERIFICATION_FAILED",
+          "Persisted attachment did not pass independent outcome verification");
+    event(
+        id,
+        a,
+        "OUTCOME_VERIFIED",
+        map(
+            "action",
+            "ATTACH_VERIFIED_DOCUMENT",
+            "documentId",
+            candidate.get("id"),
+            "versionId",
+            candidate.get("version_id"),
+            "sha256",
+            candidate.get("sha256")));
     validateInternal(id, a);
     s.db.update(
         "UPDATE document_exceptions SET resolution_method='AUTOMATIC_VERIFIED_ATTACHMENT' WHERE"
@@ -987,6 +1222,38 @@ public class DocumentService {
               .findFirst()
               .orElseThrow());
     var predictedChecks = evaluate(id, predictedDocuments);
+    var candidate = eligible ? predictedDocuments.getLast() : null;
+    var previouslyPassed =
+        checks.stream()
+            .filter(ch -> Boolean.TRUE.equals(ch.get("passed")))
+            .map(ch -> ch.get("check_key"))
+            .toList();
+    var existingFailures =
+        checks.stream()
+            .filter(ch -> Boolean.FALSE.equals(ch.get("passed")))
+            .map(ch -> ch.get("check_key"))
+            .toList();
+    boolean noRegressions =
+        predictedChecks.stream()
+            .filter(ch -> Boolean.FALSE.equals(ch.get("passed")))
+            .noneMatch(
+                ch ->
+                    previouslyPassed.contains(ch.get("check_key"))
+                        || !existingFailures.contains(ch.get("check_key")));
+    boolean safeAttachment =
+        eligible
+            && currentRevisionValidated(c)
+            && noRegressions
+            && checks.stream()
+                .noneMatch(
+                    ch ->
+                        "CLASSIFICATION".equals(ch.get("condition_type"))
+                            && Boolean.FALSE.equals(ch.get("passed")))
+            && predictedChecks.stream()
+                .anyMatch(
+                    ch ->
+                        "ATTACH_SUPPORTING_DOCUMENT".equals(ch.get("rule_key"))
+                            && Boolean.TRUE.equals(ch.get("passed")));
     long outstanding =
         s.db.queryForObject(
             "SELECT COUNT(*) FROM document_exceptions WHERE submission_id=? AND status='OPEN'",
@@ -1017,6 +1284,16 @@ public class DocumentService {
             predictedChecks.stream().filter(PolicyService::blockingDocumentCheck).count(),
             "permittedAttachmentAvailable",
             eligible,
+            "safeAdministrativeAttachment",
+            safeAttachment,
+            "noNewIssues",
+            noRegressions,
+            "candidateDocumentId",
+            candidate == null ? null : candidate.get("id"),
+            "candidateVersionId",
+            candidate == null ? null : candidate.get("version_id"),
+            "predictedChecks",
+            predictedChecks,
             "humanApprovalRequired",
             checks.stream()
                 .anyMatch(
@@ -1189,7 +1466,7 @@ public class DocumentService {
     var resource =
         new org.springframework.core.io.ClassPathResource("synthetic/supporting-document.pdf");
     byte[] bytes = resource.getInputStream().readAllBytes();
-    upload(id, List.of(new BytesPdf("supporting-document.pdf", bytes)), null, a);
+    uploadInternal(id, List.of(new BytesPdf("supporting-document.pdf", bytes)), null, a, false);
     var doc = documents(id, false).getFirst();
     s.db.update(
         "UPDATE submission_documents SET"

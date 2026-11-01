@@ -50,6 +50,7 @@ import type {
   Resolution,
   Simulation,
 } from "../api";
+import { Dialog } from "../ui";
 import { isReviewer, useAuth } from "../auth";
 import {
   readNotificationPreferences,
@@ -172,9 +173,12 @@ export function Twin() {
         </span>
       </PageHeader>
       <OperationStatus {...op} />
-      {cases.error && <ErrorBox message={cases.error} />}
       {op.busy && (
-        <div className="twin-execution-progress" role="status" aria-live="polite">
+        <div
+          className="twin-execution-progress"
+          role="status"
+          aria-live="polite"
+        >
           <LoaderCircle className="spin" size={20} />
           <div>
             <strong>
@@ -202,7 +206,7 @@ export function Twin() {
           </Link>
         )}
         <button
-          className="button primary"
+          className={`button ${results.length ? "secondary" : "primary"}`}
           disabled={
             !findings ||
             !!op.busy ||
@@ -220,7 +224,13 @@ export function Twin() {
         </button>
       </Panel>
       <ol className="twin-stepper" aria-label="Recovery workflow progress">
-        {["Exception", "Investigation", "Simulation", "Recovery", "Verification"].map((stage, index) => (
+        {[
+          "Exception",
+          "Investigation",
+          "Simulation",
+          "Recovery",
+          "Verification",
+        ].map((stage, index) => (
           <li
             key={stage}
             className={`${index < currentStage ? "complete" : ""} ${index === currentStage ? "current" : ""}`}
@@ -233,8 +243,12 @@ export function Twin() {
           </li>
         ))}
       </ol>
-      {record.error && <ErrorBox message={record.error} />}{" "}
-      {cases.loading || record.loading ? (
+      {cases.error || record.error ? (
+        <ErrorBox
+          message={cases.error || record.error}
+          retry={() => void Promise.all([cases.refresh(), record.refresh()])}
+        />
+      ) : cases.loading || record.loading ? (
         <Loading text="Preparing the recovery workspace…" />
       ) : !selected ? (
         <Empty
@@ -262,7 +276,9 @@ export function Twin() {
               <Notice>
                 Complete the investigation for this case to generate allowlisted
                 candidate actions.{" "}
-                <Link to={`/legacy/exceptions/${selected}`}>Open investigation →</Link>
+                <Link to={`/legacy/exceptions/${selected}`}>
+                  Open investigation →
+                </Link>
               </Notice>
             )}
             <div className="twin-source">
@@ -310,7 +326,9 @@ export function Twin() {
                     </span>
                     <div>
                       <span className="eyebrow">INVESTIGATION FINDINGS</span>
-                      <h2 id="twin-investigation-title">What the evidence says</h2>
+                      <h2 id="twin-investigation-title">
+                        What the evidence says
+                      </h2>
                     </div>
                   </div>
                   <div className="twin-investigation-meta">
@@ -331,7 +349,9 @@ export function Twin() {
                     <p>{findings.explanation}</p>
                   </div>
                   <div className="twin-evidence">
-                    <span className="twin-section-label">EVIDENCE REVIEWED</span>
+                    <span className="twin-section-label">
+                      EVIDENCE REVIEWED
+                    </span>
                     {findings.evidence.length ? (
                       <ul>
                         {findings.evidence.map((entry, index) => (
@@ -348,7 +368,9 @@ export function Twin() {
                 </div>
                 {findings.candidateActions.length > 0 && (
                   <div className="twin-candidates">
-                    <span className="twin-section-label">CANDIDATE ACTIONS</span>
+                    <span className="twin-section-label">
+                      CANDIDATE ACTIONS
+                    </span>
                     <div>
                       {findings.candidateActions.map((action) => (
                         <span className="twin-candidate" key={action}>
@@ -652,16 +674,28 @@ export function ResolutionPage() {
               Review evidence
               <ArrowUpRight size={15} />
             </Link>
-            <Link className="button secondary" to={`/legacy/audit?id=${selected}`}>
+            <Link
+              className="button secondary"
+              to={`/legacy/audit?id=${selected}`}
+            >
               <FileSearch size={15} />
               View audit trail
             </Link>
           </>
         )}
       </Panel>
-      {cases.error && <ErrorBox message={cases.error} />}{" "}
-      {record.error && <ErrorBox message={record.error} />}{" "}
-      {record.loading || cases.loading ? (
+      {cases.error || record.error || investigation.error ? (
+        <ErrorBox
+          message={cases.error || record.error || investigation.error}
+          retry={() =>
+            void Promise.all([
+              cases.refresh(),
+              record.refresh(),
+              investigation.refresh(),
+            ])
+          }
+        />
+      ) : record.loading || cases.loading || investigation.loading ? (
         <Loading />
       ) : !item ? (
         <Empty
@@ -807,17 +841,25 @@ export function ResolutionPage() {
               </div>
             </div>
           )}
-          {actions.error && <ErrorBox message={actions.error} />}
           <Panel
             title="Execution & verification"
             subtitle="Persistent action records and independently checked outcomes"
             action={
               <span className="count-pill">
-                {actions.data?.length || 0} actions
+                {actions.error
+                  ? "Unavailable"
+                  : actions.loading
+                    ? "Loading..."
+                    : `${actions.data?.length || 0} actions`}
               </span>
             }
           >
-            {actions.loading ? (
+            {actions.error ? (
+              <ErrorBox
+                message={actions.error}
+                retry={() => void actions.refresh()}
+              />
+            ) : actions.loading ? (
               <Loading />
             ) : !actions.data?.length ? (
               <Empty
@@ -833,7 +875,10 @@ export function ResolutionPage() {
                 }
               >
                 {!manual && (
-                  <Link to={`/legacy/twin?id=${selected}`} className="button primary">
+                  <Link
+                    to={`/legacy/twin?id=${selected}`}
+                    className="button primary"
+                  >
                     Open digital twin
                     <ArrowRight size={16} />
                   </Link>
@@ -983,24 +1028,45 @@ export function AuditPage() {
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
   const pageSize = readUiPreferences().pageSize;
-  const events = (audit.data || []).filter(
-    (e) =>
-      (!eventType || e.eventType === eventType) &&
-      (!dateFrom || dateKey(e.timestamp) >= dateFrom) &&
-      (!dateTo || dateKey(e.timestamp) <= dateTo) &&
-      `${e.eventType} ${e.actor} ${e.exceptionId} ${detailSearchText(e.details)}`
-        .toLowerCase()
-        .includes(query.toLowerCase()),
-  ).sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  const events = (audit.data || [])
+    .filter(
+      (e) =>
+        (!eventType || e.eventType === eventType) &&
+        (!dateFrom || dateKey(e.timestamp) >= dateFrom) &&
+        (!dateTo || dateKey(e.timestamp) <= dateTo) &&
+        `${e.eventType} ${e.actor} ${e.exceptionId} ${detailSearchText(e.details)}`
+          .toLowerCase()
+          .includes(query.toLowerCase()),
+    )
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   const visibleEvents = events.slice(page * pageSize, (page + 1) * pageSize);
   function exportFiltered() {
-    const quote = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const quote = (value: unknown) =>
+      `"${String(value ?? "").replaceAll('"', '""')}"`;
     const rows = [
-      ["Event ID", "Timestamp", "Case ID", "Event type", "Actor or service", "Action details", "Outcome"],
-      ...events.map((event) => [event.id, event.timestamp, event.exceptionId || "", label(event.eventType), event.actor, detailText(event.details), label(event.result)]),
+      [
+        "Event ID",
+        "Timestamp",
+        "Case ID",
+        "Event type",
+        "Actor or service",
+        "Action details",
+        "Outcome",
+      ],
+      ...events.map((event) => [
+        event.id,
+        event.timestamp,
+        event.exceptionId || "",
+        label(event.eventType),
+        event.actor,
+        detailText(event.details),
+        label(event.result),
+      ]),
     ];
     const csv = rows.map((row) => row.map(quote).join(",")).join("\r\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const url = URL.createObjectURL(
+      new Blob([csv], { type: "text/csv;charset=utf-8" }),
+    );
     const anchor = document.createElement("a");
     anchor.href = url;
     anchor.download = `afi-resolve-audit-${new Date().toISOString().slice(0, 10)}.csv`;
@@ -1014,7 +1080,14 @@ export function AuditPage() {
         title="Audit Trail"
         description="A persistent, chronological record of the decisions behind every recovery."
       >
-        <button className="button secondary" disabled={!events.length || audit.loading} onClick={exportFiltered}><FileSearch size={15} />Export filtered CSV</button>
+        <button
+          className="button secondary"
+          disabled={!events.length || audit.loading}
+          onClick={exportFiltered}
+        >
+          <FileSearch size={15} />
+          Export filtered CSV
+        </button>
         <button
           className="button secondary"
           onClick={() => void audit.refresh()}
@@ -1033,15 +1106,19 @@ export function AuditPage() {
         <div className="table-toolbar audit-toolbar">
           <SearchBox
             value={query}
-            onChange={(value) => { setQuery(value); setPage(0); }}
+            onChange={(value) => {
+              setQuery(value);
+              setPage(0);
+            }}
             placeholder="Search events, actors, or case IDs…"
           />
           <select
             aria-label="Filter audit by case"
             value={selected}
-            onChange={(e) =>
-              (setPage(0), setParams(e.target.value ? { id: e.target.value } : {}))
-            }
+            onChange={(e) => (
+              setPage(0),
+              setParams(e.target.value ? { id: e.target.value } : {})
+            )}
           >
             <option value="">All exceptions & system events</option>
             {cases.data?.items.map((c) => (
@@ -1056,7 +1133,10 @@ export function AuditPage() {
           <select
             aria-label="Filter event type"
             value={eventType}
-            onChange={(e) => { setEventType(e.target.value); setPage(0); }}
+            onChange={(e) => {
+              setEventType(e.target.value);
+              setPage(0);
+            }}
           >
             <option value="">All event types</option>
             {[...new Set((audit.data || []).map((e) => e.eventType))]
@@ -1067,8 +1147,28 @@ export function AuditPage() {
                 </option>
               ))}
           </select>
-          <label className="date-filter">From<input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} /></label>
-          <label className="date-filter">To<input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} /></label>
+          <label className="date-filter">
+            From
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => {
+                setDateFrom(e.target.value);
+                setPage(0);
+              }}
+            />
+          </label>
+          <label className="date-filter">
+            To
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => {
+                setDateTo(e.target.value);
+                setPage(0);
+              }}
+            />
+          </label>
         </div>
         <div className="audit-count">
           <span>{events.length} events</span>
@@ -1083,26 +1183,128 @@ export function AuditPage() {
           <Loading />
         ) : events.length ? (
           <>
-          <div className="table-scroll"><table className="audit-table"><thead><tr><th>Event ID</th><th>Timestamp</th><th>Case</th><th>Event type</th><th>Actor / service</th><th>Action</th><th>Outcome</th></tr></thead><tbody>{visibleEvents.map((event) => <tr key={event.id}><td className="mono small">{event.id}</td><td className="nowrap">{dateTime(event.timestamp)} SGT</td><td>{event.exceptionId ? <Link className="text-link" to={`/legacy/exceptions/${event.exceptionId}`}>{event.exceptionId}</Link> : <span className="muted">System</span>}</td><td><span className={`audit-event-type ${/FAIL|REJECT/.test(event.eventType) ? "negative" : /VERIFIED|RESOLVED|COMPLETED/.test(event.eventType) ? "positive" : ""}`}>{label(event.eventType)}</span></td><td>{event.actor}</td><td><details className="audit-details"><summary>{detailText(event.details) || "View event details"}</summary><p>{detailText(event.details) || "No additional details recorded."}</p>{event.correlationId && <small>Correlation: <code>{event.correlationId}</code></small>}</details></td><td><Badge value={event.result} /></td></tr>)}</tbody></table></div>
-          <div className="pagination audit-pagination"><span>{events.length ? `${page * pageSize + 1}–${Math.min((page + 1) * pageSize, events.length)} of ${events.length} events` : "0 events"}</span><div><button className="button secondary small-button" disabled={page === 0 || audit.loading} onClick={() => setPage(page - 1)}><ChevronLeft size={15} />Previous</button><span className="page-number">{page + 1}</span><button className="button secondary small-button" disabled={audit.loading || (page + 1) * pageSize >= events.length} onClick={() => setPage(page + 1)}>Next<ChevronRight size={15} /></button></div></div>
+            <div className="table-scroll">
+              <table className="audit-table">
+                <thead>
+                  <tr>
+                    <th>Event ID</th>
+                    <th>Timestamp</th>
+                    <th>Case</th>
+                    <th>Event type</th>
+                    <th>Actor / service</th>
+                    <th>Action</th>
+                    <th>Outcome</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleEvents.map((event) => (
+                    <tr key={event.id}>
+                      <td className="mono small">{event.id}</td>
+                      <td className="nowrap">
+                        {dateTime(event.timestamp)} SGT
+                      </td>
+                      <td>
+                        {event.exceptionId ? (
+                          <Link
+                            className="text-link"
+                            to={`/legacy/exceptions/${event.exceptionId}`}
+                          >
+                            {event.exceptionId}
+                          </Link>
+                        ) : (
+                          <span className="muted">System</span>
+                        )}
+                      </td>
+                      <td>
+                        <span
+                          className={`audit-event-type ${/FAIL|REJECT/.test(event.eventType) ? "negative" : /VERIFIED|RESOLVED|COMPLETED/.test(event.eventType) ? "positive" : ""}`}
+                        >
+                          {label(event.eventType)}
+                        </span>
+                      </td>
+                      <td>{event.actor}</td>
+                      <td>
+                        <details className="audit-details">
+                          <summary>
+                            {detailText(event.details) || "View event details"}
+                          </summary>
+                          <p>
+                            {detailText(event.details) ||
+                              "No additional details recorded."}
+                          </p>
+                          {event.correlationId && (
+                            <small>
+                              Correlation: <code>{event.correlationId}</code>
+                            </small>
+                          )}
+                        </details>
+                      </td>
+                      <td>
+                        <Badge value={event.result} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="pagination audit-pagination">
+              <span>
+                {events.length
+                  ? `${page * pageSize + 1}–${Math.min((page + 1) * pageSize, events.length)} of ${events.length} events`
+                  : "0 events"}
+              </span>
+              <div>
+                <button
+                  className="button secondary small-button"
+                  disabled={page === 0 || audit.loading}
+                  onClick={() => setPage(page - 1)}
+                >
+                  <ChevronLeft size={15} />
+                  Previous
+                </button>
+                <span className="page-number">{page + 1}</span>
+                <button
+                  className="button secondary small-button"
+                  disabled={
+                    audit.loading || (page + 1) * pageSize >= events.length
+                  }
+                  onClick={() => setPage(page + 1)}
+                >
+                  Next
+                  <ChevronRight size={15} />
+                </button>
+              </div>
+            </div>
           </>
-        ) : <Empty title="No audit events match these filters" description="Adjust the date, case, event type, or search terms." />}
+        ) : (
+          <Empty
+            title="No audit events match these filters"
+            description="Adjust the date, case, event type, or search terms."
+          />
+        )}
       </Panel>
     </>
   );
 }
 
-export function SettingsPage() {
+export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
   const { session, switchUser } = useAuth();
   const op = useOperation();
   const [totalRecords, setTotalRecords] = useState(1000);
   const [processedCount, setProcessedCount] = useState(800);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetText, setResetText] = useState("");
-  const [preferences, setPreferences] = useState<UiPreferences>(readUiPreferences);
-  const [notifications, setNotifications] = useState<NotificationPreferences>(readNotificationPreferences);
+  const [preferences, setPreferences] =
+    useState<UiPreferences>(readUiPreferences);
+  const [notifications, setNotifications] = useState<NotificationPreferences>(
+    readNotificationPreferences,
+  );
   const [preferencesSaved, setPreferencesSaved] = useState(false);
-  const [aiHealth, setAiHealth] = useState<{ status: string; service?: string; mode?: string } | null>(null);
+  const [aiHealth, setAiHealth] = useState<{
+    status: string;
+    service?: string;
+    mode?: string;
+  } | null>(null);
   const [aiHealthError, setAiHealthError] = useState("");
   const health = useResource<{ status: string }>("/actuator/health");
   const navigate = useNavigate();
@@ -1110,22 +1312,42 @@ export function SettingsPage() {
     let active = true;
     const check = async () => {
       try {
-        const result = await publicApi<{ status: string; service?: string; mode?: string }>("/ai-health");
-        if (active) { setAiHealth(result); setAiHealthError(""); }
+        const result = await publicApi<{
+          status: string;
+          service?: string;
+          mode?: string;
+        }>("/ai-health");
+        if (active) {
+          setAiHealth(result);
+          setAiHealthError("");
+        }
       } catch (error) {
-        if (active) { setAiHealth(null); setAiHealthError(error instanceof Error ? error.message : "AI service health is unavailable."); }
+        if (active) {
+          setAiHealth(null);
+          setAiHealthError(
+            error instanceof Error
+              ? error.message
+              : "AI service health is unavailable.",
+          );
+        }
       }
     };
     void check();
     const timer = window.setInterval(() => void check(), 30000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, []);
   function savePreferences() {
     saveUiPreferences(preferences);
     setPreferencesSaved(true);
     window.setTimeout(() => setPreferencesSaved(false), 2500);
   }
-  function updateNotification<K extends keyof NotificationPreferences>(key: K, value: NotificationPreferences[K]) {
+  function updateNotification<K extends keyof NotificationPreferences>(
+    key: K,
+    value: NotificationPreferences[K],
+  ) {
     const next = { ...notifications, [key]: value };
     setNotifications(next);
     saveNotificationPreferences(next);
@@ -1145,10 +1367,7 @@ export function SettingsPage() {
       const result = await post<{
         batchId?: string;
         detection?: { detected?: number };
-      }>(
-        "/api/demo/trigger-failure",
-        { totalRecords, processedCount },
-      );
+      }>("/api/demo/trigger-failure", { totalRecords, processedCount });
       const detectionCount = result.detection?.detected;
       const detectionMessage =
         detectionCount == null
@@ -1163,122 +1382,449 @@ export function SettingsPage() {
     <>
       <PageHeader
         eyebrow="WORKSPACE CONFIGURATION"
-        title="Settings"
-        description="Manage your profile, interface preferences, access information, service status, and synthetic demo tools."
+        title={demoOnly ? "Legacy demo controls" : "Settings"}
+        description={
+          demoOnly
+            ? "Prepare the transaction recovery demonstration. Reviewer permissions apply."
+            : "Manage your workspace preferences."
+        }
       />
       <OperationStatus {...op} />
-      <nav className="settings-nav" aria-label="Settings sections">
-        {[["profile", "Profile"], ["preferences", "Preferences"], ["notifications", "Notifications"], ["workspace", "Workspace"], ["access", "Users & access"], ["integrations", "AI & integrations"], ["policies", "Policies"], ...(session.demoMode ? [["demo-environment", "Demo environment"]] : []), ["about", "About"]].map(([id, title]) => <a key={id} href={`#${id}`}>{title}</a>)}
-      </nav>
-      <div className="settings-grid">
-        <Panel
-          title="My profile"
-          subtitle="Session identity is validated by the backend"
-        >
-          <div className="settings-details" id="profile">
-            <div>
-              <span>Display name</span>
-              <strong className="capitalize">{session.username}</strong>
-            </div>
-            <div>
-              <span>Role</span>
-              <strong>{isReviewer(session) ? "Reviewer" : "Operations Analyst"}</strong>
-            </div>
-            <div>
-              <span>Language</span>
-              <strong>English</strong>
-            </div>
-            <div>
-              <span>Time zone</span>
-              <strong>Asia/Singapore (SGT)</strong>
-            </div>
-          </div>
-          <div className="panel-inner-footer">
-            <button className="button secondary" onClick={switchUser}>
-              <UserCheck size={16} />
-              Switch account
-            </button>
-          </div>
-        </Panel>
-        <Panel
-          title="Safety boundaries"
-          subtitle="Built for a synthetic banking operations demonstration"
-        >
-          <ul className="safety-list">
+      {!demoOnly && (
+        <>
+          <nav className="settings-nav" aria-label="Settings sections">
             {[
-              "Synthetic records only; no customer information.",
-              "No real transfers, settlements, or ledger postings.",
-              "AI recommendations cannot write operational data.",
-              "Execution requires deterministic safety checks.",
-              "Resolution follows independent record verification.",
-            ].map((text) => (
-              <li key={text}>
-                <ShieldCheck size={16} />
-                {text}
-              </li>
+              ["profile", "Profile"],
+              ["preferences", "Preferences"],
+              ["notifications", "Notifications"],
+              ["workspace", "Workspace"],
+              ["access", "Users & access"],
+              ["integrations", "AI & integrations"],
+              ["policies", "Policies"],
+              ...(session.demoMode
+                ? [["demo-environment", "Demo environment"]]
+                : []),
+              ["about", "About"],
+            ].map(([id, title]) => (
+              <a key={id} href={`#${id}`}>
+                {title}
+              </a>
             ))}
-          </ul>
-        </Panel>
-      </div>
-      <div className="settings-grid">
-        <Panel title="Appearance & preferences" subtitle="Saved on this device and restored on refresh">
-          <div className="settings-form-grid" id="preferences">
-            <label>Theme<select value={preferences.theme} onChange={(event) => setPreferences({ ...preferences, theme: event.target.value as UiPreferences["theme"] })}><option value="light">Light</option><option value="dark">Dark</option><option value="system">System</option></select></label>
-            <label>Table density<select value={preferences.density} onChange={(event) => setPreferences({ ...preferences, density: event.target.value as UiPreferences["density"] })}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
-            <label>Date format<select value={preferences.dateFormat} onChange={(event) => setPreferences({ ...preferences, dateFormat: event.target.value as UiPreferences["dateFormat"] })}><option value="d-mmm-yyyy">23 Oct 2026</option><option value="yyyy-mm-dd">2026-10-23</option></select></label>
-            <label>Time format<select value={preferences.timeFormat} onChange={(event) => setPreferences({ ...preferences, timeFormat: event.target.value as UiPreferences["timeFormat"] })}><option value="24h">24-hour</option><option value="12h">12-hour</option></select></label>
-            <label>Default table page size<select value={preferences.pageSize} onChange={(event) => setPreferences({ ...preferences, pageSize: Number(event.target.value) as UiPreferences["pageSize"] })}><option value={10}>10 rows</option><option value={20}>20 rows</option><option value={50}>50 rows</option></select></label>
-            <label>Default dashboard range<select value={preferences.defaultRange} onChange={(event) => setPreferences({ ...preferences, defaultRange: event.target.value as UiPreferences["defaultRange"] })}><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="all">All available records</option></select></label>
+          </nav>
+          <div className="settings-grid">
+            <Panel
+              title="My profile"
+              subtitle="Session identity is validated by the backend"
+            >
+              <div className="settings-details" id="profile">
+                <div>
+                  <span>Display name</span>
+                  <strong className="capitalize">{session.username}</strong>
+                </div>
+                <div>
+                  <span>Role</span>
+                  <strong>
+                    {isReviewer(session) ? "Reviewer" : "Operations Analyst"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Language</span>
+                  <strong>English</strong>
+                </div>
+                <div>
+                  <span>Time zone</span>
+                  <strong>Asia/Singapore (SGT)</strong>
+                </div>
+              </div>
+              <div className="panel-inner-footer">
+                <button className="button secondary" onClick={switchUser}>
+                  <UserCheck size={16} />
+                  Switch account
+                </button>
+              </div>
+            </Panel>
+            <Panel
+              title="Safety boundaries"
+              subtitle="Built for a synthetic banking operations demonstration"
+            >
+              <ul className="safety-list">
+                {[
+                  "Synthetic records only; no customer information.",
+                  "No real transfers, settlements, or ledger postings.",
+                  "AI recommendations cannot write operational data.",
+                  "Execution requires deterministic safety checks.",
+                  "Resolution follows independent record verification.",
+                ].map((text) => (
+                  <li key={text}>
+                    <ShieldCheck size={16} />
+                    {text}
+                  </li>
+                ))}
+              </ul>
+            </Panel>
           </div>
-          <div className="panel-inner-footer"><button className="button primary" onClick={savePreferences}><Check size={15} />{preferencesSaved ? "Preferences saved" : "Save preferences"}</button><span className="small muted">Credentials are held in session memory and are not stored with preferences.</span></div>
-        </Panel>
-        <Panel title="In-app notifications" subtitle="Choose which operational events appear in the notification centre">
-          <div className="settings-toggle-list" id="notifications">
-            {[["critical", "Critical exception", "Unresolved critical-severity cases"], ["approvals", "Approval requests", "Cases with a recorded approval event"], ["failed", "Failed actions", "Failed or policy-rejected operations"], ["verification", "Verification failures", "Post-execution verification failures"]].map(([key, title, description]) => <label className="settings-toggle" key={key}><span><strong>{title}</strong><small>{description}</small></span><input type="checkbox" checked={notifications[key as keyof NotificationPreferences]} onChange={(event) => updateNotification(key as keyof NotificationPreferences, event.target.checked)} /></label>)}
+          <div className="settings-grid">
+            <Panel
+              title="Appearance & preferences"
+              subtitle="Saved on this device and restored on refresh"
+            >
+              <div className="settings-form-grid" id="preferences">
+                <label>
+                  Theme
+                  <select
+                    value={preferences.theme}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        theme: event.target.value as UiPreferences["theme"],
+                      })
+                    }
+                  >
+                    <option value="light">Light</option>
+                    <option value="dark">Dark</option>
+                    <option value="system">System</option>
+                  </select>
+                </label>
+                <label>
+                  Table density
+                  <select
+                    value={preferences.density}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        density: event.target.value as UiPreferences["density"],
+                      })
+                    }
+                  >
+                    <option value="comfortable">Comfortable</option>
+                    <option value="compact">Compact</option>
+                  </select>
+                </label>
+                <label>
+                  Date format
+                  <select
+                    value={preferences.dateFormat}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        dateFormat: event.target
+                          .value as UiPreferences["dateFormat"],
+                      })
+                    }
+                  >
+                    <option value="d-mmm-yyyy">23 Oct 2026</option>
+                    <option value="yyyy-mm-dd">2026-10-23</option>
+                  </select>
+                </label>
+                <label>
+                  Time format
+                  <select
+                    value={preferences.timeFormat}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        timeFormat: event.target
+                          .value as UiPreferences["timeFormat"],
+                      })
+                    }
+                  >
+                    <option value="24h">24-hour</option>
+                    <option value="12h">12-hour</option>
+                  </select>
+                </label>
+                <label>
+                  Default table page size
+                  <select
+                    value={preferences.pageSize}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        pageSize: Number(
+                          event.target.value,
+                        ) as UiPreferences["pageSize"],
+                      })
+                    }
+                  >
+                    <option value={10}>10 rows</option>
+                    <option value={20}>20 rows</option>
+                    <option value={50}>50 rows</option>
+                  </select>
+                </label>
+                <label>
+                  Default dashboard range
+                  <select
+                    value={preferences.defaultRange}
+                    onChange={(event) =>
+                      setPreferences({
+                        ...preferences,
+                        defaultRange: event.target
+                          .value as UiPreferences["defaultRange"],
+                      })
+                    }
+                  >
+                    <option value="7">Last 7 days</option>
+                    <option value="30">Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                    <option value="all">All available records</option>
+                  </select>
+                </label>
+              </div>
+              <div className="panel-inner-footer">
+                <button className="button primary" onClick={savePreferences}>
+                  <Check size={15} />
+                  {preferencesSaved ? "Preferences saved" : "Save preferences"}
+                </button>
+                <span className="small muted">
+                  Credentials are held in session memory and are not stored with
+                  preferences.
+                </span>
+              </div>
+            </Panel>
+            <Panel
+              title="In-app notifications"
+              subtitle="Choose which operational events appear in the notification centre"
+            >
+              <div className="settings-toggle-list" id="notifications">
+                {[
+                  [
+                    "critical",
+                    "Critical exception",
+                    "Unresolved critical-severity cases",
+                  ],
+                  [
+                    "approvals",
+                    "Approval requests",
+                    "Cases with a recorded approval event",
+                  ],
+                  [
+                    "failed",
+                    "Failed actions",
+                    "Failed or policy-rejected operations",
+                  ],
+                  [
+                    "verification",
+                    "Verification failures",
+                    "Post-execution verification failures",
+                  ],
+                ].map(([key, title, description]) => (
+                  <label className="settings-toggle" key={key}>
+                    <span>
+                      <strong>{title}</strong>
+                      <small>{description}</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={
+                        notifications[key as keyof NotificationPreferences]
+                      }
+                      onChange={(event) =>
+                        updateNotification(
+                          key as keyof NotificationPreferences,
+                          event.target.checked,
+                        )
+                      }
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="settings-hint" aria-live="polite">
+                Document notifications currently use Critical exception for RM
+                corrections and Approval requests for human-review cases. Legacy
+                failure preferences remain saved. No email or SMS delivery is
+                configured.
+              </div>
+            </Panel>
           </div>
-          <div className="settings-hint" aria-live="polite">Document notifications currently use Critical exception for RM corrections and Approval requests for human-review cases. Legacy failure preferences remain saved. No email or SMS delivery is configured.</div>
-        </Panel>
-      </div>
-      <div className="settings-grid">
-        <Panel title="Workspace" subtitle="Current operating environment and available modules">
-          <div className="settings-details" id="workspace">
-            <div><span>Workspace</span><strong>AFI Operations</strong></div>
-            <div><span>Environment</span><Badge value={session.demoMode ? "SYNTHETIC DEMO" : "STANDARD"} /></div>
-            <div><span>Application version</span><strong>2.0</strong></div>
-            <div><span>Operating mode</span><strong>{session.demoMode ? "Synthetic records only" : "Operational workspace"}</strong></div>
-            <div><span>Modules</span><strong>Cases · Investigations · Simulation · Approvals · Audit</strong></div>
+          <div className="settings-grid">
+            <Panel
+              title="Workspace"
+              subtitle="Current operating environment and available modules"
+            >
+              <div className="settings-details" id="workspace">
+                <div>
+                  <span>Workspace</span>
+                  <strong>AFI Operations</strong>
+                </div>
+                <div>
+                  <span>Environment</span>
+                  <Badge
+                    value={session.demoMode ? "SYNTHETIC DEMO" : "STANDARD"}
+                  />
+                </div>
+                <div>
+                  <span>Application version</span>
+                  <strong>2.0</strong>
+                </div>
+                <div>
+                  <span>Operating mode</span>
+                  <strong>
+                    {session.demoMode
+                      ? "Synthetic records only"
+                      : "Operational workspace"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Modules</span>
+                  <strong>
+                    Cases · Investigations · Simulation · Approvals · Audit
+                  </strong>
+                </div>
+              </div>
+            </Panel>
+            <Panel
+              title="Users & access"
+              subtitle="Roles and actions enforced by the backend"
+            >
+              <div className="access-roles" id="access">
+                <div>
+                  <strong>Operations Analyst</strong>
+                  <p>
+                    Own document submissions, upload synthetic PDFs, validate
+                    evidence and execute permitted administrative actions.
+                    Legacy recovery is available separately.
+                  </p>
+                </div>
+                <div>
+                  <strong>Reviewer</strong>
+                  <p>
+                    Review submissions across owners and approve rule revisions
+                    authored by another reviewer. Legacy demo reset remains
+                    reviewer-restricted.
+                  </p>
+                </div>
+                <div>
+                  <strong>Administrator</strong>
+                  <p>
+                    The rules-admin demo reviewer provides independent approval.
+                    Account management is configured on the backend.
+                  </p>
+                </div>
+              </div>
+              <div className="settings-hint">
+                Current session: {session.roles.map(label).join(", ")}. Frontend
+                preferences do not change backend permissions.
+              </div>
+            </Panel>
           </div>
-        </Panel>
-        <Panel title="Users & access" subtitle="Roles and actions enforced by the backend">
-          <div className="access-roles" id="access">
-            <div><strong>Operations Analyst</strong><p>Own document submissions, upload synthetic PDFs, validate evidence and execute permitted administrative actions. Legacy recovery is available separately.</p></div>
-            <div><strong>Reviewer</strong><p>Review submissions across owners and approve rule revisions authored by another reviewer. Legacy demo reset remains reviewer-restricted.</p></div>
-            <div><strong>Administrator</strong><p>The rules-admin demo reviewer provides independent approval. Account management is configured on the backend.</p></div>
+          <div className="settings-grid">
+            <Panel
+              title="AI & integrations"
+              subtitle="Read-only service and model configuration"
+            >
+              <div className="settings-details" id="integrations">
+                <div>
+                  <span>Spring Boot API</span>
+                  <strong
+                    className={
+                      health.data?.status === "UP" ? "green-text" : "amber-text"
+                    }
+                  >
+                    {health.loading
+                      ? "Checking…"
+                      : health.error
+                        ? "Unavailable"
+                        : label(health.data?.status)}
+                  </strong>
+                </div>
+                <div>
+                  <span>FastAPI investigation service</span>
+                  <strong
+                    className={
+                      aiHealth?.status === "UP" ? "green-text" : "amber-text"
+                    }
+                  >
+                    {aiHealth
+                      ? label(aiHealth.status)
+                      : aiHealthError
+                        ? "Unavailable"
+                        : "Checking…"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Investigation mode</span>
+                  <strong>
+                    Gemini when configured; deterministic fallback otherwise
+                  </strong>
+                </div>
+                <div>
+                  <span>Selected model</span>
+                  <strong>Configured in the service environment</strong>
+                </div>
+                <div>
+                  <span>Database connectivity</span>
+                  <strong>
+                    {health.data?.status === "UP"
+                      ? "Included in aggregate backend health"
+                      : "Not independently exposed"}
+                  </strong>
+                </div>
+              </div>
+              {(health.error || aiHealthError) && (
+                <div className="integration-errors">
+                  {health.error && (
+                    <ErrorBox
+                      message={health.error}
+                      retry={() => void health.refresh()}
+                    />
+                  )}
+                  {aiHealthError && <ErrorBox message={aiHealthError} />}
+                </div>
+              )}
+              <div className="settings-hint">
+                Health checks expose status only. Model keys and sensitive
+                configuration are never sent to the browser.
+              </div>
+            </Panel>
+            <Panel
+              title="Legacy recovery policies"
+              subtitle="Safety rules are controlled by the backend policy engine"
+            >
+              <div className="policy-list" id="policies">
+                <div>
+                  <ShieldCheck size={17} />
+                  <span>
+                    <strong>Legacy: eligible automated recovery</strong>
+                    <small>
+                      Resume pending records for a verified partial batch
+                      failure.
+                    </small>
+                  </span>
+                </div>
+                <div>
+                  <ShieldX size={17} />
+                  <span>
+                    <strong>Legacy: restricted recovery action</strong>
+                    <small>
+                      Retrying a partially processed batch is rejected when it
+                      may duplicate processed records.
+                    </small>
+                  </span>
+                </div>
+                <div>
+                  <LockKeyhole size={17} />
+                  <span>
+                    <strong>Execution guardrails</strong>
+                    <small>
+                      Current source-state hash, record invariants, idempotency,
+                      and verification are required.
+                    </small>
+                  </span>
+                </div>
+                <div>
+                  <UserCheck size={17} />
+                  <span>
+                    <strong>Human review</strong>
+                    <small>
+                      Reviewer permissions are enforced by the Spring Boot API;
+                      approval cannot bypass safety checks.
+                    </small>
+                  </span>
+                </div>
+              </div>
+            </Panel>
           </div>
-          <div className="settings-hint">Current session: {session.roles.map(label).join(", ")}. Frontend preferences do not change backend permissions.</div>
-        </Panel>
-      </div>
-      <div className="settings-grid">
-        <Panel title="AI & integrations" subtitle="Read-only service and model configuration">
-          <div className="settings-details" id="integrations">
-            <div><span>Spring Boot API</span><strong className={health.data?.status === "UP" ? "green-text" : "amber-text"}>{health.loading ? "Checking…" : health.error ? "Unavailable" : label(health.data?.status)}</strong></div>
-            <div><span>FastAPI investigation service</span><strong className={aiHealth?.status === "UP" ? "green-text" : "amber-text"}>{aiHealth ? label(aiHealth.status) : aiHealthError ? "Unavailable" : "Checking…"}</strong></div>
-            <div><span>Investigation mode</span><strong>Gemini when configured; deterministic fallback otherwise</strong></div>
-            <div><span>Selected model</span><strong>Configured in the service environment</strong></div>
-            <div><span>Database connectivity</span><strong>{health.data?.status === "UP" ? "Included in aggregate backend health" : "Not independently exposed"}</strong></div>
-          </div>
-          {(health.error || aiHealthError) && <div className="integration-errors">{health.error && <ErrorBox message={health.error} retry={() => void health.refresh()} />}{aiHealthError && <ErrorBox message={aiHealthError} />}</div>}
-          <div className="settings-hint">Health checks expose status only. Model keys and sensitive configuration are never sent to the browser.</div>
-        </Panel>
-        <Panel title="Legacy recovery policies" subtitle="Safety rules are controlled by the backend policy engine">
-          <div className="policy-list" id="policies">
-            <div><ShieldCheck size={17} /><span><strong>Legacy: eligible automated recovery</strong><small>Resume pending records for a verified partial batch failure.</small></span></div>
-            <div><ShieldX size={17} /><span><strong>Legacy: restricted recovery action</strong><small>Retrying a partially processed batch is rejected when it may duplicate processed records.</small></span></div>
-            <div><LockKeyhole size={17} /><span><strong>Execution guardrails</strong><small>Current source-state hash, record invariants, idempotency, and verification are required.</small></span></div>
-            <div><UserCheck size={17} /><span><strong>Human review</strong><small>Reviewer permissions are enforced by the Spring Boot API; approval cannot bypass safety checks.</small></span></div>
-          </div>
-        </Panel>
-      </div>
+        </>
+      )}
       {!isReviewer(session) && (
         <Notice>
           Demo reset and failure controls require a reviewer.{" "}
@@ -1287,215 +1833,250 @@ export function SettingsPage() {
           </button>
         </Notice>
       )}
-      {session.demoMode && <section id="demo-environment" className="settings-demo-section">
-      <div className="section-heading"><div><span className="eyebrow">SYNTHETIC ENVIRONMENT</span><h2>Demo environment</h2><p>These utilities create or replace synthetic records in the shared demonstration workspace.</p></div><Badge value="SYNTHETIC DEMO" /></div>
-      <div className="demo-controls-grid">
-        <Panel
-          title="Legacy Recovery Demo: trigger a partial batch failure"
-          subtitle="Choose a dataset size and the records completed before timeout"
-          action={<FlaskConical size={22} className="blue-text" />}
-        >
-          <form
-            className="demo-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void trigger();
-            }}
+      {session.demoMode && (
+        <section id="demo-environment" className="settings-demo-section">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">SYNTHETIC ENVIRONMENT</span>
+              <h2>Demo environment</h2>
+              <p>
+                These utilities create or replace synthetic records in the
+                shared demonstration workspace.
+              </p>
+            </div>
+            <Badge value="SYNTHETIC DEMO" />
+          </div>
+          <div className="demo-controls-grid">
+            <Panel
+              title="Legacy Recovery Demo: trigger a partial batch failure"
+              subtitle="Choose a dataset size and the records completed before timeout"
+              action={<FlaskConical size={22} className="blue-text" />}
+            >
+              <form
+                className="demo-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void trigger();
+                }}
+              >
+                <div className="form-row">
+                  <label>
+                    Total synthetic records
+                    <input
+                      type="number"
+                      min={2}
+                      max={10000}
+                      value={totalRecords}
+                      onChange={(e) => setTotalRecords(Number(e.target.value))}
+                      required
+                    />
+                  </label>
+                  <label>
+                    Processed before timeout
+                    <input
+                      type="number"
+                      min={1}
+                      max={totalRecords - 1}
+                      value={processedCount}
+                      onChange={(e) =>
+                        setProcessedCount(Number(e.target.value))
+                      }
+                      required
+                    />
+                  </label>
+                </div>
+                <div className="demo-preview">
+                  <div>
+                    <strong>{formatNumber(processedCount)}</strong>
+                    <span>Processed records</span>
+                  </div>
+                  <ArrowRight size={18} />
+                  <div>
+                    <strong>
+                      {formatNumber(Math.max(0, totalRecords - processedCount))}
+                    </strong>
+                    <span>Pending recovery</span>
+                  </div>
+                  <span className="demo-preview-tag">SCENARIO INPUT</span>
+                </div>
+                <p className="small muted">
+                  These are fixture inputs. Actual simulation outcomes are
+                  computed from the persisted records.
+                </p>
+                <button
+                  className="button primary"
+                  disabled={
+                    !!op.busy ||
+                    !isReviewer(session) ||
+                    !session.demoMode ||
+                    processedCount >= totalRecords ||
+                    processedCount < 1 ||
+                    totalRecords < 2
+                  }
+                >
+                  <Play size={16} />
+                  {op.busy === "trigger"
+                    ? "Creating failure…"
+                    : "Trigger partial failure"}
+                </button>
+              </form>
+            </Panel>
+            <Panel
+              title="Reset the synthetic dataset"
+              subtitle="Prepare a clean starting point for your next demonstration"
+              action={<RotateCcw size={21} className="amber-text" />}
+            >
+              <div className="reset-body">
+                <span className="reset-icon">
+                  <Database size={30} />
+                </span>
+                <p>
+                  Reset the current demo records and workflow cases. Historical
+                  audit events are kept for traceability.
+                </p>
+                <p className="small muted">
+                  Reset affects this shared demo workspace. Only an authorised
+                  reviewer can perform it.
+                </p>
+                <button
+                  className="button danger-outline"
+                  disabled={
+                    !isReviewer(session) || !session.demoMode || !!op.busy
+                  }
+                  onClick={() => setResetOpen(true)}
+                >
+                  <RotateCcw size={16} />
+                  Reset demo dataset
+                </button>
+              </div>
+            </Panel>
+          </div>
+          <Panel
+            title="Your presentation, step by step"
+            subtitle="A complete exception-to-resolution demonstration"
           >
-            <div className="form-row">
-              <label>
-                Total synthetic records
-                <input
-                  type="number"
-                  min={2}
-                  max={10000}
-                  value={totalRecords}
-                  onChange={(e) => setTotalRecords(Number(e.target.value))}
-                  required
-                />
-              </label>
-              <label>
-                Processed before timeout
-                <input
-                  type="number"
-                  min={1}
-                  max={totalRecords - 1}
-                  value={processedCount}
-                  onChange={(e) => setProcessedCount(Number(e.target.value))}
-                  required
-                />
-              </label>
+            <ol className="demo-guide">
+              {[
+                {
+                  title: "Prepare the failure",
+                  text: "Reset, then trigger a partially processed synthetic batch.",
+                  icon: Database,
+                },
+                {
+                  title: "Detect & investigate",
+                  text: "The trigger detects the case. Review it and start an evidence-based investigation.",
+                  icon: Sparkles,
+                },
+                {
+                  title: "Compare the strategies",
+                  text: "See the full retry rejected and selective recovery evaluated.",
+                  icon: Boxes,
+                },
+                {
+                  title: "Resolve & verify",
+                  text: "Execute the eligible recovery and inspect stored-record checks.",
+                  icon: ShieldCheck,
+                },
+                {
+                  title: "Show the accountability",
+                  text: "Walk through every decision and outcome in the audit trail.",
+                  icon: FileSearch,
+                },
+              ].map((step, i) => (
+                <li key={step.title}>
+                  <span className="guide-number">0{i + 1}</span>
+                  <step.icon size={20} />
+                  <h3>{step.title}</h3>
+                  <p>{step.text}</p>
+                </li>
+              ))}
+            </ol>
+            <div className="demo-guide-footer">
+              <span>
+                For the second scenario, investigate a duplicate or
+                reconciliation case and open human review.
+              </span>
+              <button
+                className="button primary"
+                onClick={() => navigate("/legacy/exceptions")}
+              >
+                Open exception workspace
+                <ArrowRight size={16} />
+              </button>
             </div>
-            <div className="demo-preview">
-              <div>
-                <strong>{formatNumber(processedCount)}</strong>
-                <span>Processed records</span>
-              </div>
-              <ArrowRight size={18} />
-              <div>
-                <strong>
-                  {formatNumber(Math.max(0, totalRecords - processedCount))}
-                </strong>
-                <span>Pending recovery</span>
-              </div>
-              <span className="demo-preview-tag">SCENARIO INPUT</span>
-            </div>
-            <p className="small muted">
-              These are fixture inputs. Actual simulation outcomes are computed
-              from the persisted records.
-            </p>
-            <button
-              className="button primary"
-              disabled={
-                !!op.busy ||
-                !isReviewer(session) ||
-                !session.demoMode ||
-                processedCount >= totalRecords ||
-                processedCount < 1 ||
-                totalRecords < 2
-              }
-            >
-              <Play size={16} />
-              {op.busy === "trigger"
-                ? "Creating failure…"
-                : "Trigger partial failure"}
-            </button>
-          </form>
-        </Panel>
-        <Panel
-          title="Reset the synthetic dataset"
-          subtitle="Prepare a clean starting point for your next demonstration"
-          action={<RotateCcw size={21} className="amber-text" />}
-        >
-          <div className="reset-body">
-            <span className="reset-icon">
-              <Database size={30} />
-            </span>
+          </Panel>
+        </section>
+      )}
+      {!demoOnly && (
+        <div className="settings-about" id="about">
+          <div>
+            <span className="eyebrow">ABOUT AFI RESOLVE</span>
+            <h2>Intelligence before action</h2>
             <p>
-              Reset the current demo records and workflow cases. Historical
-              audit events are kept for traceability.
+              AFI Resolve validates synthetic document packages, reconciles
+              evidence, coordinates corrections and routes eligible submissions
+              to Operations. The original transaction recovery workflow remains
+              available in the Legacy Recovery Demo.
             </p>
-            <p className="small muted">
-              Reset affects this shared demo workspace. Only an authorised
-              reviewer can perform it.
-            </p>
+          </div>
+          <div className="about-meta">
+            <strong>AFI Resolve · v1.0</strong>
+            <span>Team AFI</span>
+            <span>OCBC Ignite Challenge 2026</span>
+            <span>
+              Independent synthetic demonstration · Not connected to OCBC
+              banking systems
+            </span>
+          </div>
+        </div>
+      )}
+      {resetOpen && (
+        <Dialog
+          className="modal reset-modal"
+          labelledBy="reset-title"
+          initialFocus="input"
+          onClose={() => setResetOpen(false)}
+        >
+          <button
+            className="icon-button modal-close"
+            onClick={() => setResetOpen(false)}
+            aria-label="Close reset confirmation"
+          >
+            <X size={20} />
+          </button>
+          <span className="reset-icon">
+            <RotateCcw size={28} />
+          </span>
+          <h2 id="reset-title">Reset this demo workspace?</h2>
+          <p>
+            Current synthetic records and cases will be replaced. Historical
+            audit events remain available.
+          </p>
+          <label>
+            Type RESET to confirm
+            <input
+              value={resetText}
+              onChange={(e) => setResetText(e.target.value)}
+              placeholder="RESET"
+            />
+          </label>
+          {op.error && <ErrorBox message={op.error} />}
+          <div className="modal-actions">
             <button
-              className="button danger-outline"
-              disabled={!isReviewer(session) || !session.demoMode || !!op.busy}
-              onClick={() => setResetOpen(true)}
+              className="button secondary"
+              onClick={() => setResetOpen(false)}
             >
-              <RotateCcw size={16} />
-              Reset demo dataset
+              Cancel
+            </button>
+            <button
+              className="button danger"
+              disabled={resetText !== "RESET" || !!op.busy}
+              onClick={() => void reset()}
+            >
+              {op.busy ? "Resetting…" : "Reset dataset"}
             </button>
           </div>
-        </Panel>
-      </div>
-      <Panel
-        title="Your presentation, step by step"
-        subtitle="A complete exception-to-resolution demonstration"
-      >
-        <ol className="demo-guide">
-          {[
-            {
-              title: "Prepare the failure",
-              text: "Reset, then trigger a partially processed synthetic batch.",
-              icon: Database,
-            },
-            {
-              title: "Detect & investigate",
-              text: "The trigger detects the case. Review it and start an evidence-based investigation.",
-              icon: Sparkles,
-            },
-            {
-              title: "Compare the strategies",
-              text: "See the full retry rejected and selective recovery evaluated.",
-              icon: Boxes,
-            },
-            {
-              title: "Resolve & verify",
-              text: "Execute the eligible recovery and inspect stored-record checks.",
-              icon: ShieldCheck,
-            },
-            {
-              title: "Show the accountability",
-              text: "Walk through every decision and outcome in the audit trail.",
-              icon: FileSearch,
-            },
-          ].map((step, i) => (
-            <li key={step.title}>
-              <span className="guide-number">0{i + 1}</span>
-              <step.icon size={20} />
-              <h3>{step.title}</h3>
-              <p>{step.text}</p>
-            </li>
-          ))}
-        </ol>
-        <div className="demo-guide-footer">
-          <span>
-            For the second scenario, investigate a duplicate or reconciliation
-            case and open human review.
-          </span>
-          <button
-            className="button primary"
-            onClick={() => navigate("/legacy/exceptions")}
-          >
-            Open exception workspace
-            <ArrowRight size={16} />
-          </button>
-        </div>
-      </Panel>
-      </section>}
-      <div className="settings-about" id="about"><div><span className="eyebrow">ABOUT AFI RESOLVE</span><h2>Intelligence before action</h2><p>AFI Resolve validates synthetic document packages, reconciles evidence, coordinates corrections and routes eligible submissions to Operations. The original transaction recovery workflow remains available in the Legacy Recovery Demo.</p></div><div className="about-meta"><strong>AFI Resolve · v1.0</strong><span>Team AFI</span><span>OCBC Ignite Challenge 2026</span><span>Independent synthetic demonstration · Not connected to OCBC banking systems</span></div></div>
-      {resetOpen && (
-        <div className="modal-backdrop">
-          <section
-            className="modal reset-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="reset-title"
-          >
-            <button
-              className="icon-button modal-close"
-              onClick={() => setResetOpen(false)}
-              aria-label="Close reset confirmation"
-            >
-              <X size={20} />
-            </button>
-            <span className="reset-icon">
-              <RotateCcw size={28} />
-            </span>
-            <h2 id="reset-title">Reset this demo workspace?</h2>
-            <p>
-              Current synthetic records and cases will be replaced. Historical
-              audit events remain available.
-            </p>
-            <label>
-              Type RESET to confirm
-              <input
-                autoFocus
-                value={resetText}
-                onChange={(e) => setResetText(e.target.value)}
-                placeholder="RESET"
-              />
-            </label>
-            {op.error && <ErrorBox message={op.error} />}
-            <div className="modal-actions">
-              <button
-                className="button secondary"
-                onClick={() => setResetOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="button danger"
-                disabled={resetText !== "RESET" || !!op.busy}
-                onClick={() => void reset()}
-              >
-                {op.busy ? "Resetting…" : "Reset dataset"}
-              </button>
-            </div>
-          </section>
-        </div>
+        </Dialog>
       )}
     </>
   );

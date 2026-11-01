@@ -12,6 +12,7 @@ from app.investigation.service import investigate
 from app.schemas import InvestigationRequest, InvestigationResponse, SimulationRequest, SimulationResponse
 from app.simulation.engine import simulate
 from app.documents import ExtractRequest, Extraction, extract
+from app.document_intelligence import InvestigationRequest as DocumentInvestigationRequest, InvestigationResult as DocumentInvestigationResult, investigate_documents, status as document_ai_status
 
 app = FastAPI(
     title="AFI Resolve Investigation and Digital Twin",
@@ -36,7 +37,9 @@ def require_service_key(
 
 @app.exception_handler(HTTPException)
 async def http_error(_: Request, exc: HTTPException) -> JSONResponse:
-    return JSONResponse(status_code=exc.status_code, content={"message": str(exc.detail), "code": "SERVICE_ERROR"})
+    detail = exc.detail
+    content = detail if isinstance(detail, dict) and set(detail) == {"message", "code"} else {"message": str(detail), "code": "SERVICE_ERROR"}
+    return JSONResponse(status_code=exc.status_code, content=content)
 
 
 @app.exception_handler(RequestValidationError)
@@ -54,6 +57,16 @@ def health() -> dict[str, str]:
 @app.post('/documents/extract', response_model=Extraction, dependencies=[Depends(require_service_key)], tags=['documents'])
 def extract_document(request: ExtractRequest, settings: Annotated[Settings, Depends(get_settings)]) -> Extraction:
     return extract(request, settings)
+
+
+@app.get('/documents/status', dependencies=[Depends(require_service_key)], tags=['documents'])
+def document_status(settings: Annotated[Settings, Depends(get_settings)]):
+    return document_ai_status(settings)
+
+
+@app.post('/documents/investigate', response_model=DocumentInvestigationResult, dependencies=[Depends(require_service_key)], tags=['documents'])
+def document_investigation(request: DocumentInvestigationRequest, settings: Annotated[Settings, Depends(get_settings)]):
+    return investigate_documents(request, settings)
 
 
 @app.post("/investigate", response_model=InvestigationResponse, dependencies=[Depends(require_service_key)], tags=["investigation"])

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   ArrowRight,
@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { authenticate } from "./api";
 import type { Session } from "./api";
+import { Dialog } from "./ui";
 export const AuthContext = createContext<{
   session: Session;
   switchUser: () => void;
@@ -59,6 +60,13 @@ export function Login({
   modal?: boolean;
   onClose?: () => void;
 }) {
+  const passwordInput = useRef<HTMLInputElement>(null);
+  function chooseAccount(user: string) {
+    setUsername(user);
+    setPassword("");
+    setError("");
+    passwordInput.current?.focus();
+  }
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -103,6 +111,7 @@ export function Login({
         <label>
           Password
           <input
+            ref={passwordInput}
             autoComplete="current-password"
             type="password"
             value={password}
@@ -122,56 +131,55 @@ export function Login({
         </button>
       </form>
       <div className="login-divider">
-        <span>EXPLORE THE DEMO</span>
+        <span>CHOOSE AN ACCOUNT</span>
       </div>
       <div className="demo-accounts">
         <button
           disabled={busy}
-          onClick={() => void submit("operator", "operator-demo")}
+          onClick={() => chooseAccount("operator")}
         >
           <Fingerprint size={20} />
           <span>
-            <strong>Demo operator</strong>
+            <strong>Use operator account</strong>
             <small>Validate & reconcile</small>
           </span>
           <ArrowRight size={16} />
         </button>
         <button
           disabled={busy}
-          onClick={() => void submit("reviewer", "reviewer-demo")}
+          onClick={() => chooseAccount("reviewer")}
         >
           <ShieldCheck size={20} />
           <span>
-            <strong>Demo reviewer</strong>
+            <strong>Use reviewer account</strong>
             <small>Review & manage demo</small>
           </span>
           <ArrowRight size={16} />
         </button>
       </div>
       <p className="login-notice">
-        <LockKeyhole size={13} /> Credentials remain in memory for this session.
+        <LockKeyhole size={13} /> Enter the configured account password. Credentials stay in memory.
       </p>
     </div>
   );
   if (modal)
     return (
-      <div className="modal-backdrop">
-        <section
-          className="modal auth-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Switch account"
+      <Dialog
+        className="modal auth-modal"
+        label="Switch account"
+        initialFocus="input"
+        returnFocus="[data-account-menu-trigger]"
+        onClose={() => onClose?.()}
+      >
+        <button
+          className="icon-button modal-close"
+          onClick={onClose}
+          aria-label="Close account switcher"
         >
-          <button
-            className="icon-button modal-close"
-            onClick={onClose}
-            aria-label="Close account switcher"
-          >
-            <X size={20} />
-          </button>
-          {form}
-        </section>
-      </div>
+          <X size={20} />
+        </button>
+        {form}
+      </Dialog>
     );
   return (
     <main className="login-page">

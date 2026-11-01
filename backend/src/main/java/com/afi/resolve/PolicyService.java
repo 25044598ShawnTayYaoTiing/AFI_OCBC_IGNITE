@@ -25,6 +25,23 @@ public class PolicyService {
               + " package");
   }
 
+  public static void requireDocumentSimulation(
+      Map<String, Object> simulation,
+      Map<String, Object> submission,
+      String rules,
+      Map<String, Object> candidate) {
+    if (!Boolean.TRUE.equals(simulation.get("safeAdministrativeAttachment"))
+        || !Objects.equals(simulation.get("revision"), submission.get("revision"))
+        || !Objects.equals(simulation.get("ruleSet"), rules)
+        || !Objects.equals(simulation.get("candidateDocumentId"), candidate.get("id"))
+        || !Objects.equals(simulation.get("candidateVersionId"), candidate.get("version_id")))
+      throw new ApiException(
+          409,
+          "UNSAFE_DOCUMENT_SIMULATION",
+          "Attachment simulation is unsafe, stale or does not identify the current authorised"
+              + " version");
+  }
+
   public static boolean blockingDocumentCheck(Map<String, Object> check) {
     return Boolean.FALSE.equals(check.get("passed"))
         && ("BLOCKING".equals(check.get("severity"))

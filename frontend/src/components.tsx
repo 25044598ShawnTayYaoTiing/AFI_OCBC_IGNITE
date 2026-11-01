@@ -16,11 +16,26 @@ import {
 } from "lucide-react";
 import { dateTime, detailText, label } from "./api";
 import type { Audit, Case } from "./api";
-export function Badge({ value }: { value: string }) {
+export function Badge({ value, text }: { value: string; text?: string }) {
+  const names: Record<string, string> = {
+    OPERATIONS: "With Operations",
+    CORRECTION_REQUIRED: "Needs correction",
+    HUMAN_REVIEW: "Needs review",
+    PENDING_VALIDATION: "Awaiting validation",
+    GEMINI: "Live Gemini",
+    DETERMINISTIC_FALLBACK: "Rule-based fallback",
+    SYNTHETIC_TEMPLATE: "Template extraction",
+    AWAITING_CORRECTION: "Awaiting correction",
+    CORRECTION_SUBMITTED: "Updated document received",
+    SNAPSHOT_OUTDATED: "Earlier snapshot",
+    READY_TO_ROUTE: "Ready for Operations",
+    HUMAN_INTERVENTION: "Human action needed",
+    POLICY_CONTROLLED: "Automatic action",
+  };
   return (
     <span className={`badge badge-${value.toLowerCase()}`}>
       <span />
-      {label(value)}
+      {text || names[value] || label(value)}
     </span>
   );
 }
@@ -32,7 +47,7 @@ export function PageHeader({
 }: {
   eyebrow?: string;
   title: string;
-  description: string;
+  description?: string;
   children?: ReactNode;
 }) {
   return (
@@ -40,7 +55,7 @@ export function PageHeader({
       <div>
         {eyebrow && <div className="eyebrow">{eyebrow}</div>}
         <h1>{title}</h1>
-        <p>{description}</p>
+        {description && <p>{description}</p>}
       </div>
       <div className="header-actions">{children}</div>
     </header>
@@ -126,6 +141,22 @@ export function ErrorBox({
     </div>
   );
 }
+export function ResourceState({
+  error,
+  loading,
+  retry,
+  children,
+}: {
+  error?: string;
+  loading: boolean;
+  retry?: () => void;
+  children: ReactNode;
+}) {
+  if (error) return <ErrorBox message={error} retry={retry} />;
+  if (loading) return <Loading />;
+  return <>{children}</>;
+}
+
 export function Notice({
   children,
   success = false,
@@ -251,7 +282,10 @@ export function CaseTable({
           {items.map((item) => (
             <tr key={item.id}>
               <td>
-                <Link className="case-title" to={`/legacy/exceptions/${item.id}`}>
+                <Link
+                  className="case-title"
+                  to={`/legacy/exceptions/${item.id}`}
+                >
                   {item.id}
                   <ArrowUpRight size={13} />
                 </Link>

@@ -1,5 +1,13 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { NavLink, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import {
   Activity,
   Bell,
@@ -8,7 +16,6 @@ import {
   CircleHelp,
   ClipboardCheck,
   FileBarChart2,
-  FileClock,
   GitBranch,
   LayoutDashboard,
   ListFilter,
@@ -19,7 +26,6 @@ import {
   Search,
   Settings2,
   ShieldCheck,
-  Sparkles,
   X,
 } from "lucide-react";
 import { AuthContext, Brand, Login, isReviewer } from "./auth";
@@ -39,7 +45,9 @@ const Investigations = lazy(() =>
   })),
 );
 const ReportsPage = lazy(() =>
-  import("./pages/Operations").then((pages) => ({ default: pages.ReportsPage })),
+  import("./pages/Operations").then((pages) => ({
+    default: pages.ReportsPage,
+  })),
 );
 const ExceptionDetail = lazy(() =>
   import("./pages/Operations").then((pages) => ({
@@ -57,74 +65,162 @@ const ResolutionPage = lazy(() =>
 const AuditPage = lazy(() =>
   import("./pages/Workflows").then((pages) => ({ default: pages.AuditPage })),
 );
-const SettingsPage = lazy(() =>
+const LegacySettingsPage = lazy(() =>
   import("./pages/Workflows").then((pages) => ({
     default: pages.SettingsPage,
   })),
 );
-import { DocumentOverview, DocumentQueue, NewDocumentSubmission, DocumentWorkspace, DocumentReports, DocumentAudit, DocumentDemo, ValidationRules } from "./pages/Documents";
-import type { Submission } from "./pages/Documents";
+import {
+  DocumentOverview,
+  DocumentQueue,
+  NewDocumentSubmission,
+  DocumentWorkspace,
+  DocumentReports,
+  DocumentAudit,
+  DocumentDemo,
+} from "./pages/Documents";
+import type { Submission } from "./document-types";
+import { SettingsWorkspace } from "./pages/Settings";
+import { Dialog } from "./ui";
 const navigationGroups = [
-  { title: "Overview", items: [{ to: "/", label: "Operations Overview", icon: LayoutDashboard }] },
-  { title: "Document Operations", items: [
-    { to: "/submissions", label: "Document Submissions", icon: Boxes },
-    { to: "/new", label: "New Submission", icon: ClipboardCheck },
-    { to: "/investigations", label: "Validation & Investigations", icon: Sparkles },
-    { to: "/exceptions", label: "Exception Queue", icon: ListFilter },
-    { to: "/corrections", label: "Corrections & Resubmissions", icon: FileClock },
-    { to: "/preflight", label: "Preflight Simulator", icon: ShieldCheck },
-    { to: "/operations", label: "Operations Review", icon: ClipboardCheck },
-  ]},
-  { title: "Insights", items: [
-    { to: "/reports", label: "Reports & Analytics", icon: FileBarChart2 },
-    { to: "/audit", label: "Audit Trail", icon: FileClock },
-  ]},
-  { title: "Administration", items: [{ to: "/settings", label: "Settings", icon: Settings2 }] },
-  { title: "Demonstration", items: [
-    { to: "/demo", label: "Demo Environment", icon: Activity },
-    { to: "/legacy", label: "Legacy Recovery Demo", icon: GitBranch },
-  ]},
+  {
+    title: "",
+    items: [
+      { to: "/", label: "Overview", icon: LayoutDashboard },
+      { to: "/submissions", label: "Submissions", icon: Boxes },
+      { to: "/exceptions", label: "Exceptions", icon: ListFilter },
+      { to: "/operations", label: "Operations", icon: ClipboardCheck },
+      { to: "/reports", label: "Reports", icon: FileBarChart2 },
+      { to: "/settings", label: "Settings", icon: Settings2 },
+    ],
+  },
 ];
+const aliases: Record<string, string> = {
+  "/new": "/submissions",
+  "/investigations": "/submissions",
+  "/corrections": "/submissions",
+  "/preflight": "/submissions",
+  "/audit": "/reports",
+};
 
 function GlobalSearch() {
   const [query, setQuery] = useState("");
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  const region = useRef<HTMLDivElement>(null);
+  const resultsId = useId();
   const location = useLocation();
-  useEffect(() => setOpen(false), [location.pathname]);
+  useEffect(() => {
+    setOpen(false);
+  }, [location.pathname]);
   useEffect(() => {
     const timer = window.setTimeout(() => setSearch(query.trim()), 250);
     return () => window.clearTimeout(timer);
   }, [query]);
-  const results = useResource<Submission[]>("/api/documents/submissions", 15000);
-  const matches = (results.data || []).filter(c => `${c.customer_name} ${c.customer_reference} ${c.id}`.toLowerCase().includes(search.toLowerCase())).slice(0,5);
+  const results = useResource<Submission[]>(
+    "/api/documents/submissions",
+    15000,
+  );
+  const matches = (results.data || [])
+    .filter((c) =>
+      `${c.customer_name} ${c.customer_reference} ${c.id}`
+        .toLowerCase()
+        .includes(search.toLowerCase()),
+    )
+    .slice(0, 5);
   return (
-    <div className="global-search" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false); }}>
-      <Search size={16} />
+    <div
+      className="global-search"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+          setOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+          input.current?.focus();
+        }
+        if (!open) return;
+        const links = Array.from(
+          region.current?.querySelectorAll<HTMLAnchorElement>("a[href]") || [],
+        );
+        const index = links.indexOf(
+          document.activeElement as HTMLAnchorElement,
+        );
+        if (event.key === "ArrowDown" && links.length) {
+          event.preventDefault();
+          links[(index + 1) % links.length].focus();
+        }
+        if (event.key === "ArrowUp" && links.length) {
+          event.preventDefault();
+          if (index <= 0) input.current?.focus();
+          else links[index - 1].focus();
+        }
+      }}
+    >
+      <Search size={16} aria-hidden="true" />
       <input
+        ref={input}
+        type="search"
         aria-label="Search document submissions"
-        placeholder="Search customer submissions"
+        aria-controls={open && query.trim() ? resultsId : undefined}
+        placeholder="Search customer or reference"
         value={query}
         onChange={(event) => {
           setQuery(event.target.value);
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
-        }}
       />
-      {query && <button aria-label="Clear search" onClick={() => setQuery("")}><X size={14} /></button>}
+      {query && (
+        <button
+          aria-label="Clear search"
+          onClick={() => {
+            setQuery("");
+            input.current?.focus();
+          }}
+        >
+          <X size={16} />
+        </button>
+      )}
       {open && query.trim() && (
-        <div className="search-results" role="listbox" aria-label="Matching cases">
-          {results.loading ? <Loading text="Searching cases…" /> : results.error ? (
-            <ErrorBox message={results.error} />
-          ) : matches.length ? matches.map((item) => (
-            <NavLink key={item.id} to={`/submissions/${item.id}`} onClick={() => setOpen(false)}>
-              <span className="search-result-main"><strong>{item.customer_name}</strong><small>{item.customer_reference} · {label(item.status)}</small></span>
-              
-            </NavLink>
-          )) : <p className="search-empty">No matching cases</p>}
+        <div
+          id={resultsId}
+          ref={region}
+          className="search-results"
+          role="region"
+          aria-label="Matching cases"
+        >
+          {results.error ? (
+            <ErrorBox
+              message={results.error}
+              retry={() => void results.refresh()}
+            />
+          ) : results.loading || search !== query.trim() ? (
+            <Loading text="Searching cases..." />
+          ) : matches.length ? (
+            matches.map((item) => (
+              <NavLink
+                key={item.id}
+                to={`/submissions/${item.id}`}
+                onClick={() => setOpen(false)}
+              >
+                <span className="search-result-main">
+                  <strong>{item.customer_name}</strong>
+                  <small>
+                    {item.customer_reference} / {label(item.status)}
+                  </small>
+                </span>
+              </NavLink>
+            ))
+          ) : (
+            <p className="search-empty" role="status">
+              No matching cases. Try a customer name or reference.
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -135,30 +231,138 @@ function NotificationCenter() {
   const [open, setOpen] = useState(false);
   const activity = useResource<Audit[]>("/api/documents/audit", 30000);
   const cases = useResource<Submission[]>("/api/documents/submissions", 30000);
-  const preferences = readNotificationPreferences();
+  const [preferences, setPreferences] = useState(readNotificationPreferences);
+  useEffect(() => {
+    const update = () => setPreferences(readNotificationPreferences());
+    window.addEventListener("afi-preferences-changed", update);
+    return () => window.removeEventListener("afi-preferences-changed", update);
+  }, []);
   const notices = useMemo(() => {
-    if (!preferences.critical && !preferences.approvals) return [];
-    return (cases.data || []).filter(c => c.status === 'CORRECTION_REQUIRED' || c.status === 'HUMAN_REVIEW').slice(0,8).map(c => ({
-      id: c.id, title: label(c.status), detail: c.customer_name, to: `/submissions/${c.id}`, time: c.created_at, tone: 'pending'
-    }));
-  }, [cases.data, preferences.critical, preferences.approvals]);
+    const entries = (cases.data || [])
+      .filter(
+        (c) =>
+          (c.status === "CORRECTION_REQUIRED" && preferences.critical) ||
+          (c.status === "HUMAN_REVIEW" && preferences.approvals),
+      )
+      .map((c) => ({
+        id: c.id,
+        title: label(c.status),
+        detail: c.customer_name,
+        to: `/submissions/${c.id}?tab=exceptions`,
+        time: c.created_at,
+        tone: "pending",
+      }));
+    for (const event of activity.data || []) {
+      const failed =
+        /AUTOMATION_(FAILED|BLOCKED)|POLICY_BLOCKED/.test(event.eventType) &&
+        preferences.failed;
+      const verification =
+        /VERIFICATION_FAILED/.test(event.eventType) && preferences.verification;
+      if (failed || verification)
+        entries.push({
+          id: event.id,
+          title: label(event.eventType.replace("DOCUMENT_", "")),
+          detail: "Review the recorded outcome",
+          to: event.exceptionId
+            ? `/submissions/${event.exceptionId}?tab=automation`
+            : "/audit",
+          time: event.timestamp,
+          tone: "critical",
+        });
+    }
+    return entries.sort((a, b) => b.time.localeCompare(a.time)).slice(0, 8);
+  }, [
+    cases.data,
+    activity.data,
+    preferences.critical,
+    preferences.approvals,
+    preferences.failed,
+    preferences.verification,
+  ]);
   return (
-    <div className="notification-menu">
-      <button className="icon-button notification-button" aria-label={`Notifications${notices.length ? `, ${notices.length} requiring attention` : ""}`} aria-expanded={open} onClick={() => setOpen(!open)}>
-        <Bell size={18} />{notices.length > 0 && <span className="notification-count">{notices.length > 9 ? "9+" : notices.length}</span>}
+    <div
+      className="notification-menu"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+          setOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.stopPropagation();
+          setOpen(false);
+          event.currentTarget
+            .querySelector<HTMLButtonElement>("button")
+            ?.focus();
+        }
+      }}
+    >
+      <button
+        className="icon-button notification-button"
+        aria-label={`Notifications${activity.error || cases.error ? ", data unavailable" : notices.length ? `, ${notices.length} requiring attention` : ""}`}
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        <Bell size={18} />
+        {!activity.error && !cases.error && notices.length > 0 && (
+          <span className="notification-count">
+            {notices.length > 9 ? "9+" : notices.length}
+          </span>
+        )}
       </button>
-      {open && <section className="notification-popover" aria-label="Notifications">
-        <header><div><strong>Notifications</strong><small>From current case and audit data</small></div><button className="icon-button" aria-label="Close notifications" onClick={() => setOpen(false)}><X size={16} /></button></header>
-        {activity.error && <ErrorBox message={activity.error} retry={() => void activity.refresh()} />}
-        {activity.loading && cases.loading ? <Loading text="Loading notifications…" /> : notices.length ? notices.map((notice) => (
-          <NavLink key={notice.id} to={notice.to} onClick={() => setOpen(false)} className="notification-item">
-            <span className={`notification-marker ${notice.tone}`} />
-            <span><strong>{notice.title}</strong><small>{notice.detail}</small></span>
-            {notice.time && <time>{dateTime(notice.time)}</time>}
+      {open && (
+        <section className="notification-popover" aria-label="Notifications">
+          <header>
+            <div>
+              <strong>Notifications</strong>
+              <small>From current case and audit data</small>
+            </div>
+            <button
+              className="icon-button"
+              aria-label="Close notifications"
+              onClick={() => setOpen(false)}
+            >
+              <X size={16} />
+            </button>
+          </header>
+          {activity.error || cases.error ? (
+            <ErrorBox
+              message={activity.error || cases.error}
+              retry={() =>
+                void Promise.all([activity.refresh(), cases.refresh()])
+              }
+            />
+          ) : activity.loading || cases.loading ? (
+            <Loading text="Loading notifications…" />
+          ) : notices.length ? (
+            notices.map((notice) => (
+              <NavLink
+                key={notice.id}
+                to={notice.to}
+                onClick={() => setOpen(false)}
+                className="notification-item"
+              >
+                <span className={`notification-marker ${notice.tone}`} />
+                <span>
+                  <strong>{notice.title}</strong>
+                  <small>{notice.detail}</small>
+                </span>
+                {notice.time && <time>{dateTime(notice.time)}</time>}
+              </NavLink>
+            ))
+          ) : (
+            <p className="notification-empty">
+              No priority notifications from the current data.
+            </p>
+          )}
+          <NavLink
+            className="notification-footer"
+            to="/audit"
+            onClick={() => setOpen(false)}
+          >
+            Review audit trail
           </NavLink>
-        )) : <p className="notification-empty">No priority notifications from the current data.</p>}
-        <NavLink className="notification-footer" to="/audit" onClick={() => setOpen(false)}>Review audit trail</NavLink>
-      </section>}
+        </section>
+      )}
     </div>
   );
 }
@@ -168,7 +372,31 @@ export default function App() {
   const [sidebar, setSidebar] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
+  const userMenuTrigger = useRef<HTMLButtonElement>(null);
+  const [isMobile, setIsMobile] = useState(
+    () => window.matchMedia("(max-width: 760px)").matches,
+  );
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const update = () => {
+      setIsMobile(media.matches);
+      if (!media.matches) setSidebar(false);
+    };
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
   const location = useLocation();
+  const navigationType = useNavigationType();
+  const previousPage = useRef({ pathname: location.pathname, username: session?.username });
+  useEffect(() => {
+    const previous = previousPage.current;
+    const userChanged = previous.username !== session?.username;
+    const pageChanged = previous.pathname !== location.pathname;
+    previousPage.current = { pathname: location.pathname, username: session?.username };
+    if (!session || (!userChanged && (!pageChanged || navigationType === "POP"))) return;
+    window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    document.getElementById("main-content")?.focus({ preventScroll: true });
+  }, [location.pathname, session?.username, navigationType]);
   useEffect(() => {
     applyUiPreferences();
     const update = () => applyUiPreferences();
@@ -182,8 +410,74 @@ export default function App() {
   }, []);
   if (!session) return <Login onSuccess={setSession} />;
   const navigation = navigationGroups.flatMap((group) => group.items);
-  const current = navigation.find((n) => n.to === "/" ? location.pathname === "/" : location.pathname.startsWith(n.to));
-  const currentLabel = location.pathname === "/settings" ? "Settings" : location.pathname.startsWith("/exceptions/") ? "Case details" : current?.label || "Workspace";
+  const navigationPath = aliases[location.pathname] || location.pathname;
+  const current = navigation.find((n) =>
+    n.to === "/" ? navigationPath === "/" : navigationPath.startsWith(n.to),
+  );
+  const currentLabel = location.pathname.startsWith("/legacy")
+    ? "Legacy recovery"
+    : location.pathname === "/demo"
+      ? "Demo environment"
+      : location.pathname === "/settings"
+        ? "Settings"
+        : location.pathname.startsWith("/exceptions/")
+          ? "Case details"
+          : current?.label || "Workspace";
+  const navigationContent = (
+    <>
+      <div className="sidebar-brand">
+        <Brand compact />
+        <button
+          className="icon-button mobile-close"
+          aria-label="Close menu"
+          onClick={() => setSidebar(false)}
+        >
+          <X size={20} />
+        </button>
+      </div>
+      <nav aria-label="Main navigation" className="grouped-navigation">
+        {navigationGroups.map((group) => (
+          <div className="nav-section" key={group.title}>
+            {group.title && <p className="nav-group-label">{group.title}</p>}
+            {group.items.map((item) => (
+              <NavLink
+                key={item.to}
+                end={item.to === "/"}
+                to={item.to}
+                title={item.label}
+                onClick={() => setSidebar(false)}
+                className={({ isActive }) =>
+                  `nav-item ${isActive || aliases[location.pathname] === item.to ? "active" : ""}`
+                }
+              >
+                <item.icon size={18} />
+                <span>{item.label}</span>
+              </NavLink>
+            ))}
+          </div>
+        ))}
+      </nav>
+      <div className="sidebar-bottom">
+        <NavLink
+          to="/demo"
+          className="nav-item"
+          onClick={() => setSidebar(false)}
+        >
+          <Activity size={17} />
+          <span>Demo environment</span>
+        </NavLink>
+        <NavLink
+          to="/legacy"
+          className="nav-item"
+          onClick={() => setSidebar(false)}
+        >
+          <GitBranch size={17} />
+          <span>Legacy recovery</span>
+        </NavLink>
+        <p className="sidebar-version">AFI Resolve 2.0</p>
+      </div>
+    </>
+  );
   return (
     <AuthContext.Provider
       value={{
@@ -194,78 +488,91 @@ export default function App() {
         },
       }}
     >
-      <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <div
+        className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && userMenu) {
+            event.preventDefault();
+            event.stopPropagation();
+            setUserMenu(false);
+            userMenuTrigger.current?.focus();
+          }
+        }}
+      >
         <a className="skip-link" href="#main-content">
           Skip to content
         </a>
-        {sidebar && (
-          <button
-            className="sidebar-scrim"
-            aria-label="Close navigation"
-            onClick={() => setSidebar(false)}
-          />
+        {isMobile ? (
+          <Dialog
+            open={sidebar}
+            id="workspace-navigation"
+            className="sidebar sidebar-open navigation-dialog"
+            label="Workspace navigation"
+            onClose={() => setSidebar(false)}
+          >
+            {navigationContent}
+          </Dialog>
+        ) : (
+          <aside id="workspace-navigation" className="sidebar">
+            {navigationContent}
+          </aside>
         )}
-        <aside className={`sidebar ${sidebar ? "sidebar-open" : ""}`}>
-          <div className="sidebar-brand">
-            <Brand />
-            <button
-              className="icon-button mobile-close"
-              aria-label="Close menu"
-              onClick={() => setSidebar(false)}
-            >
-              <X size={20} />
-            </button>
-          </div>
-          <div className="workspace-label">
-            <span className="workspace-icon">
-              <GitBranch size={16} />
-            </span>
-            <div>
-              <strong>AFI Operations</strong>
-              <small>Team AFI · Synthetic</small>
-            </div>
-            <ChevronDown size={14} />
-          </div>
-          <nav aria-label="Main navigation" className="grouped-navigation">
-            {navigationGroups.map((group) => (
-              <div className="nav-section" key={group.title}>
-                <p className="nav-group-label">{group.title}</p>
-                {group.items.map((item) => (
-                  <NavLink key={item.to} end={item.to === "/"} to={item.to} title={item.label} onClick={() => setSidebar(false)} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}>
-                    <item.icon size={18} /><span>{item.label}</span>
-                  </NavLink>
-                ))}
-              </div>
-            ))}
-          </nav>
-          <div className="sidebar-bottom">
-            <div className="sidebar-version">
-              <Activity size={13} /><span>AFI Resolve</span><span>v2.0</span>
-            </div>
-          </div>
-        </aside>
         <div className="main-wrapper">
           <header className="topbar">
             <div className="topbar-left">
-              <button className="icon-button desktop-sidebar-toggle" aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
-                {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+              <button
+                className="icon-button desktop-sidebar-toggle"
+                aria-label={
+                  sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"
+                }
+                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              >
+                {sidebarCollapsed ? (
+                  <PanelLeftOpen size={18} />
+                ) : (
+                  <PanelLeftClose size={18} />
+                )}
               </button>
               <div className="breadcrumb">
-                <button className="icon-button mobile-menu" onClick={() => setSidebar(true)} aria-label="Open navigation"><Menu size={20} /></button>
-                <span>Workspace</span><span className="breadcrumb-divider">/</span><strong>{currentLabel}</strong>
+                <button
+                  className="icon-button mobile-menu"
+                  onClick={() => setSidebar(true)}
+                  aria-label="Open navigation"
+                  aria-expanded={sidebar}
+                  aria-controls="workspace-navigation"
+                >
+                  <Menu size={20} />
+                </button>
+                <span>Workspace</span>
+                <span className="breadcrumb-divider">/</span>
+                <strong>{currentLabel}</strong>
               </div>
             </div>
+            <GlobalSearch key={session.username} />
             <div className="topbar-right">
-              <GlobalSearch key={session.username} />
               <span className="demo-tag">
                 <span />
                 Synthetic demo
               </span>
               <span className="topbar-divider" />
               <NotificationCenter key={session.username} />
-              <div className="user-menu">
+              <div
+                className="user-menu"
+                onBlur={(event) => {
+                  if (
+                    !event.currentTarget.contains(
+                      event.relatedTarget as Node | null,
+                    )
+                  )
+                    setUserMenu(false);
+                }}
+              >
                 <button
                   className="user-button"
+                  ref={userMenuTrigger}
+                  data-account-menu-trigger
+                  aria-label={`Account menu for ${session.username}`}
                   onClick={() => setUserMenu(!userMenu)}
                   aria-expanded={userMenu}
                 >
@@ -275,18 +582,56 @@ export default function App() {
                   <span className="user-info">
                     <strong>{session.username}</strong>
                     <small>
-                      {isReviewer(session) ? "Reviewer" : "Relationship manager"}
+                      {isReviewer(session)
+                        ? "Reviewer"
+                        : "Relationship manager"}
                     </small>
                   </span>
                   <ChevronDown size={14} />
                 </button>
                 {userMenu && (
                   <div className="user-popover">
-                    <NavLink className="user-popover-link" to="/settings#profile" onClick={() => setUserMenu(false)}><Activity size={16} />My profile</NavLink>
-                    <NavLink className="user-popover-link" to="/settings#preferences" onClick={() => setUserMenu(false)}><Settings2 size={16} />Preferences</NavLink>
-                    <NavLink className="user-popover-link" to="/settings" onClick={() => setUserMenu(false)}><Settings2 size={16} />Settings</NavLink>
-                    <NavLink className="user-popover-link" to="/settings#about" onClick={() => setUserMenu(false)}><CircleHelp size={16} />About AFI Resolve</NavLink>
-                    <button onClick={() => { setSwitching(true); setUserMenu(false); }}><Activity size={16} />Switch account</button>
+                    <NavLink
+                      className="user-popover-link"
+                      to="/settings?section=general"
+                      onClick={() => setUserMenu(false)}
+                    >
+                      <Activity size={16} />
+                      My profile
+                    </NavLink>
+                    <NavLink
+                      className="user-popover-link"
+                      to="/settings?section=appearance"
+                      onClick={() => setUserMenu(false)}
+                    >
+                      <Settings2 size={16} />
+                      Preferences
+                    </NavLink>
+                    <NavLink
+                      className="user-popover-link"
+                      to="/settings"
+                      onClick={() => setUserMenu(false)}
+                    >
+                      <Settings2 size={16} />
+                      Settings
+                    </NavLink>
+                    <NavLink
+                      className="user-popover-link"
+                      to="/settings?section=about"
+                      onClick={() => setUserMenu(false)}
+                    >
+                      <CircleHelp size={16} />
+                      About AFI Resolve
+                    </NavLink>
+                    <button
+                      onClick={() => {
+                        setSwitching(true);
+                        setUserMenu(false);
+                      }}
+                    >
+                      <Activity size={16} />
+                      Switch account
+                    </button>
                     <button
                       onClick={() => {
                         clearSession();
@@ -304,6 +649,7 @@ export default function App() {
           </header>
           <main
             id="main-content"
+            tabIndex={-1}
             className="main-content"
             key={session.username}
           >
@@ -312,24 +658,115 @@ export default function App() {
                 <Route path="/" element={<DocumentOverview />} />
                 <Route path="/submissions" element={<DocumentQueue />} />
                 <Route path="/new" element={<NewDocumentSubmission />} />
-                <Route path="/submissions/:id" element={<DocumentWorkspace />} />
-                <Route path="/investigations" element={<DocumentQueue mode="investigations" />} />
-                <Route path="/exceptions" element={<DocumentQueue mode="exceptions" />} />
-                <Route path="/corrections" element={<DocumentQueue mode="corrections" />} />
-                <Route path="/preflight" element={<DocumentQueue mode="preflight" />} />
-                <Route path="/operations" element={<DocumentQueue mode="operations" />} />
+                <Route
+                  path="/submissions/:id"
+                  element={<DocumentWorkspace />}
+                />
+                <Route
+                  path="/investigations"
+                  element={<DocumentQueue mode="investigations" />}
+                />
+                <Route
+                  path="/exceptions"
+                  element={<DocumentQueue mode="exceptions" />}
+                />
+                <Route
+                  path="/corrections"
+                  element={<DocumentQueue mode="corrections" />}
+                />
+                <Route
+                  path="/preflight"
+                  element={<DocumentQueue mode="preflight" />}
+                />
+                <Route
+                  path="/operations"
+                  element={<DocumentQueue mode="operations" />}
+                />
                 <Route path="/reports" element={<DocumentReports />} />
                 <Route path="/audit" element={<DocumentAudit />} />
                 <Route path="/demo" element={<DocumentDemo />} />
-                <Route path="/settings" element={<><ValidationRules /><SettingsPage /></>} />
-                <Route path="/legacy" element={<><LegacyNavigation /><Overview /></>} />
-                <Route path="/legacy/exceptions" element={<><LegacyNavigation /><Exceptions /></>} />
-                <Route path="/legacy/exceptions/:id" element={<><LegacyNavigation /><ExceptionDetail /></>} />
-                <Route path="/legacy/investigations" element={<><LegacyNavigation /><Investigations /></>} />
-                <Route path="/legacy/reports" element={<><LegacyNavigation /><ReportsPage /></>} />
-                <Route path="/legacy/twin" element={<><LegacyNavigation /><Twin /></>} />
-                <Route path="/legacy/resolutions" element={<><LegacyNavigation /><ResolutionPage /></>} />
-                <Route path="/legacy/audit" element={<><LegacyNavigation /><AuditPage /></>} />
+                <Route path="/settings" element={<SettingsWorkspace />} />
+                <Route
+                  path="/legacy"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <Overview />
+                    </>
+                  }
+                />
+                <Route
+                  path="/legacy/exceptions"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <Exceptions />
+                    </>
+                  }
+                />
+                <Route
+                  path="/legacy/exceptions/:id"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <ExceptionDetail />
+                    </>
+                  }
+                />
+                <Route
+                  path="/legacy/investigations"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <Investigations />
+                    </>
+                  }
+                />
+                <Route
+                  path="/legacy/reports"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <ReportsPage />
+                    </>
+                  }
+                />
+                <Route
+                  path="/legacy/twin"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <Twin />
+                    </>
+                  }
+                />
+                <Route
+                  path="/legacy/resolutions"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <ResolutionPage />
+                    </>
+                  }
+                />
+                <Route
+                  path="/legacy/tools"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <LegacySettingsPage demoOnly />
+                    </>
+                  }
+                />
+                <Route
+                  path="/legacy/audit"
+                  element={
+                    <>
+                      <LegacyNavigation />
+                      <AuditPage />
+                    </>
+                  }
+                />
                 <Route
                   path="*"
                   element={
@@ -365,4 +802,24 @@ export default function App() {
   );
 }
 
-function LegacyNavigation() {return <div className="doc-legacy-nav"><strong>Legacy transaction recovery</strong>{[['/legacy','Overview'],['/legacy/exceptions','Exceptions'],['/legacy/investigations','Investigations'],['/legacy/twin','Digital twin'],['/legacy/resolutions','Approvals'],['/legacy/audit','Audit'],['/legacy/reports','Reports']].map(([to,title])=><NavLink key={to} to={to}>{title}</NavLink>)}</div>;}
+function LegacyNavigation() {
+  return (
+    <div className="doc-legacy-nav">
+      <strong>Legacy transaction recovery</strong>
+      {[
+        ["/legacy", "Overview"],
+        ["/legacy/exceptions", "Exceptions"],
+        ["/legacy/investigations", "Investigations"],
+        ["/legacy/twin", "Digital twin"],
+        ["/legacy/resolutions", "Approvals"],
+        ["/legacy/audit", "Audit"],
+        ["/legacy/reports", "Reports"],
+        ["/legacy/tools", "Demo controls"],
+      ].map(([to, title]) => (
+        <NavLink key={to} to={to}>
+          {title}
+        </NavLink>
+      ))}
+    </div>
+  );
+}

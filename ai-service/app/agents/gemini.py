@@ -3,10 +3,7 @@
 API reference: https://googleapis.github.io/python-genai/#json-response-schema
 """
 
-import json
-
-from google import genai
-from google.genai import types
+from app.document_intelligence import generate
 
 from app.config import Settings
 from app.schemas import InvestigationRequest, InvestigationResponse, ModelInvestigation
@@ -39,25 +36,4 @@ def generate_investigation(
         "reported_evidence": request.evidence,
         "previous_incidents": request.previous_incidents,
     }
-    with genai.Client(
-        api_key=settings.gemini_api_key,
-        http_options=types.HttpOptions(
-            timeout=settings.gemini_timeout_ms,
-            retry_options=types.HttpRetryOptions(attempts=1),
-        ),
-    ) as client:
-        response = client.models.generate_content(
-            model=settings.gemini_model,
-            contents=json.dumps(payload, ensure_ascii=False),
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
-                response_mime_type="application/json",
-                response_json_schema=ModelInvestigation.model_json_schema(),
-                temperature=0,
-                max_output_tokens=4096,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-            ),
-        )
-    if not response.text:
-        raise ValueError("Gemini returned no structured response")
-    return ModelInvestigation.model_validate_json(response.text, strict=True)
+    return generate(ModelInvestigation, payload, SYSTEM_INSTRUCTION, settings)

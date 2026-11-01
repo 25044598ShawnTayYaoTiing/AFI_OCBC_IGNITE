@@ -38,6 +38,8 @@ afi:
   rules-admin-password: ${RULES_ADMIN_PASSWORD:rules-admin-demo}
   document-storage: ${DOCUMENT_STORAGE:.local/documents}
   storage-provider: ${DOCUMENT_STORAGE_PROVIDER:local}
+  document-automation-enabled: ${DOCUMENT_AUTOMATION_ENABLED:true}
+  document-automation-max-attempts: ${DOCUMENT_AUTOMATION_MAX_ATTEMPTS:3}
   s3-bucket: ${S3_BUCKET:}
   s3-region: ${AWS_REGION:ap-southeast-1}
   s3-prefix: ${S3_DOCUMENT_PREFIX:documents/}

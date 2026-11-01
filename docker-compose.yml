@@ -21,7 +21,8 @@ services:
     environment:
       AI_SERVICE_KEY: ${AI_SERVICE_KEY:-afi-internal-demo-key}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      GEMINI_TIMEOUT_MS: ${GEMINI_TIMEOUT_MS:-30000}
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 10s
@@ -42,6 +43,8 @@ services:
       REVIEWER_PASSWORD: ${REVIEWER_PASSWORD:-reviewer-demo}
       RULES_ADMIN_PASSWORD: ${RULES_ADMIN_PASSWORD:-rules-admin-demo}
       DOCUMENT_STORAGE: /var/lib/afi/documents
+      DOCUMENT_AUTOMATION_ENABLED: ${DOCUMENT_AUTOMATION_ENABLED:-true}
+      DOCUMENT_AUTOMATION_MAX_ATTEMPTS: ${DOCUMENT_AUTOMATION_MAX_ATTEMPTS:-3}
     volumes:
       - document-files:/var/lib/afi/documents
     depends_on:

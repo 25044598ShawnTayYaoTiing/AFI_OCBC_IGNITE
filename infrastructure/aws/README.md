@@ -2,6 +2,10 @@
 
 This deployment uses Ubuntu 24.04, Docker Compose, private RDS PostgreSQL and the private S3 bucket. No deployment commands have been executed against AWS. The application continues to accept synthetic documents only.
 
+## Gemini and autonomous document resolution
+
+The same AWS environment injection now supports live Gemini extraction and investigation, with `gemini-3.1-flash-lite` as the configurable default. Backend document automation defaults to enabled and bounded attempts; see [the autonomous workflow guide](../../docs/autonomous-document-resolution.md). RDS TLS, EC2-role S3 storage and network boundaries are unchanged. No AWS deployment was performed.
+
 ## Configuration
 
 Use **both** Compose files for every AWS build, start, stop and log command:

@@ -8,6 +8,12 @@ The primary application validates related synthetic customer forms, reconciles c
 
 This is an independent student prototype using synthetic records only. It does not connect to OCBC, move money, change balances or post to a ledger.
 
+## Live Gemini and autonomous document resolution
+
+The document workflow now starts automatically after upload/replacement: live Gemini extraction, approved rule validation, cited investigation, safe preflight, policy-controlled supporting-document attachment, independent verification, correction-task updates and Operations routing. Missing customer declarations, signatures and unresolved conflicts still require source corrections.
+
+See [the complete live configuration and autonomous demonstration guide](docs/autonomous-document-resolution.md). FastAPI and the local launcher read the ignored private environment configuration; Compose injects it as environment variables. `GEMINI_MODEL` defaults to `gemini-3.1-flash-lite`. Settings displays live Gemini status without exposing credentials, and the case workspace shows actual investigation, simulation, execution and verification history.
+
 ## AWS EC2 deployment preparation
 
 An opt-in AWS override is available for the existing EC2 Ubuntu 24.04, private RDS PostgreSQL and private S3 bucket. It uses RDS `verify-full` TLS with the official CA bundle, temporary EC2 IAM role credentials for S3, private Docker API services, and public Nginx port 80. Local development continues to use the original Compose file and filesystem storage.
