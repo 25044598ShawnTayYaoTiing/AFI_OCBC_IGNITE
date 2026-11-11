@@ -1,5 +1,7 @@
 # AWS EC2 deployment preparation
 
+For SHA-tagged ECR builds, GitHub OIDC, manual deployment, rollback and the remaining integration gates, see [CI/CD and AWS integration activation](cicd.md). Existing runtime secrets and certificate volumes remain on EC2.
+
 This deployment uses Ubuntu 24.04, Docker Compose, private RDS PostgreSQL and the private S3 bucket. No deployment commands have been executed against AWS. The application continues to accept synthetic documents only.
 
 ## Gemini and autonomous document resolution
@@ -8,7 +10,9 @@ The same AWS environment injection now supports live Gemini extraction and inves
 
 ## Configuration
 
-Use **both** Compose files for every AWS build, start, stop and log command:
+The two-file commands below describe initial HTTP preparation. For the existing Caddy HTTPS deployment, include `docker-compose.https.yml` as the third file, or use the CI/CD deployment script. Do not recreate the current frontend with the HTTP-only port mapping while Caddy owns port 80.
+
+Initial HTTP preparation uses both base/AWS files:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.aws.yml ...
@@ -32,6 +36,8 @@ Docker Compose **2.24.4 or later** is required for `!override`. The AWS file rep
 | `AWS_CUSTOMER_PORTAL_ORIGINS` | `https://ocbc-customer-portal.vercel.app`; add only explicitly trusted preview origins, comma-separated |
 
 ## Customer portal connection
+
+For the generated private synthetic test credentials, follow [synthetic account activation](../../docs/synthetic-test-accounts.md). Its optional Compose override configures the existing reviewer identity; the helper provisions the customer through the existing API. Production activation requires approval.
 
 The RM frontend uses same-origin `/api/` requests through Nginx. Configure the Vercel project's `VITE_API_BASE_URL` to `https://<your-verified-backend-domain>/api/customer` and rebuild the portal after changing it. This is a public URL, not a secret. Set `AWS_CUSTOMER_PORTAL_ORIGINS` on EC2 to the exact Vercel origin above; the AWS Compose override defaults to that origin independently of local `CUSTOMER_PORTAL_ORIGINS`. Set `AWS_FRONTEND_ORIGIN` to the RM dashboard's exact HTTPS origin. Neither URL should contain credentials or a trailing slash.
 

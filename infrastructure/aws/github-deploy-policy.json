@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": "ecr:DescribeImages", "Resource": [
+      "arn:aws:ecr:ap-southeast-1:092004973012:repository/afi-resolve/backend",
+      "arn:aws:ecr:ap-southeast-1:092004973012:repository/afi-resolve/frontend",
+      "arn:aws:ecr:ap-southeast-1:092004973012:repository/afi-resolve/ai-service"
+    ]},
+    {"Effect": "Allow", "Action": ["ssm:DescribeInstanceInformation", "ssm:GetCommandInvocation"], "Resource": "*"},
+    {"Effect": "Allow", "Action": "ssm:SendCommand", "Resource": [
+      "arn:aws:ssm:ap-southeast-1:092004973012:document/AFI-ResolveDeploy",
+      "arn:aws:ec2:ap-southeast-1:092004973012:instance/i-0368a57f3e9ccafa7"
+    ]}
+  ]
+}

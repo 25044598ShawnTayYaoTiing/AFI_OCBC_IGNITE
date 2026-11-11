@@ -1,0 +1,9 @@
+{
+  "region": "ap-southeast-1",
+  "registry": "092004973012.dkr.ecr.ap-southeast-1.amazonaws.com",
+  "repository_prefix": "afi-resolve",
+  "project_name": "afi-resolve",
+  "compose_files": ["docker-compose.yml", "docker-compose.aws.yml", "docker-compose.https.yml"],
+  "env_files": [".env"],
+  "public_origin": "https://afi-ocbcignite.duckdns.org"
+}

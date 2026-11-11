@@ -1,4 +1,5 @@
 .env
+.deploy.json
 .env.*
 !.env.example
 node_modules/

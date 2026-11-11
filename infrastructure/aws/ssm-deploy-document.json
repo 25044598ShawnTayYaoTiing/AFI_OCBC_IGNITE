@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "2.2",
+  "description": "Deploy a reviewed AFI application image SHA on the existing instance.",
+  "parameters": {
+    "ImageTag": {"type": "String", "allowedPattern": "^([0-9a-f]{40}|rollback)$", "interpolationType": "ENV_VAR"},
+    "Services": {"type": "String", "allowedValues": ["all", "backend", "frontend", "ai-service"], "interpolationType": "ENV_VAR"}
+  },
+  "mainSteps": [{
+    "action": "aws:runShellScript",
+    "name": "deployReviewedImages",
+    "precondition": {"StringEquals": ["platformType", "Linux"]},
+    "inputs": {
+      "timeoutSeconds": "900",
+      "runCommand": ["set -eu", "test -n \"${SSM_ImageTag:-}\" && test -n \"${SSM_Services:-}\"", "runuser -u ubuntu -- python3 /opt/afi-resolve/scripts/aws/deploy.py \"$SSM_ImageTag\" --services \"$SSM_Services\""]
+    }
+  }]
+}

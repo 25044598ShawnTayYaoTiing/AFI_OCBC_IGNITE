@@ -1,0 +1,8 @@
+# Last image-selection override; existing AWS/HTTPS/environment files remain in use.
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?Select a previously built backend image}
+  frontend:
+    image: ${FRONTEND_IMAGE:?Select a previously built frontend image}
+  ai-service:
+    image: ${AI_SERVICE_IMAGE:?Select a previously built AI image}

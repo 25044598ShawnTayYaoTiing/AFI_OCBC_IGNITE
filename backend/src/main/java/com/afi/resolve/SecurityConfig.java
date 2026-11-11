@@ -3,6 +3,7 @@ package com.afi.resolve;
 import java.util.Arrays;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.*;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
@@ -44,11 +45,12 @@ public class SecurityConfig {
 
   @Bean
   @Order(1)
-  SecurityFilterChain customerSecurity(HttpSecurity http, CustomerSessions sessions)
+  SecurityFilterChain customerSecurity(HttpSecurity http, CustomerSessions sessions,
+      @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource)
       throws Exception {
     return http.securityMatcher("/api/customer/**")
         .csrf(c -> c.disable())
-        .cors(c -> {})
+        .cors(c -> c.configurationSource(corsSource))
         .sessionManagement(
             s ->
                 s.sessionCreationPolicy(
@@ -86,9 +88,10 @@ public class SecurityConfig {
 
   @Bean
   @Order(2)
-  SecurityFilterChain security(HttpSecurity http) throws Exception {
+  SecurityFilterChain security(HttpSecurity http,
+      @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource) throws Exception {
     return http.csrf(csrf -> csrf.disable())
-        .cors(cors -> {})
+        .cors(cors -> cors.configurationSource(corsSource))
         .sessionManagement(
             s ->
                 s.sessionCreationPolicy(

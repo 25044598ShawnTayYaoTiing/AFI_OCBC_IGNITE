@@ -25,6 +25,7 @@ import org.springframework.test.web.servlet.*;
 @SpringBootTest(
     properties = {
       "afi.demo-enabled=true",
+      "afi.customer-portal-origins=https://ocbc-customer-portal.vercel.app",
       "afi.operator-password=operator-demo",
       "afi.reviewer-password=reviewer-demo",
       "afi.rules-admin-password=rules-admin-demo"
@@ -188,6 +189,35 @@ class CustomerIntegrationTest {
                     .header("Authorization", "Bearer " + token))
             .andExpect(status().isOk())
             .andReturn());
+  }
+
+  @Test
+  void customerRoutingAndProductionPortalCorsStaySeparateFromStaffAuthentication() throws Exception {
+    var response = mvc.perform(
+            org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/customer/me"))
+        .andExpect(status().isUnauthorized())
+        .andReturn();
+    assertThat(json(response).path("message").asText()).isEqualTo("Sign in with a customer account");
+
+    var tokenRoute = mvc.perform(post("/api/customer/auth/token")
+            .contentType("application/json").content("{}"))
+        .andExpect(status().isUnauthorized()).andReturn();
+    assertThat(json(tokenRoute).path("code").asText()).isEqualTo("INVALID_CREDENTIALS");
+
+    var preflight = mvc.perform(options("/api/customer/auth/token")
+            .header("Origin", "https://ocbc-customer-portal.vercel.app")
+            .header("Access-Control-Request-Method", "POST")
+            .header("Access-Control-Request-Headers", "authorization,content-type,idempotency-key"))
+        .andExpect(status().isOk())
+        .andReturn().getResponse();
+    assertThat(preflight.getHeader("Access-Control-Allow-Origin"))
+        .isEqualTo("https://ocbc-customer-portal.vercel.app");
+    assertThat(preflight.getHeader("Access-Control-Allow-Headers").toLowerCase(Locale.ROOT))
+        .contains("authorization", "content-type", "idempotency-key");
+    mvc.perform(options("/api/customer/auth/token")
+            .header("Origin", "https://untrusted.example")
+            .header("Access-Control-Request-Method", "POST"))
+        .andExpect(status().isForbidden());
   }
 
   @Test

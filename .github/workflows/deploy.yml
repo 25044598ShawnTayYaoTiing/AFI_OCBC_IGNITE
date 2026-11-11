@@ -1,0 +1,68 @@
+name: AFI Resolve Deploy
+'on':
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: Previously published full main commit SHA, or rollback
+        required: true
+        type: string
+      services:
+        description: Application service to update; choose all for rollback
+        type: choice
+        options: [all, backend, frontend, ai-service]
+        default: all
+      transport:
+        description: SSM preferred; EIC requires approved network reachability and a pinned SSH host key
+        type: choice
+        options: [ssm, eic]
+        default: ssm
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+concurrency:
+  group: afi-resolve-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 25
+    env:
+      RELEASE_SHA: ${{ inputs.image_sha }}
+      SELECTED_SERVICES: ${{ inputs.services }}
+      DEPLOY_TRANSPORT: ${{ inputs.transport }}
+      AWS_REGION: ap-southeast-1
+      EC2_INSTANCE_ID: i-0368a57f3e9ccafa7
+      ECR_REPOSITORY_PREFIX: ${{ vars.ECR_REPOSITORY_PREFIX || 'afi-resolve' }}
+      EC2_SSH_HOST_KEY: ${{ vars.EC2_SSH_HOST_KEY }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Require a successful main CI run for the selected commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+          sha = os.environ['RELEASE_SHA']
+          if sha != 'rollback':
+              if not re.fullmatch('[0-9a-f]{40}', sha):
+                  raise SystemExit('Use a complete lowercase Git SHA or rollback.')
+              url = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/workflows/ci.yml/runs?event=push&head_sha={sha}&status=success&per_page=100"
+              req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  runs = json.load(response)['workflow_runs']
+              if not any(r['head_branch'] == 'main' and r['head_sha'] == sha and r['conclusion'] == 'success' for r in runs):
+                  raise SystemExit('Selected commit has no successful main CI run.')
+          PY
+      - uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100 # v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-southeast-1
+          allowed-account-ids: '092004973012'
+      - name: Deploy existing images without changing AWS infrastructure
+        run: python3 scripts/aws/dispatch_deployment.py
