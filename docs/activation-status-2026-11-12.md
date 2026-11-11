@@ -1,10 +1,14 @@
 # CI/CD activation status ? 12 November 2026
 
-Account `092004973012`, region `ap-southeast-1`, instance `i-0368a57f3e9ccafa7`, host `/opt/afi-resolve`. This is verified activation evidence, not a claim of application deployment or end-to-end success.
+Account `092004973012`, region `ap-southeast-1`, instance `i-0368a57f3e9ccafa7`, host `/opt/afi-resolve`. The dated preparation details below are historical; the current live result follows.
+
+The owner approved manual SSM deployment of commit `d8716c0e57dc2c2585708c24c0203a44c2d2046e`: backend first, then AI service and RM frontend. All three containers are healthy; Caddy remains running. Flyway V1–V4 succeeded with the reviewed checksums, and HTTPS, customer routing and exact-origin CORS checks pass. The previously approved reviewer password rotation and one synthetic customer account are active.
+
+The synthetic customer submitted one PDF through the portal. Case `DOC-5ab7b97f-1134-46d3-a179-37fcd46a5df6` is visible to the reviewer in the RM Dashboard, including its PDF preview. Read-only checks confirmed the linked RDS records, BCrypt customer password hash, an encrypted S3 object and a matching document hash. Extraction used deterministic fallback. The case is `CORRECTION_REQUIRED`, expected for the intentionally incomplete one-document package. The GitHub protected deployment workflow encountered `startup_failure`; the owner explicitly approved the manual SSM path. No credential values are recorded here.
 
 ## Approval ledger
 
-- Reviewer password rotation: previously approved, still pending application readiness.
+- Reviewer password rotation: approved and activated through the existing Compose override.
 - Scoped Phase 2 IAM/SSM additions: approved and completed.
 - Reviewed host helper bootstrap and existing-commit image publishing: approved and completed.
 - The owner's subsequent Demo-First instruction authorizes routine demo configuration, snapshots, application deployments, Vercel integration and synthetic activation. Do not repeat those approval requests. The existing GitHub production environment review remains required and must not be bypassed. Main has not been merged or pushed by this activation work.
@@ -59,10 +63,10 @@ Fresh pre-rollout snapshot `afi-resolve-pre-demo-20261112` is Available (100%). 
 - The old AI service lacks `/documents/status` and `/documents/investigate`, required by the reviewed document workflow. The current RM bundle also lacks Customer Portal source fields. Those image updates should follow backend health/routing verification if approved; do not rebuild or change infrastructure to work around missing endpoints.
 - AWS and Vercel CLI sessions were renewed and verified without printing credentials. The existing Vercel project `sleepy-shawn/ocbc-customer-portal` was reused, its Production `VITE_API_BASE_URL` corrected, and one production redeploy completed: `dpl_GaRMX3x9ioT3gBTUEgiyZ88JAorp`. The public login returns HTTPS 200; deployed asset `index-Cb4t7T5p.js` contains the correct full customer API and no old IP URL. No duplicate project was created.
 - The private activation file was transferred over SCP through an SSM port-forward using an ephemeral EIC key and a pinned host key. It is outside the checkout with mode 600; no secret was included in RunCommand parameters. The tunnel was terminated afterwards. The reviewed account Compose override and `.deploy.json` are prepared for the next backend deployment, with only REVIEWER_PASSWORD differing from the running backend configuration. Original `.env` and other staff settings are preserved. No rotation takes effect until the backend is recreated.
-- Customer/reviewer logins, a real synthetic upload, physical S3/RDS persistence and RM case review remain unverified. No account or reviewer password was activated, and no PDF was submitted.
+- Customer/reviewer logins, one synthetic upload, physical S3/RDS persistence and RM case visibility and PDF preview have since been verified as described above.
 
 ## Code review and next gates
 
 The Docker sudo compatibility fix, immutable trust templates and evidence are in [PR #1](https://github.com/25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE/pull/1), on the existing development branch. All six CI checks passed. The tested helper is installed on the host; no main merge is needed to deploy the previously published application images. Local deployment safety tests (including the new fallback) and Compose validation pass; no tests were weakened.
 
-Protected deployment run [43096377053](https://github.com/25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE/actions/runs/43096377053) was dispatched once for the already verified SHA, selecting all three application images because each old artifact lacks a required part of the workflow. It is queued; do not dispatch another run or use a direct host deployment to bypass GitHub review. Caddy, RDS and S3 resources are preserved. After successful rollout, run public readiness, provision the single existing synthetic identity via the existing API, submit one PDF through the browser, and verify the same case in RM plus physical RDS/S3 persistence. These end-to-end checks remain pending.
+Protected deployment run [43096377053](https://github.com/25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE/actions/runs/43096377053) failed with a GitHub startup error before a job ran. Following the owner's explicit approval, the reviewed SHA was deployed manually via the existing SSM document. The end-to-end checks above succeeded. GitHub workflow recovery remains separate follow-up work; its required review setting remains in place.
