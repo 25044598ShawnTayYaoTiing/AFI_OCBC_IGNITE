@@ -1,5 +1,9 @@
 # AFI Resolve 2.0
 
+**Customer Portal integration (11 November 2026):** see [customer API, shared workflow, local startup and verification](docs/customer-api-integration.md). The sibling Customer Portal now uses this application's existing Spring/FastAPI/PostgreSQL stack; portal notifications are persisted and no SMTP is sent. Current provider limitations and fallback results are documented separately.
+
+The final shared database target is **Amazon RDS for PostgreSQL, not yet configured or verified**. Use [disposable Docker PostgreSQL for local integration testing](docs/customer-api-integration.md#run-locally-with-temporary-docker-postgresql); this creates no permanent customer database and does not establish AWS deployment readiness.
+
 **Validate. Reconcile. Resolve. Prevent.** - Team AFI's intelligent document exception-resolution prototype for OCBC Ignite Challenge 2026, Problem Statement 2.
 
 The primary application validates related synthetic customer forms, reconciles cited evidence, retrieves permitted supporting documents, coordinates source-document corrections, evaluates intake readiness and automatically routes verified packages to Operations. It extends the existing React + Spring Boot + FastAPI + PostgreSQL application. The original transaction workflow is preserved as the **Legacy Recovery Demo** at `/legacy`.

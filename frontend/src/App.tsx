@@ -270,7 +270,7 @@ function NotificationCenter() {
           tone: "critical",
         });
     }
-    return entries.sort((a, b) => b.time.localeCompare(a.time)).slice(0, 8);
+    return entries.sort((a, b) => b.time.localeCompare(a.time));
   }, [
     cases.data,
     activity.data,
@@ -334,7 +334,7 @@ function NotificationCenter() {
           ) : activity.loading || cases.loading ? (
             <Loading text="Loading notifications…" />
           ) : notices.length ? (
-            notices.map((notice) => (
+            notices.slice(0, 8).map((notice) => (
               <NavLink
                 key={notice.id}
                 to={notice.to}
@@ -352,6 +352,11 @@ function NotificationCenter() {
           ) : (
             <p className="notification-empty">
               No priority notifications from the current data.
+            </p>
+          )}
+          {!activity.error && !cases.error && notices.length > 8 && (
+            <p className="notification-empty">
+              Showing the latest 8 of {notices.length} notifications.
             </p>
           )}
           <NavLink

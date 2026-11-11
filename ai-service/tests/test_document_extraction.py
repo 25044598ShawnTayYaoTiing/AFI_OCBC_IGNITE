@@ -126,3 +126,57 @@ def test_schema_failure_and_provider_failure_are_distinct(monkeypatch, failure, 
             Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
     assert error.value.status_code == status
     assert error.value.detail['code'] == code
+
+
+@pytest.mark.parametrize('field,value,source', [
+    ('required_selection', 'Present', 'Signature Indicator: Present'),
+    ('customer_reference', 'SYN-123', 'Case Reference: SYN-123'),
+    ('mailing_address', '123 Example Road', 'Residential Address: 123 Example Road'),
+])
+def test_rejects_values_cited_from_the_wrong_field(field, value, source):
+    proposed = d.ModelExtraction(document_type='ACCOUNT_APPLICATION', requires_review=False,
+        fields=[d.ModelEvidenceField(field=field, value=value, page=1, supporting_text=source)])
+    with pytest.raises(ValueError):
+        d.normalise(proposed, [source])
+
+
+def test_discards_advisory_observation_citing_unrelated_field():
+    source = 'Signature Indicator: Present'
+    proposed = d.ModelExtraction(document_type='ACCOUNT_APPLICATION', requires_review=False,
+        fields=[], observations=[d.Observation(field='required_selection', page=1,
+            supporting_text=source, issue_type='POTENTIALLY_MISSING')])
+    fields, observations = d.normalise(proposed, [source])
+    assert fields == []
+    assert observations == []
+
+
+def test_ungrounded_optional_hints_do_not_discard_valid_extracted_fields():
+    source = 'Customer Full Name\nAlex Tan'
+    proposed = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False,
+        fields=[d.ModelEvidenceField(field='customer_name', value='Alex Tan', page=1, supporting_text=source)],
+        observations=[d.Observation(field='tax_residency', page=1, supporting_text='Tax Residency', issue_type='POTENTIALLY_MISSING')])
+    fields, observations = d.normalise(proposed, [source])
+    assert fields[0].value == 'Alex Tan'
+    assert observations == []
+
+
+def test_missing_hint_cannot_hide_a_source_value():
+    source = 'Declaration Date: 2026-10-30'
+    proposed = d.ModelExtraction(document_type='ACCOUNT_APPLICATION', requires_review=False,
+        fields=[], observations=[d.Observation(field='declaration_date', page=1, supporting_text='Declaration Date:', issue_type='POTENTIALLY_MISSING')])
+    assert d.normalise(proposed, [source])[1] == []
+
+
+def test_explicit_missing_marker_with_explanatory_note_is_preserved():
+    source = 'Declaration Date\n[NOT COMPLETED]\nIntentionally missing: validation demonstration\nSignature Indicator\nPresent'
+    proposed = d.ModelExtraction(document_type='ACCOUNT_APPLICATION', requires_review=False,
+        fields=[], observations=[d.Observation(field='declaration_date', page=1,
+            supporting_text='Declaration Date\n[NOT COMPLETED]', issue_type='POTENTIALLY_MISSING')])
+    assert len(d.normalise(proposed, [source])[1]) == 1
+
+
+def test_spacing_between_label_and_value_does_not_create_missing_data():
+    source = 'Customer Full Name\n\nAlex Tan'
+    proposed = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False,
+        fields=[d.ModelEvidenceField(field='customer_name', value='Alex Tan', page=1, supporting_text=source)])
+    assert d.normalise(proposed, [source])[0][0].value == 'Alex Tan'

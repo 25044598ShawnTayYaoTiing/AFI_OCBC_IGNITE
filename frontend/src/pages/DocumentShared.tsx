@@ -61,6 +61,7 @@ export function SubmissionTable({
           <tr>
             <th scope="col">Customer</th>
             <th scope="col">Reference</th>
+            <th scope="col">Source</th>
             <th scope="col">Status</th>
             <th scope="col">Resolution</th>
             <th scope="col">Created</th>
@@ -84,6 +85,7 @@ export function SubmissionTable({
               <td>
                 <span className="reference">{item.customer_reference}</span>
               </td>
+              <td>{item.submission_source === "CUSTOMER_PORTAL" ? "Customer Portal" : "RM upload"}</td>
               <td>
                 <Badge value={item.status} />
               </td>

@@ -112,6 +112,12 @@ public class DocumentController {
     return service.draftRule(r.sourceId(), r.correctiveAction(), r.severity(), a);
   }
 
+  @PostMapping("/rules/account-declaration-date/draft")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object draftAccountDate(@RequestBody RuleDraft r, Authentication a) {
+    return service.draftAccountDateRule(r.correctiveAction(), a);
+  }
+
   @PostMapping("/rules/{id}/approve")
   @PreAuthorize("hasRole('REVIEWER')")
   public Object approve(@PathVariable String id, Authentication a) {
@@ -126,8 +132,7 @@ public class DocumentController {
 
   @GetMapping("/demo/samples/{name}")
   public ResponseEntity<byte[]> sample(@PathVariable String name) throws Exception {
-    if (!service.demoEnabled)
-      throw new ApiException(403, "DEMO_DISABLED", "Demo controls are disabled");
+    service.requireDemo();
     if (!Set.of(
             "customer-information.pdf",
             "account-application.pdf",

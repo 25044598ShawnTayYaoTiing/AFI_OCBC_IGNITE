@@ -6,6 +6,8 @@ export interface Submission {
   customer_reference: string;
   status: string;
   owner_name: string;
+  submission_source?: "RM" | "CUSTOMER_PORTAL";
+  customer_id?: string | null;
   revision: number;
   validated_revision: number | null;
   created_at: string;
@@ -39,10 +41,17 @@ export interface Doc {
   current_version: number;
   fields: Field[];
   versions: Version[];
-  extraction: { method: string; requires_review: boolean; notes: string };
+  extraction: {
+    method: string;
+    requires_review: boolean;
+    notes: string;
+    observations?: { field: string; page: number; supporting_text: string; issue_type: string }[];
+  };
 }
 export interface Finding {
   id: string;
+  check_key: string;
+  rule_id: string;
   name: string;
   description: string;
   status: string;
@@ -55,6 +64,8 @@ export interface Finding {
 }
 export interface Check {
   id?: string;
+  condition_type?: string;
+  field_name?: string;
   name: string;
   passed: boolean;
   severity: string;
@@ -65,6 +76,7 @@ export interface Check {
 }
 export interface Task {
   id: string;
+  exception_id: string;
   description: string;
   assigned_role: string;
   priority: string;

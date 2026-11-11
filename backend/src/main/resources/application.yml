@@ -46,6 +46,8 @@ afi:
   ai-url: ${AI_SERVICE_URL:http://localhost:8000}
   ai-key: ${AI_SERVICE_KEY:afi-internal-demo-key}
   cors-origin: ${FRONTEND_ORIGIN:http://localhost:5173}
+  customer-portal-origins: ${CUSTOMER_PORTAL_ORIGINS:http://localhost:5174,http://127.0.0.1:5174}
+  customer-session-seconds: ${CUSTOMER_SESSION_SECONDS:1800}
 logging:
   level:
     org.hibernate: WARN

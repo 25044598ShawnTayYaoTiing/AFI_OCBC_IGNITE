@@ -39,7 +39,7 @@ Stop application processes with `scripts/stop-local.ps1`; it preserves PostgreSQ
 5. Replace the tax declaration with the corrected PDF. The backend automatically revalidates; all 20 checks pass and the case routes to Operations. Versions and correction/audit history remain available.
 6. Run a fresh preflight to confirm actual 20/20 readiness. No manual attachment, revalidation or routing click is required.
 
-The complete configuration, live-only acceptance command and safeguards are documented in [Autonomous document resolution](autonomous-document-resolution.md). Normal submissions still use fictional names and SYN- references; automatic retrieval requires a separately authorised case-scoped repository source.
+The complete configuration, live-only acceptance command and safeguards are documented in [Autonomous document resolution](autonomous-document-resolution.md). Normal submissions still use fictional names and explicitly synthetic SYN- or DEMO- references; automatic retrieval requires a separately authorised case-scoped repository source.
 
 ## Reused architecture
 
@@ -120,3 +120,25 @@ The acceptance script creates a new synthetic case instead of resetting or delet
 - Rule conditions are allowlisted, and only supported revision fields are editable. New condition types and form templates require code changes and review.
 - Live Gemini extraction and investigation were verified with the configured development account. Explicitly labelled deterministic fallback remains available for provider failures. Model authentication and availability depend on the account.
 - Authentication uses existing local demo accounts. Production identity, storage encryption, malware scanning, retention policies and operational deployment hardening are outside this local synthetic prototype.
+
+
+### Account selection and proposed account declaration-date requirement
+
+`ACCOUNT_SELECTION` is an active, internally approved prototype rule using
+`EQUALS_PRESENT` on `required_selection`. An extracted account category is source
+evidence, not permission to invent a `Present` indicator. Changing this policy
+requires reviewer approval; the application does not silently reinterpret it.
+
+A missing account-application declaration date remains a cited AI observation
+unless an approved date rule covers that form. A reviewer may propose the narrowly
+supported `ACCOUNT_DATE` requirement in Settings or with
+`POST /api/documents/rules/account-declaration-date/draft`. This creates only a
+`DRAFT` for `ACCOUNT_APPLICATION`, `declaration_date`, `DATE`, `BLOCKING`; arbitrary
+conditions and activation are not accepted by this endpoint. Its creator cannot
+approve it. A different reviewer must use the existing rule approval process before
+it changes validation. Until then, it is excluded from active checks and routing.
+
+The review UI labels approved-rule findings, AI observations, policy-controlled
+automatic actions, independently verified autonomous resolutions and human-required
+actions separately. Grouping related reference findings does not merge their rule
+checks, evidence or audit records.

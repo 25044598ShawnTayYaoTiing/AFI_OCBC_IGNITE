@@ -10,6 +10,7 @@ import type {
 import { Badge, Empty, Panel } from "../components";
 import { Disclosure } from "../ui";
 import { AuditList, Checklist } from "./DocumentShared";
+import { issueCategory } from "./DocumentFindings";
 
 export function CorrectionTasks({
   detail,
@@ -37,6 +38,9 @@ export function CorrectionTasks({
                 <h3>{task.description}</h3>
                 <Badge value={task.status} />
               </div>
+              {detail.exceptions.find((item) => item.id === task.exception_id) && (
+                <p className="content-label">{issueCategory(detail.exceptions.find((item) => item.id === task.exception_id)!)}</p>
+              )}
               <p>{task.corrective_action}</p>
               <div className="task-meta">
                 <span>Assigned to {label(task.assigned_role)}</span>

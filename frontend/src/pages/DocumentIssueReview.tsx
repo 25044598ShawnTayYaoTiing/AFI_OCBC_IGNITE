@@ -3,6 +3,7 @@ import { label } from "../api";
 import type { Detail, Doc, Field, Finding } from "../document-types";
 import { Badge, Empty } from "../components";
 import { InvestigationExplanation } from "./DocumentResolution";
+import { issueCategory, issueGuidance, issueTitle } from "./DocumentFindings";
 
 export function issueAction(issue: Finding) {
   if (issue.status !== "RESOLVED") return issue.corrective_action;
@@ -62,20 +63,24 @@ export function DocumentIssueReview({
         >
           {related.map((item) => (
             <option key={item.id} value={item.id}>
-              {item.name}
+              {issueTitle(item)}
               {item.status === "RESOLVED" ? " (resolved)" : ""}
             </option>
           ))}
         </select>
       </label>
       <div className="task-heading">
-        <h3>{issue.name}</h3>
+        <h3>{issueTitle(issue)}</h3>
         <Badge value={issue.status} />
       </div>
+      <p className="content-label">{issueCategory(issue)}</p>
       <span className="content-label">
         {issue.status === "RESOLVED" ? "Recorded outcome" : "Next action"}
       </span>
       <p>{issueAction(issue)}</p>
+      {issueGuidance(issue, detail.submission.customer_reference) && (
+        <p className="context-note">{issueGuidance(issue, detail.submission.customer_reference)}</p>
+      )}
       {issue.evidence.length ? (
         <>
           <h3 className="content-label">Source evidence</h3>

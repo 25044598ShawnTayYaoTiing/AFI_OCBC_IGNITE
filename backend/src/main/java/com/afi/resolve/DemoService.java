@@ -31,7 +31,7 @@ public class DemoService implements ApplicationRunner {
   public void requireDemo() {
     if (!isEnabled())
       throw new ApiException(
-          403, "DEMO_DISABLED", "Demo mutations are disabled in this environment");
+          403, "DEMO_DISABLED", "Demo controls are disabled in this environment");
   }
 
   public void guard() {

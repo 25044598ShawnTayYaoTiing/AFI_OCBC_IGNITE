@@ -8,7 +8,6 @@ import java.nio.file.*;
 import java.security.MessageDigest;
 import java.time.*;
 import java.util.*;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,7 +22,8 @@ public class DocumentService {
   final AiClient ai;
   final DocumentOrchestrator orchestrator;
   final DocumentStorage storage;
-  final boolean demoEnabled;
+  final DemoService demoAccess;
+  final CustomerNotifications customerNotifications;
   static final Set<String> TYPES =
       Set.of(
           "CUSTOMER_INFORMATION",
@@ -48,12 +48,19 @@ public class DocumentService {
       AiClient ai,
       DocumentOrchestrator orchestrator,
       DocumentStorage storage,
-      @Value("${afi.demo-enabled}") boolean demoEnabled) {
+      DemoService demoAccess) {
+    this(s, ai, orchestrator, storage, demoAccess, null);
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  public DocumentService(Store s, AiClient ai, DocumentOrchestrator orchestrator,
+      DocumentStorage storage, DemoService demoAccess, CustomerNotifications customerNotifications) {
     this.s = s;
     this.ai = ai;
     this.orchestrator = orchestrator;
     this.storage = storage;
-    this.demoEnabled = demoEnabled;
+    this.demoAccess = demoAccess;
+    this.customerNotifications = customerNotifications;
   }
 
   @PostConstruct
@@ -173,6 +180,11 @@ public class DocumentService {
             "SELECT * FROM document_submissions WHERE id=?" + (lock ? " FOR UPDATE" : ""), id);
     if (rows.isEmpty()) throw new ApiException(404, "NOT_FOUND", "Submission not found");
     var c = rows.getFirst();
+    if (a.getPrincipal() instanceof CustomerSessions.Identity customer) {
+      if (!customer.id().equals(c.get("customer_id")))
+        throw new ApiException(404, "NOT_FOUND", "Submission is not available to your account");
+      return c;
+    }
     if (!a.getName().equals(c.get("owner_name")) && !reviewer(a))
       throw new ApiException(
           403, "FORBIDDEN", "This submission belongs to another relationship manager");
@@ -353,30 +365,41 @@ public class DocumentService {
 
   @Transactional
   public Object create(String name, String reference, String category, Authentication a) {
+    String id = createOwned(name, reference, category, a.getName(), null, a);
+    return detail(id, a);
+  }
+
+  String createCustomer(String name, String reference, String owner, String customerId, Authentication a) {
+    return createOwned(name, reference, "ACCOUNT_OPENING", owner, customerId, a);
+  }
+
+  String createOwned(String name, String reference, String category, String owner, String customerId, Authentication a) {
     if (name == null
         || name.isBlank()
         || name.length() > 160
         || reference == null
-        || !reference.matches("SYN-[A-Za-z0-9-]{1,60}")
+        || !reference.matches("(?:SYN|DEMO)-[A-Za-z0-9-]{1,60}")
         || !"ACCOUNT_OPENING".equals(category))
       throw new ApiException(
           400,
           "INVALID_SUBMISSION",
-          "Use a fictional customer name, a SYN- customer reference and the supported"
+          "Use a fictional customer name, a SYN- or DEMO- customer reference and the supported"
               + " account-opening category");
     String id = s.id("DOC");
     s.db.update(
         "INSERT INTO"
-            + " document_submissions(id,customer_reference,customer_name,category,owner_name,status,created_at)"
-            + " VALUES(?,?,?,?,?,'DRAFT',?)",
+            + " document_submissions(id,customer_reference,customer_name,category,owner_name,customer_id,submission_source,status,created_at)"
+            + " VALUES(?,?,?,?,?,?,?,'DRAFT',?)",
         id,
         reference,
         name,
         category,
-        a.getName(),
+        owner,
+        customerId,
+        customerId == null ? "RM" : "CUSTOMER_PORTAL",
         Store.now());
     event(id, a, "CREATED", map("category", category, "syntheticOnly", true));
-    return detail(id, a);
+    return id;
   }
 
   public Object detail(String id, Authentication a) {
@@ -532,7 +555,7 @@ public class DocumentService {
     }
   }
 
-  @Transactional
+  @Transactional(rollbackFor = Exception.class)
   public Object upload(String id, List<MultipartFile> files, String replace, Authentication a)
       throws Exception {
     return uploadInternal(id, files, replace, a, true);
@@ -545,7 +568,8 @@ public class DocumentService {
     editable(c);
     if (files.isEmpty() || files.size() > 10 || (replace != null && files.size() != 1))
       throw new ApiException(400, "FILE_LIMIT", "Choose 1 to 10 PDFs, or one replacement");
-    if (documents(id, false).size() + documents(id, true).size() + files.size() > 30)
+    if (documents(id, false).size() + documents(id, true).size()
+            + (replace == null ? files.size() : 0) > 30)
       throw new ApiException(400, "FILE_LIMIT", "At most 30 documents per case");
     for (var file : files) {
       String filename =
@@ -597,7 +621,7 @@ public class DocumentService {
             id,
             extracted.path("document_type").asText());
       String key = UUID.randomUUID() + ".pdf", versionId = s.id("VER");
-      storage.put(key, bytes);
+      // Register before writing: a failed write may still have created a partial object.
       // Remove newly created files on database rollback; accepted versions are immutable.
       if (org.springframework.transaction.support.TransactionSynchronizationManager
           .isSynchronizationActive())
@@ -611,11 +635,13 @@ public class DocumentService {
                       } catch (Exception cleanupFailure) {
                         org.slf4j.LoggerFactory.getLogger(DocumentService.class)
                             .warn(
-                                "Private document rollback cleanup failed; reconcile orphan objects"
-                                    + " with document_versions");
+                                "Private document rollback cleanup failed for key {}; reconcile orphan objects"
+                                    + " with document_versions",
+                                key);
                       }
                   }
                 });
+      storage.put(key, bytes);
       s.db.update(
           "INSERT INTO"
               + " document_versions(id,document_id,version,filename,sha256,storage_key,size_bytes,extraction_json,uploaded_by,created_at)"
@@ -667,6 +693,7 @@ public class DocumentService {
     if (process) {
       validateInternal(id, a);
       orchestrator.run(this, id, a);
+      syncCustomer(id);
     }
     return detail(id, a);
   }
@@ -854,6 +881,7 @@ public class DocumentService {
     editable(c);
     validateInternal(id, a);
     orchestrator.run(this, id, a);
+    syncCustomer(id);
     return detail(id, a);
   }
 
@@ -1046,7 +1074,9 @@ public class DocumentService {
 
   @Transactional
   public Object resolve(String id, String key, Authentication a) {
-    return resolveWithPreflight(id, key, a, null);
+    var result = resolveWithPreflight(id, key, a, null);
+    syncCustomer(id);
+    return result;
   }
 
   @SuppressWarnings("unchecked")
@@ -1391,7 +1421,12 @@ public class DocumentService {
     if (!"OPERATIONS".equals(c.get("status")))
       throw new ApiException(
           409, "NOT_READY", "Current package does not satisfy Operations intake policy");
+    syncCustomer(id);
     return detail(id, a);
+  }
+
+  void syncCustomer(String id) {
+    if (customerNotifications != null) customerNotifications.sync(id);
   }
 
   @Transactional
@@ -1432,6 +1467,27 @@ public class DocumentService {
   }
 
   @Transactional
+  public Object draftAccountDateRule(String action, Authentication a) {
+    if (action == null || action.isBlank() || action.length() > 500)
+      throw new ApiException(400, "INVALID_RULE", "Correction guidance is required (at most 500 characters)");
+    s.db.queryForObject("SELECT id FROM demo_guard WHERE id=1 FOR UPDATE", Integer.class);
+    if (s.db.queryForObject(
+            "SELECT COUNT(*) FROM validation_rules WHERE rule_key='ACCOUNT_DATE' AND status IN ('ACTIVE','DRAFT')",
+            Integer.class) > 0)
+      throw new ApiException(409, "RULE_ALREADY_PROPOSED", "An account declaration-date rule already exists; review its current draft or propose a revision");
+    Integer version = s.db.queryForObject(
+        "SELECT COALESCE(MAX(version),0)+1 FROM validation_rules WHERE rule_key='ACCOUNT_DATE'", Integer.class);
+    String id = s.id("RULE");
+    // This endpoint can propose only this supported requirement, never arbitrary
+    // conditions or active policies. The existing independent approval path applies.
+    s.db.update(
+        "INSERT INTO validation_rules(id,rule_key,name,description,document_type,condition_type,field_name,severity,corrective_action,version,status,created_by) VALUES(?,'ACCOUNT_DATE','Account declaration date','Proposed synthetic intake requirement; independent reviewer approval required','ACCOUNT_APPLICATION','DATE','declaration_date','BLOCKING',?,?,'DRAFT',?)",
+        id, action, version, a.getName());
+    event(null, a, "RULE_DRAFTED", map("ruleId", id, "version", version, "newRequirement", true));
+    return rules();
+  }
+
+  @Transactional
   public Object approveRule(String id, Authentication a) {
     // Lock cases before the rule guard, matching workflow lock order, to avoid concurrent stale
     // routing.
@@ -1455,9 +1511,13 @@ public class DocumentService {
     return rules();
   }
 
-  @Transactional
+  void requireDemo() {
+    demoAccess.requireDemo();
+  }
+
+  @Transactional(rollbackFor = Exception.class)
   public Object demo(Authentication a) throws Exception {
-    if (!demoEnabled) throw new ApiException(403, "DEMO_DISABLED", "Demo controls are disabled");
+    requireDemo();
     @SuppressWarnings("unchecked")
     var created =
         (Map<String, Object>) create("Alex Tan (Fictional)", "SYN-ALEX-001", "ACCOUNT_OPENING", a);

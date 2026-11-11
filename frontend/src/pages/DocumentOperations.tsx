@@ -190,6 +190,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const result = useResource<Submission[]>(`${BASE}/submissions`, 15000);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
+  const [source, setSource] = useState("all");
   const [page, setPage] = useState(0);
   const pageSize = readUiPreferences().pageSize;
   const titles: Record<string, string> = {
@@ -205,7 +206,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
     investigations: "Review AI findings and the evidence behind each decision.",
     exceptions: "Cases that need a correction or human review.",
     corrections: "Track requested corrections and replacement documents.",
-    operations: "Validated packages and cases awaiting human review.",
+    operations: "Packages with a verified Operations handover.",
     preflight: "Check readiness before handing a package to Operations.",
   };
   const items = (result.data || [])
@@ -213,12 +214,13 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
       mode === "exceptions" || mode === "corrections"
         ? ["CORRECTION_REQUIRED", "HUMAN_REVIEW"].includes(item.status)
         : mode === "operations"
-          ? ["OPERATIONS", "HUMAN_REVIEW"].includes(item.status)
+          ? item.status === "OPERATIONS"
           : true,
     )
     .filter(
       (item) =>
         (status === "all" || item.status === status) &&
+        (source === "all" || (item.submission_source || "RM") === source) &&
         `${item.customer_name} ${item.customer_reference} ${item.id}`
           .toLowerCase()
           .includes(search.toLowerCase()),
@@ -247,7 +249,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
         <SectionNav
           label="Operations views"
           items={[
-            { to: "/operations", label: "Packages & reviews" },
+            { to: "/operations", label: "Handed-over packages" },
             { to: "/audit", label: "Handover history" },
           ]}
         />
@@ -298,6 +300,11 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
               </option>
             ))}
           </select>
+          <select aria-label="Filter by source" value={source} onChange={(event) => { setSource(event.target.value); setPage(0); }}>
+            <option value="all">All sources</option>
+            <option value="CUSTOMER_PORTAL">Customer Portal</option>
+            <option value="RM">RM upload</option>
+          </select>
           <span className="result-count">
             {result.error
               ? "Unavailable"
@@ -317,7 +324,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
           <SubmissionTable
             items={items.slice(current * pageSize, (current + 1) * pageSize)}
             tab={tab}
-            filtered={!!search || status !== "all"}
+            filtered={!!search || status !== "all" || source !== "all"}
           />
         )}
         {items.length > pageSize && (
@@ -400,11 +407,11 @@ export function NewDocumentSubmission() {
             <input
               value={reference}
               onChange={(event) => setReference(event.target.value)}
-              pattern="SYN-[A-Za-z0-9-]{1,60}"
+              pattern="(SYN|DEMO)-[A-Za-z0-9-]{1,60}"
               required
             />
             <small>
-              Start with SYN-, followed by letters, numbers or hyphens.
+              Use the synthetic customer reference shown on the forms. Start with SYN- or DEMO-, followed by letters, numbers or hyphens.
             </small>
           </label>
           <label>
@@ -587,6 +594,7 @@ export function DocumentDemo() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function download(name: string) {
+    setError("");
     try {
       const blob = await privatePdf(`${BASE}/demo/samples/${name}`);
       const url = URL.createObjectURL(blob);
@@ -649,6 +657,7 @@ export function DocumentDemo() {
         )}
       </Panel>
       <Panel title="Sample documents">
+        {!session.demoMode && <p className="panel-note">Sample downloads are unavailable because demo mode is disabled.</p>}
         <div className="sample-files">
           {[
             [
@@ -676,6 +685,7 @@ export function DocumentDemo() {
               </span>
               <button
                 className="button secondary"
+                disabled={!session.demoMode}
                 onClick={() => void download(name)}
                 aria-label={`Download ${title}`}
               >

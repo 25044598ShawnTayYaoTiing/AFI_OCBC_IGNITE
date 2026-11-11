@@ -29,13 +29,14 @@ import {
 } from "./DocumentResolution";
 
 import { DocumentIssueReview, issueAction } from "./DocumentIssueReview";
+import { groupFindings, issueCategory, issueGuidance, issueTitle } from "./DocumentFindings";
 
 export function DocumentWorkspace() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") || "review";
   const activeTab = tab === "corrections" ? "exceptions" : tab;
-  const result = useResource<Detail>(`${BASE}/submissions/${id}`);
+  const result = useResource<Detail>(`${BASE}/submissions/${id}`, 15000);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -88,6 +89,10 @@ export function DocumentWorkspace() {
       chosen?.evidence.some((field) => field.document_id === item.id),
     ) ||
     data?.documents[0];
+  const groups = groupFindings(data?.exceptions || []);
+  const chosenGroup = groups.find((group) => group.items.some((item) => item.id === chosen?.id));
+  const relatedIssues = chosenGroup?.items || (chosen ? [chosen] : []);
+  const selectedEvidence = relatedIssues.flatMap((item) => item.evidence);
   const locked = data?.submission.status === "OPERATIONS";
   async function run(action: string) {
     setBusy(action);
@@ -145,6 +150,10 @@ export function DocumentWorkspace() {
     }
   }
   function inspect(field: Field) {
+    const sourceIssue = relatedIssues.find((item) =>
+      item.evidence.some((source) => source.document_id === field.document_id && source.version_id === field.version_id),
+    );
+    if (sourceIssue) setFinding(sourceIssue.id);
     setPreviewRequest((value) => value + 1);
     setSelected(field.document_id);
     setVersion(field.version_id || "");
@@ -332,7 +341,7 @@ export function DocumentWorkspace() {
             ) : (
               <div className="review-layout">
                 {chosen && <div className="mobile-issue-summary" ref={issueSummary}>
-                  <strong>{chosen.name}</strong>
+                  <strong>{issueTitle(chosen)}</strong>
                   <p>{issueAction(chosen)}</p>
                 </div>}
                 <div className="preview-column" ref={preview}>
@@ -430,7 +439,7 @@ export function DocumentWorkspace() {
                       <>
                         {chosen && (
                           <div className="issue-context">
-                            <strong>{chosen.name}</strong>
+                            <strong>{issueTitle(chosen)}</strong>
                             <p>{issueAction(chosen)}</p>
                           </div>
                         )}
@@ -472,6 +481,20 @@ export function DocumentWorkspace() {
                         )}
                       </>
                     )}
+                    {!!doc.extraction.observations?.length && (
+                      <div className="issue-context">
+                        <strong>AI observations - not validation findings</strong>
+                        <p>Review these against the PDF and applicable rules; they are not additional validation results.</p>
+                        {doc.document_type === "ACCOUNT_APPLICATION" && doc.extraction.observations.some((item) => item.field === "declaration_date") && !data.checks.some((check) => check.condition_type === "DATE" && check.field_name === "declaration_date" && check.evidence.some((field) => field.document_id === doc.id)) && (
+                          <p>No active mandatory-date check covers this account form. A reviewer can propose the account declaration-date requirement in Settings; a different reviewer must approve it before validation changes.</p>
+                        )}
+                        {doc.extraction.observations.map((observation, index) => (
+                          <p key={`${observation.field}-${observation.page}-${index}`}>
+                            {label(observation.field)} / page {observation.page}: {observation.supporting_text}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                   </TabPanel>
                 </Panel>
               </div>
@@ -501,30 +524,36 @@ export function DocumentWorkspace() {
                   <div className="issues-layout">
                     <Panel title="Validation issues">
                       <div className="issue-list">
+                        {data.exceptions.length > groups.length && (
+                          <p className="context-note">{groups.length} issue groups / {data.exceptions.length} individual checks. Each check retains its own rule and history.</p>
+                        )}
                         {data.exceptions.length ? (
-                          data.exceptions.map((item) => (
-                            <button
-                              key={item.id}
-                              className={`issue-option ${chosen?.id === item.id ? "selected" : ""}`}
-                              onClick={() => {
-                                setFinding(item.id);
-                                setCompare(false);
-                              }}
-                            >
-                              <span>
-                                <strong>{item.name}</strong>
-                                <small>
-                                  {item.status === "RESOLVED"
-                                    ? "Resolved and verified"
-                                    : item.action_type ===
-                                        "ATTACH_VERIFIED_DOCUMENT"
-                                      ? "Automatic action requires review"
-                                      : "Customer or reviewer action needed"}
-                                </small>
-                              </span>
-                              <Badge value={item.status} />
-                            </button>
-                          ))
+                          groups.map((group) => {
+                            const item = group.items[0];
+                            const selected = group.items.some((member) => member.id === chosen?.id);
+                            return (
+                              <button
+                                key={group.key}
+                                className={`issue-option ${selected ? "selected" : ""}`}
+                                onClick={() => {
+                                  setFinding(item.id);
+                                  setCompare(false);
+                                }}
+                              >
+                                <span>
+                                  <strong>{issueTitle(item)}{group.items.length > 1 ? ` (${group.items.length} checks)` : ""}</strong>
+                                  <small>
+                                    {item.status === "RESOLVED"
+                                      ? "Resolved and verified"
+                                      : item.action_type === "ATTACH_VERIFIED_DOCUMENT"
+                                        ? "Automatic action requires review"
+                                        : "Customer or reviewer action needed"}
+                                  </small>
+                                </span>
+                                <Badge value={item.status} />
+                              </button>
+                            );
+                          })
                         ) : (
                           <Empty
                             title="No issues recorded"
@@ -533,10 +562,11 @@ export function DocumentWorkspace() {
                         )}
                       </div>
                     </Panel>
-                    <Panel title={chosen?.name || "Issue details"}>
+                    <Panel title={chosen ? issueTitle(chosen) : "Issue details"}>
                       {chosen ? (
                         <div className="panel-body">
                           <Badge value={chosen.status} />
+                          <p className="content-label">{issueCategory(chosen)}</p>
                           <h3 className="content-label">
                             {chosen.status === "RESOLVED"
                               ? "Completed action"
@@ -549,10 +579,13 @@ export function DocumentWorkspace() {
                               ? "The authorised supporting document was attached and verified."
                               : chosen.corrective_action}
                           </p>
-                          {chosen.evidence.length ? (
+                          {issueGuidance(chosen, data.submission.customer_reference) && (
+                            <p className="context-note">{issueGuidance(chosen, data.submission.customer_reference)}</p>
+                          )}
+                          {selectedEvidence.length ? (
                             <>
                               <h3 className="content-label">Source evidence</h3>
-                              {chosen.evidence.map((field, index) => (
+                              {selectedEvidence.map((field, index) => (
                                 <div className="source-evidence" key={index}>
                                   <span>
                                     {field.filename || "Source document"} /{" "}
@@ -580,7 +613,7 @@ export function DocumentWorkspace() {
                                   )}
                                 </div>
                               ))}
-                              {chosen.evidence.filter(
+                              {selectedEvidence.filter(
                                 (field) => field.version_id,
                               ).length > 1 && (
                                 <button
@@ -599,10 +632,13 @@ export function DocumentWorkspace() {
                               requirement when the finding was recorded.
                             </p>
                           )}
-                          <InvestigationExplanation
-                            investigation={data.investigations?.[0]}
-                            finding={chosen}
-                          />
+                          {relatedIssues.map((item) => (
+                            <InvestigationExplanation
+                              key={item.id}
+                              investigation={data.investigations?.[0]}
+                              finding={item}
+                            />
+                          ))}
                           <Disclosure title="Rule details">
                             <dl className="metadata">
                               <div>
@@ -617,10 +653,12 @@ export function DocumentWorkspace() {
                                 <dt>Resolution method</dt>
                                 <dd>{label(chosen.resolution_method)}</dd>
                               </div>
-                              <div>
-                                <dt>Issue reference</dt>
-                                <dd>{chosen.id}</dd>
-                              </div>
+                              {relatedIssues.map((item) => (
+                                <div key={item.id}>
+                                  <dt>Individual check</dt>
+                                  <dd>{item.check_key} / {item.id}<br />{item.corrective_action}</dd>
+                                </div>
+                              ))}
                             </dl>
                           </Disclosure>
                           {chosen.status === "OPEN" && !locked && (
@@ -640,7 +678,7 @@ export function DocumentWorkspace() {
                   </div>
                   {compare && chosen && (
                     <div className="source-comparison">
-                      {chosen.evidence
+                      {selectedEvidence
                         .filter((field) => field.version_id)
                         .slice(0, 3)
                         .map((field) => (

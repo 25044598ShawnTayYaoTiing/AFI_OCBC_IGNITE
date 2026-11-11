@@ -26,6 +26,18 @@ public class ApiErrors {
 
   final FailureAudit audit;
 
+  @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+  public ResponseEntity<?> notFound() {
+    return ResponseEntity.status(404)
+        .body(map("code", "NOT_FOUND", "message", "API route not found"));
+  }
+
+  @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+  public ResponseEntity<?> methodNotAllowed() {
+    return ResponseEntity.status(405)
+        .body(map("code", "METHOD_NOT_ALLOWED", "message", "Method not supported for this route"));
+  }
+
   public ApiErrors(FailureAudit audit) {
     this.audit = audit;
   }
@@ -49,6 +61,9 @@ public class ApiErrors {
 
   @ExceptionHandler({
     MethodArgumentNotValidException.class,
+    org.springframework.web.bind.MissingRequestHeaderException.class,
+    org.springframework.web.bind.MissingServletRequestParameterException.class,
+    org.springframework.web.multipart.support.MissingServletRequestPartException.class,
     HttpMessageNotReadableException.class,
     MethodArgumentTypeMismatchException.class
   })

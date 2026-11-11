@@ -45,6 +45,8 @@ services:
       DOCUMENT_STORAGE: /var/lib/afi/documents
       DOCUMENT_AUTOMATION_ENABLED: ${DOCUMENT_AUTOMATION_ENABLED:-true}
       DOCUMENT_AUTOMATION_MAX_ATTEMPTS: ${DOCUMENT_AUTOMATION_MAX_ATTEMPTS:-3}
+      CUSTOMER_PORTAL_ORIGINS: ${CUSTOMER_PORTAL_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174}
+      CUSTOMER_SESSION_SECONDS: ${CUSTOMER_SESSION_SECONDS:-1800}
     volumes:
       - document-files:/var/lib/afi/documents
     depends_on:

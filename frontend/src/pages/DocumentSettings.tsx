@@ -140,6 +140,14 @@ export function ValidationRules() {
       <Panel
         title="Validation rules"
         subtitle="Approved intake requirements and revisions awaiting review."
+        action={isReviewer(session) && result.data && !result.error && !result.data.some((rule) => rule.rule_key === "ACCOUNT_DATE" && rule.status !== "RETIRED") ? (
+          <button className="button secondary" disabled={busy} onClick={() => {
+            setSelected("ACCOUNT_DATE_PROPOSAL");
+            setAction("Request a corrected account application with a valid customer-supplied declaration date.");
+            setSeverity("BLOCKING");
+            setError("");
+          }}>Propose account date requirement</button>
+        ) : undefined}
       >
         <div className="table-toolbar">
           <input
@@ -260,13 +268,13 @@ export function ValidationRules() {
         )}
       </Panel>
       {selected && (
-        <Panel title="Propose a rule revision">
+        <Panel title={selected === "ACCOUNT_DATE_PROPOSAL" ? "Propose account declaration-date requirement" : "Propose a rule revision"}>
           <form
             className="form-layout"
             onSubmit={(event) => {
               event.preventDefault();
-              void run(`${BASE}/rules/draft`, {
-                sourceId: selected,
+              void run(selected === "ACCOUNT_DATE_PROPOSAL" ? `${BASE}/rules/account-declaration-date/draft` : `${BASE}/rules/draft`, {
+                sourceId: selected === "ACCOUNT_DATE_PROPOSAL" ? null : selected,
                 correctiveAction: action,
                 severity,
               });
@@ -285,6 +293,7 @@ export function ValidationRules() {
               Impact
               <select
                 value={severity}
+                disabled={selected === "ACCOUNT_DATE_PROPOSAL"}
                 onChange={(event) => setSeverity(event.target.value)}
               >
                 <option value="BLOCKING">Blocks Operations handover</option>
@@ -292,8 +301,8 @@ export function ValidationRules() {
               </select>
             </label>
             <p className="muted">
-              A different authorised reviewer must approve this draft. Rule
-              conditions stay within the approved configuration.
+              A different authorised reviewer must approve this draft before it affects validation.
+              {selected === "ACCOUNT_DATE_PROPOSAL" && " This proposes a blocking date check for the account application only; it does not activate the requirement."}
             </p>
             <div className="form-actions">
               <button
@@ -312,8 +321,8 @@ export function ValidationRules() {
       )}
       <Disclosure title="Policy safeguards">
         <p>
-          Administrators can propose supported changes to severity and
-          correction guidance. Another reviewer must approve activation. Gemini
+          Reviewers can propose supported revisions and a new account declaration-date requirement as inactive drafts.
+          Another reviewer must approve activation. Gemini
           cannot create or activate policies. Prior rule versions and approvals
           are retained.
         </p>

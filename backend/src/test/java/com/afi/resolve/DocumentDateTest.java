@@ -6,7 +6,7 @@ import org.junit.jupiter.api.Test;
 class DocumentDateTest {
   @Test
   void acceptsUnambiguousDatesAndRejectsMissingImpossibleAndFutureValues() {
-    var service = new DocumentService(null, null, null, null, false);
+    var service = new DocumentService(null, null, null, null, null);
     assertTrue(service.validDate("2026-10-30"));
     assertTrue(service.validDate("30 October 2026"));
     assertTrue(service.validDate("30 Oct 2026"));
