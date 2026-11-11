@@ -1,6 +1,6 @@
 # AWS integration and CI/CD activation
 
-All files are prepared locally; this is not a record of deployment. Only the existing reviewer password rotation has been approved. IAM/OIDC/ECR/SSM setup, host bootstrap, backend/CORS changes and Vercel deployment below require approval before execution. No new EC2 instance, load balancer, database, bucket or production runner is needed. Keep the existing region `ap-southeast-1`, instance `i-0368a57f3e9ccafa7`, application directory `/opt/afi-resolve` and private configuration.
+Use the phase approvals and verified activation state in [the 12 November activation report](../../docs/activation-status-2026-11-12.md). Scoped IAM/SSM setup, host helper bootstrap and ECR publishing are approved; application deployment, database snapshot, Vercel production changes, new customer activation and merge/push to main remain separate gates. Reviewer rotation remains approved subject to readiness. No new EC2 instance, load balancer, database, bucket or production runner is needed. Keep region `ap-southeast-1`, instance `i-0368a57f3e9ccafa7`, directory `/opt/afi-resolve` and private configuration.
 
 ## Observed state and remaining blockers
 
@@ -52,6 +52,8 @@ No AWS access key, database password, staff/customer password, Gemini key or SSH
 ## AWS IAM/OIDC/ECR setup, after approval
 
 In IAM Console -> Identity providers -> Add provider, choose OpenID Connect, URL `https://token.actions.githubusercontent.com`, audience `sts.amazonaws.com`. Verify the account ID is `092004973012` before using these scoped templates. Publish trust allows only this repository's main ref. Deploy trust allows only this repository's `production` environment; GitHub environment branch restrictions must also be enabled. Do not reuse the EC2 instance role as the GitHub role or replace its existing trust/policy.
+
+The provider and roles now exist; reuse them. Before applying trust templates, inspect `gh api repos/25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE/actions/oidc/customization/sub`. This repository uses immutable OIDC subjects with prefix `repo:25044598ShawnTayYaoTiing@281175981/AFI_OCBC_IGNITE@1441632967`. The templates append the exact main ref or production environment. Name-only subjects caused an observed STS denial. Do not disable immutable subjects or add wildcard trust to work around it. See [GitHub's immutable OIDC reference](https://docs.github.com/en/actions/reference/security/oidc#immutable-subject-claims).
 
 From an authorised administration shell at the reviewed repository root, only after approval:
 
@@ -126,7 +128,7 @@ chmod 600 .deploy.json
 nano .deploy.json
 ```
 
-Compose must support `!override` (2.24.4+). The deployment command runs as ubuntu; confirm ubuntu already has Docker access. If AWS CLI v2/Python/Docker access is missing, an administrator must install/configure it after approval; reuse existing installations. The AWS CLI on EC2 must use the instance role, without static key files. `.deploy.json` contains public registry/configuration paths only. Keep its `env_files` and `compose_files` exactly aligned with the currently approved host configuration. The reviewed deployment script/config should not be editable by unrelated users.
+Compose must support `!override` (2.24.4+). The deployment command runs as ubuntu. On the current host, use `sudo -n docker` for the two Docker inspection commands above: ubuntu has existing passwordless sudo access but no direct socket permission. The helper detects that existing access automatically; it does not add a group membership or change socket permissions. Only the three public image variables are preserved through sudo, and temporary Docker auth-directory paths are passed explicitly so credentials never enter command arguments. If neither direct Docker nor existing non-interactive sudo works, deployment stops. Reuse installed CLI/Python tools and the instance role; do not add static keys. `.deploy.json` contains public registry/configuration paths only and must match the actual project/environment/Compose files. Keep deployment scripts/config inaccessible to unrelated users.
 
 After the approved reviewer rotation, retain `docker-compose.test-accounts.yml` in `.deploy.json`'s `compose_files`, and add the private `/home/ubuntu/afi-resolve-test-credentials.env` after `.env` in `env_files`. Otherwise a later backend deployment would restore the prior reviewer password. No password value is put in this JSON. Before activation keep that override absent. Do not enable the `local-database-only` profile.
 

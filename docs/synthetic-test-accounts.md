@@ -2,7 +2,7 @@
 
 Implementation is prepared locally. Neither the generated reviewer password nor customer identity has been activated on AWS by this work. No production mutations were made. The credentials remain in the external private file `C:\Users\goati\Downloads\afi-resolve-test-credentials.env`; do not commit, print, or copy it into any frontend build. The script treats `AFI_TEST_CUSTOMER_EMAIL` as the existing API's username field, not an email address.
 
-The owner has confirmed that no team members use the existing reviewer account and explicitly approved its password rotation as part of activation. That approval persists; do not request it again. Other production changes, including deployment of the backend fix, CORS environment updates and Vercel deployment, still require approval. First resolve and verify customer routing/CORS, then apply the approved reviewer rotation and account verification. AWS CLI authentication is restored, but direct SSH times out, SSM is not registered and no Instance Connect Endpoint exists. The existing browser EC2 Instance Connect session can be used for approved setup in `/opt/afi-resolve`; see [CI/CD activation](../infrastructure/aws/cicd.md).
+The owner has confirmed that no team members use the existing reviewer account and explicitly approved its password rotation as part of activation. That approval persists; do not request it again. Scoped IAM/SSM setup, host helper bootstrap and image publishing are also approved and verified in [the 12 November report](activation-status-2026-11-12.md). SSM is Online and the existing host is accessible without opening SSH. Application deployment, database snapshot, Vercel production changes, new customer activation and main merge/push remain separate gates. Resolve and verify customer routing/CORS before activating accounts.
 
 ## Authentication and persistence
 
@@ -54,13 +54,7 @@ AWS_FRONTEND_ORIGIN=https://afi-ocbcignite.duckdns.org
 AWS_CUSTOMER_PORTAL_ORIGINS=https://ocbc-customer-portal.vercel.app
 ```
 
-For the prepared HTTPS layout, build and recreate only the backend using its existing password configuration first:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.https.yml config --quiet
-docker compose -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.https.yml build backend
-docker compose -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.https.yml up -d --no-deps --no-build --wait --wait-timeout 300 backend
-```
+Use the protected backend-first image deployment in the [CI/CD guide](../infrastructure/aws/cicd.md) after its snapshot/readiness approval. Do not build on EC2 or recreate the backend with an old default local-image reference. The reviewed images are already published by full SHA; the deployment helper preserves secrets and handles existing sudo Docker access.
 
 Repeat the public readiness checks above. Then proceed with the approved reviewer override below. Do not change Nginx, TLS, RDS or S3 resources as part of this account activation. Deploying a new backend may apply existing pending Flyway migrations, so review that history before authorising it. The backend package and focused routing/CORS plus shared upload workflow tests passed locally with Java 21, isolated H2 and mocked storage; this does not verify the running AWS image or RDS/S3 targets.
 
@@ -76,7 +70,7 @@ python scripts/demo/provision_test_accounts.py --credentials-file 'C:\Users\goat
 
 Use the same checkout, project name and TLS layout as the existing deployment. Deliver these reviewed activation files through the approved source process before running the EC2 commands. The examples below assume the prepared three-file HTTPS configuration. First deploy the reviewed customer integration if the running backend lacks it, following the Phase 6 guide. Check existing Flyway history and back up RDS before a backend version change; do not add or reapply a migration manually. Keep all existing `.env` RDS, S3, AI and IAM values intact.
 
-1. Securely copy the private credentials file to the existing EC2 user's home directory as `~/afi-resolve-test-credentials.env`. Keep it outside the checkout. On EC2:
+1. After activation approval, securely copy the private credentials file to the existing EC2 user's home directory as `~/afi-resolve-test-credentials.env`. Keep it outside the checkout. Use encrypted transfer such as SSH/SCP over SSM; never embed credentials or private-file contents in SSM RunCommand parameters, logs or source. On EC2:
 
    ```bash
    chmod 600 ~/afi-resolve-test-credentials.env
@@ -88,23 +82,23 @@ Use the same checkout, project name and TLS layout as the existing deployment. D
    ```bash
    set -e
    for service in backend frontend ai-service; do
-     container=$(docker compose -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.https.yml ps -q "$service")
+     container=$(sudo -n docker compose -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.https.yml ps -q "$service")
      test -n "$container"
-     image=$(docker inspect --format '{{.Image}}' "$container")
+     image=$(sudo -n docker inspect --format '{{.Image}}' "$container")
      case "$service" in
        backend) export BACKEND_IMAGE="$image" ;;
        frontend) export FRONTEND_IMAGE="$image" ;;
        ai-service) export AI_SERVICE_IMAGE="$image" ;;
      esac
    done
-   docker compose --env-file .env --env-file ~/afi-resolve-test-credentials.env \
+   sudo -n --preserve-env=BACKEND_IMAGE,FRONTEND_IMAGE,AI_SERVICE_IMAGE docker compose --env-file .env --env-file ~/afi-resolve-test-credentials.env \
      -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.https.yml \
      -f docker-compose.test-accounts.yml -f docker-compose.images.yml config --quiet
-   docker compose --env-file .env --env-file ~/afi-resolve-test-credentials.env \
+   sudo -n --preserve-env=BACKEND_IMAGE,FRONTEND_IMAGE,AI_SERVICE_IMAGE docker compose --env-file .env --env-file ~/afi-resolve-test-credentials.env \
      -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.https.yml \
      -f docker-compose.test-accounts.yml -f docker-compose.images.yml \
      up -d --no-deps --no-build --pull never --wait --wait-timeout 300 backend
-   docker compose --env-file .env --env-file ~/afi-resolve-test-credentials.env \
+   sudo -n --preserve-env=BACKEND_IMAGE,FRONTEND_IMAGE,AI_SERVICE_IMAGE docker compose --env-file .env --env-file ~/afi-resolve-test-credentials.env \
      -f docker-compose.yml -f docker-compose.aws.yml -f docker-compose.https.yml \
      -f docker-compose.test-accounts.yml -f docker-compose.images.yml exec -T frontend nginx -s reload
    unset BACKEND_IMAGE FRONTEND_IMAGE AI_SERVICE_IMAGE

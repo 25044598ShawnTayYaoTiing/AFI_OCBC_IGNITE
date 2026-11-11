@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 SERVICES = ('backend', 'frontend', 'ai-service')
@@ -12,7 +13,33 @@ IMAGE_VARS = {'backend': 'BACKEND_IMAGE', 'frontend': 'FRONTEND_IMAGE', 'ai-serv
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@lru_cache(maxsize=1)
+def docker_command():
+    # Reuse existing access; never add users to groups or change socket permissions.
+    candidates = [('docker',), ('sudo', '-n', '--preserve-env=' + ','.join(IMAGE_VARS.values()), 'docker')]
+    for candidate in candidates:
+        try:
+            result = subprocess.run([*candidate, 'info', '--format', '{{.ServerVersion}}'],
+                                    capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0:
+            return candidate
+    raise RuntimeError('Docker access is unavailable; existing non-interactive sudo is also unavailable.')
+
+
+def docker_args(args, env=None):
+    prefix = list(docker_command())
+    config = (os.environ if env is None else env).get('DOCKER_CONFIG')
+    if config:
+        # sudo does not inherit this private auth-directory variable; pass only its path explicitly.
+        prefix += ['--config', config]
+    return prefix + args[1:]
+
+
 def run(args, env=None):
+    if args[0] == 'docker':
+        args = docker_args(args, env)
     result = subprocess.run(args, capture_output=True, text=True, env=env, timeout=600)
     if result.returncode:
         # Docker/Compose errors can contain expanded configuration. Keep it private.
@@ -100,7 +127,7 @@ def execute(version, service):
                 auth_env.update(AWS_SHARED_CREDENTIALS_FILE=os.devnull, AWS_CONFIG_FILE=os.devnull,
                                 AWS_EC2_METADATA_DISABLED='false')
                 token = run(['aws', 'ecr', 'get-login-password', '--region', config['region']], auth_env)
-                login = subprocess.run(['docker', 'login', '--username', 'AWS', '--password-stdin', config['registry']],
+                login = subprocess.run(docker_args(['docker', 'login', '--username', 'AWS', '--password-stdin', config['registry']], env),
                                        input=token, capture_output=True, text=True, env=env, timeout=30)
                 del token
                 if login.returncode:
