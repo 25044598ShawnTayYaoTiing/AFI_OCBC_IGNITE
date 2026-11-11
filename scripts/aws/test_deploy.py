@@ -89,6 +89,20 @@ class DeploySafetyTest(unittest.TestCase):
             self.execute('main; invalid')
         self.assertEqual(self.commands, [])
 
+    def test_existing_noninteractive_sudo_is_reused_without_permission_changes(self):
+        with patch.object(deploy.subprocess, 'run', side_effect=[
+                types.SimpleNamespace(returncode=1), types.SimpleNamespace(returncode=0)]) as commands:
+            prefix = deploy.docker_command.__wrapped__()
+        self.assertEqual(prefix[:2], ('sudo', '-n'))
+        self.assertEqual(prefix[-1], 'docker')
+        self.assertEqual(prefix[2], '--preserve-env=BACKEND_IMAGE,FRONTEND_IMAGE,AI_SERVICE_IMAGE')
+        self.assertTrue(all('info' in call.args[0] for call in commands.call_args_list))
+
+    def test_sudo_docker_receives_only_the_explicit_private_auth_directory_path(self):
+        with patch.object(deploy, 'docker_command', return_value=('sudo', '-n', 'docker')):
+            args = deploy.docker_args(['docker', 'compose', 'pull', 'backend'], {'DOCKER_CONFIG': '/tmp/unit-auth'})
+        self.assertEqual(args, ['sudo', '-n', 'docker', '--config', '/tmp/unit-auth', 'compose', 'pull', 'backend'])
+
 
 if __name__ == '__main__':
     unittest.main()

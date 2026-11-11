@@ -6,7 +6,7 @@
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {"StringEquals": {
       "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-      "token.actions.githubusercontent.com:sub": "repo:25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE:ref:refs/heads/main"
+      "token.actions.githubusercontent.com:sub": "repo:25044598ShawnTayYaoTiing@281175981/AFI_OCBC_IGNITE@1441632967:ref:refs/heads/main"
     }}
   }]
 }
