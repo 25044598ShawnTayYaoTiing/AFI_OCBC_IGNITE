@@ -25,7 +25,7 @@ services:
       RULES_ADMIN_PASSWORD: ${AWS_RULES_ADMIN_PASSWORD:?Set AWS_RULES_ADMIN_PASSWORD}
       DEMO_ENABLED: ${AWS_DEMO_ENABLED:-false}
       FRONTEND_ORIGIN: ${AWS_FRONTEND_ORIGIN:?Set the exact public frontend origin}
-      CUSTOMER_PORTAL_ORIGINS: ${CUSTOMER_PORTAL_ORIGINS:-}
+      CUSTOMER_PORTAL_ORIGINS: ${AWS_CUSTOMER_PORTAL_ORIGINS:-https://ocbc-customer-portal.vercel.app}
       DOCUMENT_STORAGE_PROVIDER: s3
       S3_BUCKET: ${S3_BUCKET:?Set the private documents bucket}
       AWS_REGION: ${AWS_REGION:-ap-southeast-1}

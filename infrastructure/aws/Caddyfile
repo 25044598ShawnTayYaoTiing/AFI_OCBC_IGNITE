@@ -1,0 +1,8 @@
+{$AFI_HTTPS_DOMAIN} {
+    tls {
+        issuer acme {
+            dir https://acme-v02.api.letsencrypt.org/directory
+        }
+    }
+    reverse_proxy frontend:80
+}

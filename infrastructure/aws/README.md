@@ -29,6 +29,15 @@ Docker Compose **2.24.4 or later** is required for `!override`. The AWS file rep
 | `AWS_AI_SERVICE_KEY` | One long random internal key, injected identically into backend and AI containers |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | Optional existing Gemini account configuration; blank key keeps deterministic extraction |
 | `AWS_FRONTEND_ORIGIN` | Exact public origin, initially `http://EC2_PUBLIC_IP`, later `https://your-domain` |
+| `AWS_CUSTOMER_PORTAL_ORIGINS` | `https://ocbc-customer-portal.vercel.app`; add only explicitly trusted preview origins, comma-separated |
+
+## Customer portal connection
+
+The RM frontend uses same-origin `/api/` requests through Nginx. Configure the Vercel project's `VITE_API_BASE_URL` to `https://<your-verified-backend-domain>/api/customer` and rebuild the portal after changing it. This is a public URL, not a secret. Set `AWS_CUSTOMER_PORTAL_ORIGINS` on EC2 to the exact Vercel origin above; the AWS Compose override defaults to that origin independently of local `CUSTOMER_PORTAL_ORIGINS`. Set `AWS_FRONTEND_ORIGIN` to the RM dashboard's exact HTTPS origin. Neither URL should contain credentials or a trailing slash.
+
+The repository's AWS Nginx configuration only listens on HTTP port 80; it does not establish whether a deployed load balancer or external TLS proxy already provides HTTPS. Verify the actual public endpoint and certificate before configuring the Vercel URL or sending credentials. If absent, configure DNS and a trusted TLS endpoint as described below. Do not expose the customer API over public HTTP. The AWS profile selects S3 and the existing RDS datasource; the customer API uses the same document upload workflow and storage as the RM dashboard. This is a synthetic-document demonstration, not a verified production banking deployment.
+
+Before applying migrations, back up RDS and verify Flyway history, especially whether another version 4 migration was previously applied; resolve any mismatch using a reviewed migration plan rather than editing migration history blindly. After an approved deployment, provision a synthetic customer through the reviewer-only `/api/documents/customers` endpoint and verify login, upload, S3 object, database record, and RM visibility using synthetic data. The source configuration alone does not verify the live AWS or Vercel settings.
 
 The AWS credential variables are separate from local demo defaults to prevent accidental reuse. Compose refuses empty required credentials. `.env` is ignored and excluded from all service build contexts. Protect it with mode `600`; avoid sharing the rendered output of `docker compose config`, which includes expanded secrets. Use `config --quiet` for syntax checks.
 
@@ -99,9 +108,7 @@ Visit `http://EC2_PUBLIC_IP`. Port 80 provides the requested initial HTTP deploy
 
 ## HTTPS deployment path
 
-The cleanest managed option is an Application Load Balancer with an ACM certificate for your domain. Point DNS at the ALB, terminate HTTPS on listener 443, redirect its HTTP listener to HTTPS, and forward to the existing EC2 Nginx port 80. Restrict the EC2 inbound port 80 source to the ALB security group. Set `AWS_FRONTEND_ORIGIN=https://your-domain` and recreate the backend. Nginx currently derives the forwarded protocol from its own connection; if application logic later needs the original ALB protocol, configure trusted forwarding specifically for the ALB rather than accepting arbitrary public forwarding headers.
-
-For TLS directly on the existing EC2 instance without an ALB: issue a certificate for a DNS name, mount the certificate and key read-only into Nginx, provide an additional Compose override replacing the frontend ports with `80:80` and `443:443` and mounting an HTTPS Nginx server config, then add a 443 SSL server and redirect port 80 to HTTPS. Preserve the AWS proxy routes, upload-size limit, timeout and health check, automate renewal/reload, open 443 in the security group, and update `AWS_FRONTEND_ORIGIN`. Certificates and keys must never enter Git or the image. No TLS listener is enabled by this preparation work.
+For the prepared direct EC2 HTTPS configuration, use the third Compose file and follow [the HTTPS deployment guide](https-deployment.md). It adds Caddy in front of the existing Nginx container, with automatic certificate issuance and renewal. The original two-file configuration remains HTTP-only. The actual AWS endpoint and its current TLS setup have not been inspected or changed.
 
 ## Existing data and storage behaviour
 

@@ -1,0 +1,24 @@
+# Add after docker-compose.yml and docker-compose.aws.yml on EC2.
+services:
+  frontend:
+    ports: !reset []
+
+  https:
+    image: caddy:2.10.2-alpine
+    environment:
+      AFI_HTTPS_DOMAIN: ${AFI_HTTPS_DOMAIN:?Set AFI_HTTPS_DOMAIN to your public DNS name}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infrastructure/aws/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
+  caddy-config:
