@@ -1,6 +1,8 @@
 # AWS integration and CI/CD activation
 
-Use the phase approvals and verified activation state in [the 12 November activation report](../../docs/activation-status-2026-11-12.md). Scoped IAM/SSM setup, host helper bootstrap and ECR publishing are approved; application deployment, database snapshot, Vercel production changes, new customer activation and merge/push to main remain separate gates. Reviewer rotation remains approved subject to readiness. No new EC2 instance, load balancer, database, bucket or production runner is needed. Keep region `ap-southeast-1`, instance `i-0368a57f3e9ccafa7`, directory `/opt/afi-resolve` and private configuration.
+> **Current status, 12 November 2026:** The existing EC2, SSM, ECR, IAM roles and Vercel project are configured. The reviewed application images are deployed, and the synthetic customer-to-RM workflow has been verified. The `production` GitHub environment requires its configured review. Protected [deployment run 43162746121](https://github.com/25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE/actions/runs/43162746121) passed review, assumed the AWS deployment role through OIDC, and successfully dispatched SSM command `c84f06ef-1b3e-485a-8a1f-5f3f3925acf7`. It selected the active release and restarted no services. Public health, routing and CORS passed afterward. The earlier run encountered a GitHub `startup_failure` before creating a job; this later run used the identical workflow file. The error appears transient, but GitHub did not provide a more specific root cause. Earlier initial-creation instructions below are historical; inspect and reuse existing resources.
+
+Use the verified activation state in [the 12 November activation report](../../docs/activation-status-2026-11-12.md). No new EC2 instance, load balancer, database, bucket or production runner is needed. Keep region `ap-southeast-1`, instance `i-0368a57f3e9ccafa7`, directory `/opt/afi-resolve` and private configuration. Use the existing GitHub production review for deployment workflows.
 
 ## Observed state and remaining blockers
 
@@ -82,7 +84,7 @@ These are initial-creation commands. If a resource already exists by setup time,
 
 ## Transport activation
 
-SSM is currently unavailable. In the existing browser Instance Connect session, first inspect Agent installation and connectivity:
+SSM is currently Online. If it becomes unavailable, use the existing browser Instance Connect session to inspect Agent installation and connectivity:
 
 ```bash
 snap services amazon-ssm-agent
@@ -205,6 +207,6 @@ Confirm size/encryption and retrieve the PDF through the existing authorised RM 
 
 ## Operational status
 
-Code/configuration is prepared; live Phase 6 and CI/CD are not yet operationally qualified. Publishing, OIDC roles, ECR repositories, managed-instance registration/SSH reachability, host bootstrap, migrations review, backend deployment, Vercel rebuild and authenticated workflow evidence remain approval/setup dependent. The final delivery message lists checks actually executed locally; tests that simulate Docker do not prove a live rollout.
+The live application and protected GitHub-to-SSM pipeline were qualified with the synthetic workflow and the no-op deployment described above. The `configure-aws-credentials` action ran successfully under Node 24 but GitHub emitted a Node 20 deprecation warning for its action metadata; review the upstream action version during routine maintenance.
 
 Primary references: [ECR push permissions](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html), [GitHub OIDC in AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws), [SSM Agent on Ubuntu](https://docs.aws.amazon.com/systems-manager/latest/userguide/agent-install-ubuntu.html), [SSM document parameter security](https://docs.aws.amazon.com/systems-manager/latest/userguide/documents-creating-content.html), [EC2 Instance Connect IAM](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-connect-configure-IAM-role.html).
