@@ -1,5 +1,7 @@
 # AWS integration and CI/CD delivery status
 
+> **Current status, 12 November 2026:** The application was deployed via the owner's approved SSM path and the synthetic customer-to-RM workflow was verified against RDS and S3. See [the current activation report](activation-status-2026-11-12.md). The preparation status and checks below are historical and do not describe the current deployment.
+
 11 November 2026, Asia/Singapore. Implementation is prepared in the repository; production activation has not been performed. Publishing the source runs CI but does not trigger the manual deployment workflow. No production configuration, database records, reviewer password, IAM policy, registry or GitHub setting was changed by preparation. The prior reviewer rotation approval remains valid, but activation cannot proceed before the API deployment/readiness prerequisites are resolved and host access is available.
 
 ## Implemented
