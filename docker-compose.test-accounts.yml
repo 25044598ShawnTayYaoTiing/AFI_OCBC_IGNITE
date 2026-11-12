@@ -1,6 +1,3 @@
-# Optional activation only, after approval. Supply the private credentials env file
-# after the existing .env with Compose --env-file. This rotates the reviewer password.
-services:
-  backend:
-    environment:
-      REVIEWER_PASSWORD: ${AFI_TEST_RM_PASSWORD:?Supply AFI_TEST_RM_PASSWORD privately}
+# Legacy compatibility file: AWS_REVIEWER_PASSWORD in the private EC2 .env is
+# the sole reviewer password source. This file no longer overrides credentials.
+services: {}

@@ -6,6 +6,10 @@ The owner approved manual SSM deployment of commit `d8716c0e57dc2c2585708c24c020
 
 The synthetic customer submitted one PDF through the portal. Case `DOC-5ab7b97f-1134-46d3-a179-37fcd46a5df6` is visible to the reviewer in the RM Dashboard, including its PDF preview. Read-only checks confirmed the linked RDS records, BCrypt customer password hash, an encrypted S3 object and a matching document hash. Extraction used deterministic fallback. The case is `CORRECTION_REQUIRED`, expected for the intentionally incomplete one-document package. The GitHub protected deployment workflow encountered `startup_failure`; the owner explicitly approved the manual SSM path. No credential values are recorded here.
 
+The deployed Gemini credential was subsequently found to be JWT-shaped and rejected by the Gemini Developer API. The owner's existing private project key authenticated successfully; the AI service alone was recreated with that key and `gemini-3.1-flash-lite` after the former configured model returned HTTP 404 for that credential. Fresh synthetic case `DOC-4ce9b6a7-c9b8-4f8e-a431-9e0319701ab1` records `GEMINI` for both extraction and investigation, with six extraction fields and two investigation citations verified against the supplied evidence. Its encrypted S3 PDF hash matches RDS. The existing synthetic account passwords were also rotated privately, and the reviewer-only request limit and customer lockout remain in force; see [synthetic account rotation](synthetic-test-accounts.md).
+
+The host deployment configuration was later simplified without changing passwords or recreating containers. The EC2 private `.env` is the authoritative deployment source for the reviewer password and Gemini settings; the former test-account Compose override and extra test-credentials environment-file reference were removed after the resulting Compose configuration was verified identical. The separate private test file remains a copy for verification and rotation. Existing customer records and sessions were not altered by this configuration change.
+
 ## Approval ledger
 
 - Reviewer password rotation: approved and activated through the existing Compose override.
