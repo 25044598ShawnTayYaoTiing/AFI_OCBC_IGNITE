@@ -1,0 +1,4 @@
+services:
+  frontend:
+    volumes:
+      - ./infrastructure/aws/nginx.demo-reviewer.conf:/etc/nginx/conf.d/default.conf:ro

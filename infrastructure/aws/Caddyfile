@@ -4,5 +4,7 @@
             dir https://acme-v02.api.letsencrypt.org/directory
         }
     }
-    reverse_proxy frontend:80
+    reverse_proxy frontend:80 {
+        header_up X-Afi-Client-IP {remote_host}
+    }
 }
