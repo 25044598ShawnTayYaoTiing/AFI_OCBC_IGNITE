@@ -23,7 +23,7 @@ jobs:
           cache: maven
       - name: Package and test customer routing and shared upload workflow
         working-directory: backend
-        run: mvn -B '-Dtest=CustomerIntegrationTest#customerRoutingAndProductionPortalCorsStaySeparateFromStaffAuthentication+sharedCaseCorrectionAutonomyAndDurableReplay' package
+        run: mvn -B '-Dtest=CustomerIntegrationTest#customerRoutingAndProductionPortalCorsStaySeparateFromStaffAuthentication+sharedCaseCorrectionAutonomyAndDurableReplay+revocationExpiryAndFailedLoginLockoutArePersistent,CustomerDemoRetryIntegrationTest#syntheticRetriesAreImmediateButOtherAccountsStillLock' package
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10

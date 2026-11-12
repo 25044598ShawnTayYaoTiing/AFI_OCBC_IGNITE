@@ -1,0 +1,5 @@
+# Explicitly opt in only for the synthetic hackathon deployment.
+services:
+  backend:
+    environment:
+      CUSTOMER_DEMO_RETRY_ENABLED: "true"

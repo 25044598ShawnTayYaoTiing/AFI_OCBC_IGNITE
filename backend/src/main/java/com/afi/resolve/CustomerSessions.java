@@ -25,13 +25,16 @@ public class CustomerSessions {
   final PasswordEncoder passwords;
   final String dummyHash;
   final int ttl;
+  final boolean demoRetryEnabled;
   final SecureRandom random = new SecureRandom();
 
   public CustomerSessions(
-      Store s, PasswordEncoder passwords, @Value("${afi.customer-session-seconds:1800}") int ttl) {
+      Store s, PasswordEncoder passwords, @Value("${afi.customer-session-seconds:1800}") int ttl,
+      @Value("${afi.customer-demo-retry-enabled:false}") boolean demoRetryEnabled) {
     this.s = s;
     this.passwords = passwords;
     this.ttl = Math.max(60, Math.min(86400, ttl));
+    this.demoRetryEnabled = demoRetryEnabled;
     dummyHash = passwords.encode(UUID.randomUUID().toString());
   }
 
@@ -61,12 +64,16 @@ public class CustomerSessions {
     var c = rows.isEmpty() ? null : rows.getFirst();
     boolean matches =
         passwords.matches(password, c == null ? dummyHash : (String) c.get("password_hash"));
+    boolean synthetic = c != null && c.get("customer_reference") instanceof String reference
+        && (reference.startsWith("SYN-") || reference.startsWith("DEMO-"));
+    boolean lockoutApplies = !(demoRetryEnabled && synthetic);
     boolean locked =
+        lockoutApplies &&
         c != null
             && c.get("locked_until") != null
             && instant(c.get("locked_until")).isAfter(Instant.now());
     if (c == null || !Boolean.TRUE.equals(c.get("enabled")) || locked || !matches) {
-      if (c != null && !locked) {
+      if (c != null && lockoutApplies && !locked) {
         int failures = ((Number) c.get("failed_logins")).intValue() + 1;
         s.db.update(
             "UPDATE customers SET failed_logins=?,locked_until=? WHERE id=?",

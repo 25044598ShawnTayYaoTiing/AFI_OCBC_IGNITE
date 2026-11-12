@@ -33,4 +33,10 @@ assert services['backend']['environment']['REVIEWER_PASSWORD'] == env['AWS_REVIE
 assert 'sslmode=verify-full' in services['backend']['environment']['DB_URL']
 assert 'postgres' not in services  # Disabled local-only profile is excluded from this AWS render.
 assert 'postgres' not in services['backend'].get('depends_on', {})
+assert services['backend']['environment'].get('CUSTOMER_DEMO_RETRY_ENABLED') is None
+demo = subprocess.run(command + ['-f', 'docker-compose.demo-auth.yml', 'config', '--format', 'json'],
+                      cwd=root, env=env, capture_output=True, text=True)
+if demo.returncode:
+    raise SystemExit('Demo Compose validation failed; rendered environment was not printed.')
+assert json.loads(demo.stdout)['services']['backend']['environment']['CUSTOMER_DEMO_RETRY_ENABLED'] == 'true'
 print('PASS: Compose merge, private application ports, HTTPS edge, RDS TLS and S3 configuration.')

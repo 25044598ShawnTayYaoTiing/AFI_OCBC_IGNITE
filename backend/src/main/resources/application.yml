@@ -48,6 +48,7 @@ afi:
   cors-origin: ${FRONTEND_ORIGIN:http://localhost:5173}
   customer-portal-origins: ${CUSTOMER_PORTAL_ORIGINS:http://localhost:5174,http://127.0.0.1:5174}
   customer-session-seconds: ${CUSTOMER_SESSION_SECONDS:1800}
+  customer-demo-retry-enabled: ${CUSTOMER_DEMO_RETRY_ENABLED:false}
 logging:
   level:
     org.hibernate: WARN
