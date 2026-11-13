@@ -3,7 +3,6 @@ import type { FormEvent } from "react";
 import {
   ArrowRight,
   Check,
-  Fingerprint,
   Layers3,
   LockKeyhole,
   ShieldCheck,
@@ -87,7 +86,7 @@ export function Login({
       <div className="login-icon">
         <LockKeyhole size={24} />
       </div>
-      <div className="eyebrow">OPERATIONS WORKSPACE</div>
+      <div className="eyebrow">RESOLUTION MANAGEMENT</div>
       <h1>{modal ? "Switch account" : "Welcome to AFI Resolve"}</h1>
       <p className="muted">
         Sign in to validate synthetic forms and coordinate document corrections.
@@ -136,23 +135,12 @@ export function Login({
       <div className="demo-accounts">
         <button
           disabled={busy}
-          onClick={() => chooseAccount("operator")}
-        >
-          <Fingerprint size={20} />
-          <span>
-            <strong>Use operator account</strong>
-            <small>Validate & reconcile</small>
-          </span>
-          <ArrowRight size={16} />
-        </button>
-        <button
-          disabled={busy}
           onClick={() => chooseAccount("reviewer")}
         >
           <ShieldCheck size={20} />
           <span>
-            <strong>Use reviewer account</strong>
-            <small>Review & manage demo</small>
+            <strong>Resolution Management</strong>
+            <small>Investigate, review and approve</small>
           </span>
           <ArrowRight size={16} />
         </button>

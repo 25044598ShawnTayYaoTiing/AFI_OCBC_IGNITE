@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Download,
   FileText,
-  Plus,
 } from "lucide-react";
 import { detailText, label, post, privatePdf, useResource } from "../api";
 import type { Audit } from "../api";
@@ -40,20 +39,16 @@ export function DocumentOverview() {
   const items = submissions.data || [];
   const m = metrics.data;
   const attention = items.filter((item) =>
-    ["CORRECTION_REQUIRED", "HUMAN_REVIEW"].includes(item.status),
+    ["CORRECTION_REQUIRED", "HUMAN_REVIEW", "RESOLUTION_MANAGEMENT"].includes(item.status),
   );
   const value = (number: number | undefined) =>
     metrics.loading || metrics.error ? "--" : (number ?? "--");
   return (
     <div className="page-stack">
       <PageHeader
-        title="Operations overview"
+        title="Resolution Management"
         description="Your submissions, exceptions and completed handovers."
       >
-        <Link className="button primary" to="/new">
-          <Plus size={16} />
-          New submission
-        </Link>
       </PageHeader>
       {metrics.error && (
         <ErrorBox
@@ -196,7 +191,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const titles: Record<string, string> = {
     submissions: "Submissions",
     investigations: "Investigations",
-    exceptions: "Exceptions",
+    exceptions: "Resolution Management",
     corrections: "Corrections",
     operations: "Operations",
     preflight: "Preflight",
@@ -212,7 +207,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const items = (result.data || [])
     .filter((item) =>
       mode === "exceptions" || mode === "corrections"
-        ? ["CORRECTION_REQUIRED", "HUMAN_REVIEW"].includes(item.status)
+        ? ["CORRECTION_REQUIRED", "HUMAN_REVIEW", "RESOLUTION_MANAGEMENT"].includes(item.status)
         : mode === "operations"
           ? item.status === "OPERATIONS"
           : true,
@@ -240,10 +235,6 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   return (
     <div className="page-stack">
       <PageHeader title={titles[mode]} description={descriptions[mode]}>
-        <Link className="button primary" to="/new">
-          <Plus size={16} />
-          New submission
-        </Link>
       </PageHeader>
       {mode === "operations" ? (
         <SectionNav
@@ -292,7 +283,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
               "DRAFT",
               "PENDING_VALIDATION",
               "CORRECTION_REQUIRED",
-              "HUMAN_REVIEW",
+              "RESOLUTION_MANAGEMENT",
               "OPERATIONS",
             ].map((value) => (
               <option key={value} value={value}>
@@ -357,88 +348,6 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   );
 }
 
-export function NewDocumentSubmission() {
-  const navigate = useNavigate();
-  const [name, setName] = useState("");
-  const [reference, setReference] = useState("SYN-");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  return (
-    <div className="page-stack">
-      <PageHeader
-        title="New submission"
-        description="Start a customer document package."
-      />
-      <Panel title="Customer details">
-        <form
-          className="form-layout"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            setBusy(true);
-            setError("");
-            try {
-              const data = await post<Detail>(`${BASE}/submissions`, {
-                customerName: name,
-                customerReference: reference,
-                category: "ACCOUNT_OPENING",
-              });
-              navigate(`/submissions/${data.submission.id}`);
-            } catch (error) {
-              setError(message(error));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <label>
-            Customer name
-            <input
-              autoFocus
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              required
-              maxLength={160}
-              autoComplete="off"
-            />
-            <small>Use a fictional identity in this synthetic workspace.</small>
-          </label>
-          <label>
-            Customer reference
-            <input
-              value={reference}
-              onChange={(event) => setReference(event.target.value)}
-              pattern="(SYN|DEMO)-[A-Za-z0-9-]{1,60}"
-              required
-            />
-            <small>
-              Use the synthetic customer reference shown on the forms. Start with SYN- or DEMO-, followed by letters, numbers or hyphens.
-            </small>
-          </label>
-          <label>
-            Submission type
-            <select aria-label="Submission type">
-              <option>Account opening</option>
-            </select>
-          </label>
-          <p className="muted">
-            You'll add the customer information form, account application and
-            tax declaration next.
-          </p>
-          {error && <ErrorBox message={error} />}
-          <div className="form-actions">
-            <Link className="button secondary" to="/submissions">
-              Cancel
-            </Link>
-            <button className="button primary" disabled={busy}>
-              {busy ? "Creating..." : "Create submission"}
-              <ArrowRight size={16} />
-            </button>
-          </div>
-        </form>
-      </Panel>
-    </div>
-  );
-}
 
 export function DocumentReports() {
   const result = useResource<Metrics>(`${BASE}/analytics`);

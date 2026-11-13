@@ -121,7 +121,8 @@ public class DocumentIntelligence {
               "permitted_action",
               action,
               "requires_human",
-              !action.equals("ATTACH_VERIFIED_DOCUMENT") || "HUMAN_REVIEW".equals(c.get("status")),
+              !action.equals("ATTACH_VERIFIED_DOCUMENT")
+                  || Set.of("HUMAN_REVIEW", "RESOLUTION_MANAGEMENT").contains(c.get("status")),
               "evidence",
               citations));
     }

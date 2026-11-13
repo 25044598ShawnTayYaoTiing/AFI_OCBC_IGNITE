@@ -124,7 +124,7 @@ export function ValidationRules() {
       setSelected("");
       setNotice(
         body
-          ? "Draft saved. A different reviewer must approve it."
+          ? "Draft saved. A different authorised approver must approve it."
           : "Rule version approved. Open packages require revalidation.",
       );
     } catch (error) {
@@ -321,7 +321,7 @@ export function ValidationRules() {
       )}
       <Disclosure title="Policy safeguards">
         <p>
-          Reviewers can propose supported revisions and a new account declaration-date requirement as inactive drafts.
+          Resolution Management can propose supported revisions and a new account declaration-date requirement as inactive drafts.
           Another reviewer must approve activation. Gemini
           cannot create or activate policies. Prior rule versions and approvals
           are retained.

@@ -12,10 +12,48 @@ import org.springframework.web.multipart.MultipartFile;
 public class CustomerController {
   final CustomerService customers;
   final CustomerSessions sessions;
+  final DigitalFormService forms;
+  final DocumentService documents;
 
-  public CustomerController(CustomerService customers, CustomerSessions sessions) {
+  public CustomerController(
+      CustomerService customers,
+      CustomerSessions sessions,
+      DigitalFormService forms,
+      DocumentService documents) {
     this.customers = customers;
     this.sessions = sessions;
+    this.forms = forms;
+    this.documents = documents;
+  }
+
+  @PostMapping("/eforms")
+  public Object createForm(
+      @RequestHeader("Idempotency-Key") String key,
+      @RequestBody DigitalFormService.Form form,
+      Authentication a)
+      throws Exception {
+    return forms.submit(null, key, form, a);
+  }
+
+  @GetMapping("/submissions/{id}/eform")
+  public Object form(@PathVariable String id, Authentication a) {
+    return forms.get(id, a);
+  }
+
+  @PostMapping("/submissions/{id}/eform")
+  public Object updateForm(
+      @PathVariable String id,
+      @RequestHeader("Idempotency-Key") String key,
+      @RequestBody DigitalFormService.Form form,
+      Authentication a)
+      throws Exception {
+    return forms.submit(id, key, form, a);
+  }
+
+  @PostMapping("/submissions/{id}/escalate")
+  public Object escalate(@PathVariable String id, Authentication a) {
+    customers.owned(id, a);
+    return documents.escalate(id, a);
   }
 
   public record Login(String username, String password) {}
@@ -60,11 +98,12 @@ public class CustomerController {
 
   @PostMapping(value = "/submissions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
   public Object intake(
+      @RequestParam(defaultValue = "ACCOUNT_OPENING") String requestType,
       @RequestHeader("Idempotency-Key") String key,
       @RequestParam("files") List<MultipartFile> files,
       Authentication a)
       throws Exception {
-    return customers.upload(null, null, key, files, a);
+    return customers.uploadRequest(null, null, key, files, a, requestType);
   }
 
   @PostMapping(

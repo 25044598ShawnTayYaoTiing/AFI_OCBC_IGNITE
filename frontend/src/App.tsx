@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { NavLink, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import {
   Activity,
   Bell,
@@ -28,7 +28,7 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { AuthContext, Brand, Login, isReviewer } from "./auth";
+import { AuthContext, Brand, Login } from "./auth";
 import { clearSession, useResource, label, dateTime } from "./api";
 import type { Audit, Session } from "./api";
 import { Empty, Loading, ErrorBox } from "./components";
@@ -73,7 +73,6 @@ const LegacySettingsPage = lazy(() =>
 import {
   DocumentOverview,
   DocumentQueue,
-  NewDocumentSubmission,
   DocumentWorkspace,
   DocumentReports,
   DocumentAudit,
@@ -88,7 +87,7 @@ const navigationGroups = [
     items: [
       { to: "/", label: "Overview", icon: LayoutDashboard },
       { to: "/submissions", label: "Submissions", icon: Boxes },
-      { to: "/exceptions", label: "Exceptions", icon: ListFilter },
+      { to: "/exceptions", label: "Resolution Management", icon: ListFilter },
       { to: "/operations", label: "Operations", icon: ClipboardCheck },
       { to: "/reports", label: "Reports", icon: FileBarChart2 },
       { to: "/settings", label: "Settings", icon: Settings2 },
@@ -242,7 +241,7 @@ function NotificationCenter() {
       .filter(
         (c) =>
           (c.status === "CORRECTION_REQUIRED" && preferences.critical) ||
-          (c.status === "HUMAN_REVIEW" && preferences.approvals),
+          (["HUMAN_REVIEW", "RESOLUTION_MANAGEMENT"].includes(c.status) && preferences.approvals),
       )
       .map((c) => ({
         id: c.id,
@@ -587,9 +586,7 @@ export default function App() {
                   <span className="user-info">
                     <strong>{session.username}</strong>
                     <small>
-                      {isReviewer(session)
-                        ? "Reviewer"
-                        : "Relationship manager"}
+                      {"Resolution Management"}
                     </small>
                   </span>
                   <ChevronDown size={14} />
@@ -662,7 +659,7 @@ export default function App() {
               <Routes>
                 <Route path="/" element={<DocumentOverview />} />
                 <Route path="/submissions" element={<DocumentQueue />} />
-                <Route path="/new" element={<NewDocumentSubmission />} />
+                <Route path="/new" element={<Navigate to="/submissions" replace />} />
                 <Route
                   path="/submissions/:id"
                   element={<DocumentWorkspace />}

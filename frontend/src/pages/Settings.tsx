@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { Check, UserRound } from "lucide-react";
 import { label, useResource } from "../api";
-import { isReviewer, useAuth } from "../auth";
+import { useAuth } from "../auth";
 import { Badge, ErrorBox, Notice, PageHeader, Panel } from "../components";
 import {
   readNotificationPreferences,
@@ -93,9 +93,7 @@ export function SettingsWorkspace() {
                     <div>
                       <h3>{session.username}</h3>
                       <p>
-                        {isReviewer(session)
-                          ? "Reviewer"
-                          : "Relationship manager"}
+                        {"Resolution Management"}
                       </p>
                     </div>
                     <button className="button secondary" onClick={switchUser}>
@@ -318,17 +316,10 @@ export function SettingsWorkspace() {
                   </p>
                   <div className="access-list">
                     <div>
-                      <h3>Relationship manager</h3>
-                      <p>
-                        Create and review owned submissions, upload corrections
-                        and run package checks.
-                      </p>
-                    </div>
-                    <div>
-                      <h3>Reviewer</h3>
+                      <h3>Resolution Management</h3>
                       <p>
                         Review submissions across owners, propose rule revisions
-                        and approve another reviewer's draft.
+                        and approve another authorised approver's draft.
                       </p>
                     </div>
                     <div>

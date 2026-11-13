@@ -805,7 +805,7 @@ export function ResolutionPage() {
                         </button>
                       </div>
                       <p className="small muted">
-                        Recorded as {session.username}. Reviewer permissions are
+                        Recorded as {session.username}. Resolution Management permissions are
                         enforced by the backend.
                       </p>
                     </form>
@@ -815,7 +815,7 @@ export function ResolutionPage() {
                       <div>
                         <h3>A reviewer account is required</h3>
                         <p>
-                          Sign in with reviewer credentials to record a
+                          Sign in with Resolution Management credentials to record a
                           decision.
                         </p>
                       </div>
@@ -1385,7 +1385,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
         title={demoOnly ? "Legacy demo controls" : "Settings"}
         description={
           demoOnly
-            ? "Prepare the transaction recovery demonstration. Reviewer permissions apply."
+            ? "Prepare the transaction recovery demonstration. Resolution Management permissions apply."
             : "Manage your workspace preferences."
         }
       />
@@ -1424,7 +1424,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                 <div>
                   <span>Role</span>
                   <strong>
-                    {isReviewer(session) ? "Reviewer" : "Operations Analyst"}
+                    {isReviewer(session) ? "Resolution Management" : "Operations Analyst"}
                   </strong>
                 </div>
                 <div>
@@ -1685,10 +1685,10 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                   </p>
                 </div>
                 <div>
-                  <strong>Reviewer</strong>
+                  <strong>Resolution Management</strong>
                   <p>
                     Review submissions across owners and approve rule revisions
-                    authored by another reviewer. Legacy demo reset remains
+                    authored by another authorised approver. Legacy demo reset remains
                     reviewer-restricted.
                   </p>
                 </div>
@@ -1815,7 +1815,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                   <span>
                     <strong>Human review</strong>
                     <small>
-                      Reviewer permissions are enforced by the Spring Boot API;
+                      Resolution Management permissions are enforced by the Spring Boot API;
                       approval cannot bypass safety checks.
                     </small>
                   </span>
@@ -1829,7 +1829,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
         <Notice>
           Demo reset and failure controls require a reviewer.{" "}
           <button className="text-button" onClick={switchUser}>
-            Sign in with reviewer credentials →
+            Sign in with Resolution Management credentials →
           </button>
         </Notice>
       )}

@@ -2,8 +2,8 @@ package com.afi.resolve;
 
 import java.util.Arrays;
 import java.util.List;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.*;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
@@ -27,25 +27,22 @@ public class SecurityConfig {
 
   @Bean
   UserDetailsService users(
-      @Value("${afi.operator-password}") String operator,
       @Value("${afi.reviewer-password}") String reviewer,
       @Value("${afi.rules-admin-password}") String rulesAdmin,
       PasswordEncoder encoder) {
     return new InMemoryUserDetailsManager(
-        User.withUsername("operator").password(encoder.encode(operator)).roles("OPERATOR").build(),
-        User.withUsername("reviewer")
-            .password(encoder.encode(reviewer))
-            .roles("OPERATOR", "REVIEWER")
-            .build(),
+        User.withUsername("reviewer").password(encoder.encode(reviewer)).roles("REVIEWER").build(),
         User.withUsername("rules-admin")
             .password(encoder.encode(rulesAdmin))
-            .roles("OPERATOR", "REVIEWER")
+            .roles("REVIEWER")
             .build());
   }
 
   @Bean
   @Order(1)
-  SecurityFilterChain customerSecurity(HttpSecurity http, CustomerSessions sessions,
+  SecurityFilterChain customerSecurity(
+      HttpSecurity http,
+      CustomerSessions sessions,
       @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource)
       throws Exception {
     return http.securityMatcher("/api/customer/**")
@@ -88,8 +85,9 @@ public class SecurityConfig {
 
   @Bean
   @Order(2)
-  SecurityFilterChain security(HttpSecurity http,
-      @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource) throws Exception {
+  SecurityFilterChain security(
+      HttpSecurity http, @Qualifier("corsConfigurationSource") CorsConfigurationSource corsSource)
+      throws Exception {
     return http.csrf(csrf -> csrf.disable())
         .cors(cors -> cors.configurationSource(corsSource))
         .sessionManagement(
@@ -102,7 +100,7 @@ public class SecurityConfig {
                         "/actuator/health", "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html")
                     .permitAll()
                     .anyRequest()
-                    .hasAnyRole("OPERATOR", "REVIEWER"))
+                    .hasRole("REVIEWER"))
         .httpBasic(
             b ->
                 b.authenticationEntryPoint(
@@ -123,7 +121,7 @@ public class SecurityConfig {
                       res.getWriter()
                           .write(
                               "{\"code\":\"FORBIDDEN\",\"message\":\"This operation requires"
-                                  + " reviewer privileges\"}");
+                                  + " Resolution Management privileges\"}");
                     }))
         .build();
   }

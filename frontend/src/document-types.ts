@@ -2,6 +2,9 @@ import type { Audit } from "./api";
 export interface Submission {
   id: string;
   category: string;
+  capture_method?: "PDF" | "DIGITAL_EFORM";
+  requires_rm_approval?: boolean;
+  approved_revision?: number | null;
   customer_name: string;
   customer_reference: string;
   status: string;

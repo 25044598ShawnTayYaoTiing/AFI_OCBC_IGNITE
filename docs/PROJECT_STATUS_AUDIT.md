@@ -1,3 +1,5 @@
+> Historical audit snapshot. For the 13 November service-request scope correction, verification evidence and remaining blockers, see [the current scope and verification report](service-request-scope-and-verification.md).
+
 # AFI Resolve 2.0 — Project Status & Gap Analysis
 
 Audit date: **10 November 2026, Asia/Singapore**. Audit only; no application fixes, deployments, pushes, infrastructure changes or real emails were performed.

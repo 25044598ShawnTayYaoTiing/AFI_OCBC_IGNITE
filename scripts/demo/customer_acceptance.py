@@ -1,4 +1,4 @@
-"""Real shared-stack acceptance; uses synthetic PDFs and never sends email.
+"""Real shared-stack acceptance; uses synthetic PDFs; run with SMTP_ENABLED=false.
 
 Run with ai-service/.venv/Scripts/python.exe scripts/demo/customer_acceptance.py.
 Uses existing reviewer credentials from the private root .env. Generated demo
@@ -27,7 +27,7 @@ def main():
                         help='Require GEMINI for the three intake forms, investigation and replacement; report repository provenance separately.')
     args = parser.parse_args()
     load_dotenv(ROOT / '.env', override=False, encoding='utf-8-sig')
-    staff = httpx.Client(base_url=args.base_url, auth=('operator', os.getenv('OPERATOR_PASSWORD', 'operator-demo')), timeout=600)
+    staff = httpx.Client(base_url=args.base_url, auth=('reviewer', os.getenv('REVIEWER_PASSWORD', 'reviewer-demo')), timeout=600)
     reviewer = httpx.Client(base_url=args.base_url, auth=('reviewer', os.getenv('REVIEWER_PASSWORD', 'reviewer-demo')), timeout=600)
     portal = httpx.Client(base_url=args.base_url + '/api/customer', timeout=600)
 
@@ -49,8 +49,8 @@ def main():
         for name, reference in [('primary', 'SYN-ALEX-001'), ('secondary', 'SYN-ISOLATION-' + uuid.uuid4().hex[:12])]:
             account = {'username': 'demo-' + uuid.uuid4().hex[:16], 'password': secrets.token_urlsafe(24)}
             profile = call(reviewer, 'POST', '/api/documents/customers', json={**account,
-                'customerName': 'Alex Tan (Fictional)' if name == 'primary' else 'Isolation Customer (Fictional)',
-                'customerReference': reference, 'relationshipManager': 'operator',
+                'customerName': 'Alex Tan' if name == 'primary' else 'Isolation Customer (Fictional)',
+                'customerReference': reference, 'relationshipManager': 'reviewer',
                 'repositorySubmissionId': source if name == 'primary' else None})
             state[name] = {**account, 'id': profile['id']}
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,7 +74,7 @@ def main():
     assert len(first['corrections']) == 2, 'Expected only address/date requests; inspect staff evidence if repository eligibility or extraction failed.'
     internal = call(staff, 'GET', '/api/documents/submissions/' + id)
     assert internal['submission']['submission_source'] == 'CUSTOMER_PORTAL'
-    assert internal['submission']['owner_name'] == 'operator'
+    assert internal['submission']['owner_name'] == 'reviewer'
     assert any(e['check_key'] == 'MATCH_MAILING' and e['status'] == 'OPEN' for e in internal['exceptions'])
     assert len(internal['automation']) == 1 and internal['automation'][0]['status'] == 'VERIFIED'
     assert id in [s['id'] for s in call(staff, 'GET', '/api/documents/submissions')]
@@ -89,7 +89,9 @@ def main():
     call(portal, 'POST', path, expected=404, headers={**other, 'Idempotency-Key': str(uuid.uuid4())}, files=corrected_file)
     correction_key = str(uuid.uuid4())
     result = call(portal, 'POST', path, headers={**headers, 'Idempotency-Key': correction_key}, files=corrected_file)
-    assert result['submission']['status'] == 'OPERATIONS' and result['corrections'] == []
+    assert result['submission']['status'] == 'RESOLUTION_MANAGEMENT' and result['corrections'] == []
+    call(reviewer, 'POST', '/api/documents/submissions/' + id + '/approve', json={'revision': result['submission']['revision']})
+    result = call(portal, 'GET', '/submissions/' + id, headers=headers)
     call(portal, 'POST', path, headers={**headers, 'Idempotency-Key': correction_key}, files=corrected_file)
     final = call(staff, 'GET', '/api/documents/submissions/' + id)
     assert final['submission']['id'] == result['submission']['id']

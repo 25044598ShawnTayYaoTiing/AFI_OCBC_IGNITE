@@ -101,13 +101,13 @@ def activate(api, values, provision, submit_fixture=False):
     basic = 'Basic ' + base64.b64encode(
         (rm + ':' + values['AFI_TEST_RM_PASSWORD']).encode('utf-8')).decode('ascii')
     _, staff = api.call('GET', '/api/auth/me', basic)
-    if staff.get('username') != rm or not {'OPERATOR', 'REVIEWER'} <= set(staff.get('roles', [])):
-        raise SetupError('Configured reviewer does not have the expected RM/reviewer roles.')
+    if staff.get('username') != rm or not {'REVIEWER'} <= set(staff.get('roles', [])):
+        raise SetupError('Configured reviewer does not have the expected Resolution Management role.')
     if provision:
         # Fixed fixture reference is deliberate. Never change identity to bypass a collision.
         status, _ = api.call('POST', '/api/documents/customers', basic, {
             'username': username, 'password': values['AFI_TEST_CUSTOMER_PASSWORD'],
-            'customerName': 'Alex Tan (Fictional)', 'customerReference': 'SYN-ALEX-001',
+            'customerName': 'Alex Tan', 'customerReference': 'SYN-ALEX-001',
             'relationshipManager': rm, 'repositorySubmissionId': None,
         }, allowed=(200, 409))
         if status == 409:
@@ -137,7 +137,7 @@ def activate(api, values, provision, submit_fixture=False):
             print('PASS: one synthetic PDF submission visible to RM; case ID: ' + case_id)
     finally:
         api.call('POST', '/api/customer/auth/logout', bearer, allowed=(204,))
-    print('PASS: customer login, reviewer roles, submission access and role separation; session revoked.')
+    print('PASS: customer login, Resolution Management access, submission access and role separation; session revoked.')
 
 
 def main():

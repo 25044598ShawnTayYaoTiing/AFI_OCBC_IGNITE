@@ -68,7 +68,7 @@ export function CorrectionTasks({
       ) : (
         <Empty
           title="No corrections requested"
-          description="Tasks appear when a form needs customer or reviewer input."
+          description="Tasks appear when a form needs customer or Resolution Management input."
         />
       )}
     </Panel>
@@ -95,7 +95,7 @@ export function InvestigationExplanation({
       <p>{recommendation.explanation}</p>
       <p>
         {recommendation.human_review_required
-          ? "Customer or reviewer action is required."
+          ? "Customer or Resolution Management action is required."
           : "The recommendation remains subject to preflight and backend policy checks."}
       </p>
       <small>Source package revision {investigation.revision}</small>

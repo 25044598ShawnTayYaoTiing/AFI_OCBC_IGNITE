@@ -11,9 +11,9 @@ import java.util.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.multipart.MultipartFile;
 
 /** Document policies and mutations live here, never in AI output or browser state. */
 @Service
@@ -26,6 +26,7 @@ public class DocumentService {
   final CustomerNotifications customerNotifications;
   static final Set<String> TYPES =
       Set.of(
+          "SERVICE_REQUEST",
           "CUSTOMER_INFORMATION",
           "ACCOUNT_APPLICATION",
           "TAX_RESIDENCY",
@@ -41,7 +42,14 @@ public class DocumentService {
           "declaration_date",
           "tax_residency",
           "signature_indicator",
-          "required_selection");
+          "required_selection",
+          "identity_number",
+          "email",
+          "mobile",
+          "request_type",
+          "foreign_tax_country",
+          "tax_identifier",
+          "tax_declaration");
 
   public DocumentService(
       Store s,
@@ -53,8 +61,13 @@ public class DocumentService {
   }
 
   @org.springframework.beans.factory.annotation.Autowired
-  public DocumentService(Store s, AiClient ai, DocumentOrchestrator orchestrator,
-      DocumentStorage storage, DemoService demoAccess, CustomerNotifications customerNotifications) {
+  public DocumentService(
+      Store s,
+      AiClient ai,
+      DocumentOrchestrator orchestrator,
+      DocumentStorage storage,
+      DemoService demoAccess,
+      CustomerNotifications customerNotifications) {
     this.s = s;
     this.ai = ai;
     this.orchestrator = orchestrator;
@@ -65,6 +78,46 @@ public class DocumentService {
 
   @PostConstruct
   void initialise() throws Exception {
+    new BankingServicePolicy(this, s).seed();
+    seed(
+        "PROFILE_NAME",
+        "Name must match the synthetic bank profile",
+        "PACKAGE",
+        "PROFILE_MATCH",
+        "customer_name",
+        "Confirm the name against your synthetic profile; Resolution Management must review"
+            + " identity discrepancies.");
+    seed(
+        "PROFILE_ADDRESS",
+        "Mailing address is supported by profile or evidence",
+        "PACKAGE",
+        "PROFILE_MATCH",
+        "mailing_address",
+        "Confirm your profile mailing address or provide a supporting PDF with your customer"
+            + " reference and the declared new address.");
+    seed(
+        "PROFILE_IDENTITY",
+        "Identity must match the synthetic bank profile",
+        "PACKAGE",
+        "PROFILE_MATCH",
+        "identity_number",
+        "Provide a declaration with the identity recorded in your synthetic customer profile.");
+    seed(
+        "EFORM_REQUIRED",
+        "Digital declaration has required information",
+        "PACKAGE",
+        "EFORM",
+        "",
+        "Complete mailing address, occupation, tax residency and a valid declaration date in your"
+            + " digital form.");
+    seed(
+        "EFORM_TAX",
+        "Tax declaration is supported",
+        "PACKAGE",
+        "EFORM",
+        "",
+        "Confirm the tax declaration; for foreign tax residency provide the country, tax identifier"
+            + " and supporting PDF.");
     for (String type :
         List.of(
             "CUSTOMER_INFORMATION", "ACCOUNT_APPLICATION", "TAX_RESIDENCY", "SUPPORTING_DOCUMENT"))
@@ -369,22 +422,31 @@ public class DocumentService {
     return detail(id, a);
   }
 
-  String createCustomer(String name, String reference, String owner, String customerId, Authentication a) {
+  String createCustomer(
+      String name, String reference, String owner, String customerId, Authentication a) {
     return createOwned(name, reference, "ACCOUNT_OPENING", owner, customerId, a);
   }
 
-  String createOwned(String name, String reference, String category, String owner, String customerId, Authentication a) {
+  String createOwned(
+      String name,
+      String reference,
+      String category,
+      String owner,
+      String customerId,
+      Authentication a) {
     if (name == null
         || name.isBlank()
         || name.length() > 160
         || reference == null
         || !reference.matches("(?:SYN|DEMO)-[A-Za-z0-9-]{1,60}")
-        || !"ACCOUNT_OPENING".equals(category))
+        || !("ACCOUNT_OPENING".equals(category)
+            || BankingServicePolicy.REQUESTS.contains(Objects.toString(category, ""))
+                && customerId != null))
       throw new ApiException(
           400,
           "INVALID_SUBMISSION",
           "Use a fictional customer name, a SYN- or DEMO- customer reference and the supported"
-              + " account-opening category");
+              + " request category for an existing authenticated customer");
     String id = s.id("DOC");
     s.db.update(
         "INSERT INTO"
@@ -398,6 +460,8 @@ public class DocumentService {
         customerId,
         customerId == null ? "RM" : "CUSTOMER_PORTAL",
         Store.now());
+    if (customerId != null)
+      s.db.update("UPDATE document_submissions SET requires_rm_approval=TRUE WHERE id=?", id);
     event(id, a, "CREATED", map("category", category, "syntheticOnly", true));
     return id;
   }
@@ -533,25 +597,56 @@ public class DocumentService {
         // Never expose upstream bodies or credentials in upload errors.
       }
       throw switch (code) {
-        case "INVALID_PDF" -> new ApiException(400, code,
-            "The PDF is invalid, encrypted or exceeds 10 MB / 30 pages. No document was accepted.");
-        case "UNSUPPORTED_FORMAT" -> new ApiException(422, code,
-            "Upload a text-readable PDF clearly labelled as synthetic demo data. Scans and oversized page text are unsupported. No document was accepted.");
-        case "UNSUPPORTED_DOCUMENT" -> new ApiException(422, code,
-            "The PDF is not one supported document type. Use a customer information form, account application, tax residency declaration or authorised supporting document. No document was accepted.");
-        case "EXTRACTION_FAILED", "VALIDATION_ERROR" -> new ApiException(422, "EXTRACTION_FAILED",
-            "Extracted fields did not pass schema or source-evidence verification. Retry or review the PDF text. No document was accepted.");
-        case "AI_NOT_CONFIGURED" -> new ApiException(503, code,
-            "Gemini is not configured for flexible PDF extraction. Check AI Integration settings. No document was accepted.");
-        default -> new ApiException(503, "AI_SERVICE_ERROR",
-            "The AI service could not complete extraction. Check its connection, service authentication and provider status, then retry. No document was accepted.");
+        case "INVALID_PDF" ->
+            new ApiException(
+                400,
+                code,
+                "The PDF is invalid, encrypted or exceeds 10 MB / 30 pages. No document was"
+                    + " accepted.");
+        case "UNSUPPORTED_FORMAT" ->
+            new ApiException(
+                422,
+                code,
+                "Upload a text-readable PDF clearly labelled as synthetic demo data. Scans and"
+                    + " oversized page text are unsupported. No document was accepted.");
+        case "UNSUPPORTED_DOCUMENT" ->
+            new ApiException(
+                422,
+                code,
+                "The PDF is not one supported document type. Use a customer information form,"
+                    + " account application, tax residency declaration or authorised supporting"
+                    + " document. No document was accepted.");
+        case "EXTRACTION_FAILED", "VALIDATION_ERROR" ->
+            new ApiException(
+                422,
+                "EXTRACTION_FAILED",
+                "Extracted fields did not pass schema or source-evidence verification. Retry or"
+                    + " review the PDF text. No document was accepted.");
+        case "AI_NOT_CONFIGURED" ->
+            new ApiException(
+                503,
+                code,
+                "Gemini is not configured for flexible PDF extraction. Check AI Integration"
+                    + " settings. No document was accepted.");
+        default ->
+            new ApiException(
+                503,
+                "AI_SERVICE_ERROR",
+                "The AI service could not complete extraction. Check its connection, service"
+                    + " authentication and provider status, then retry. No document was accepted.");
       };
     } catch (RestClientException e) {
-      throw new ApiException(503, "AI_SERVICE_ERROR",
-          "The AI service is unreachable or timed out. Check that it is running, then retry. No document was accepted.");
+      throw new ApiException(
+          503,
+          "AI_SERVICE_ERROR",
+          "The AI service is unreachable or timed out. Check that it is running, then retry. No"
+              + " document was accepted.");
     } catch (Exception e) {
-      throw new ApiException(422, "EXTRACTION_FAILED",
-          "Extracted fields did not pass schema or source-evidence verification. No document was accepted.");
+      throw new ApiException(
+          422,
+          "EXTRACTION_FAILED",
+          "Extracted fields did not pass schema or source-evidence verification. No document was"
+              + " accepted.");
     }
   }
 
@@ -568,9 +663,10 @@ public class DocumentService {
     editable(c);
     if (files.isEmpty() || files.size() > 10 || (replace != null && files.size() != 1))
       throw new ApiException(400, "FILE_LIMIT", "Choose 1 to 10 PDFs, or one replacement");
-    if (documents(id, false).size() + documents(id, true).size()
-            + (replace == null ? files.size() : 0) > 30)
-      throw new ApiException(400, "FILE_LIMIT", "At most 30 documents per case");
+    if (documents(id, false).size()
+            + documents(id, true).size()
+            + (replace == null ? files.size() : 0)
+        > 30) throw new ApiException(400, "FILE_LIMIT", "At most 30 documents per case");
     for (var file : files) {
       String filename =
           Path.of(
@@ -599,6 +695,13 @@ public class DocumentService {
             409, "DUPLICATE_FILE", "This exact PDF already exists in the case's document history");
       String docId = replace == null ? s.id("FILE") : replace;
       var extracted = extraction(bytes, docId);
+      if ("DIGITAL_EFORM".equals(c.get("capture_method"))
+          && !"SUPPORTING_DOCUMENT".equals(extracted.path("document_type").asText()))
+        throw new ApiException(
+            409,
+            "EDIT_EFORM",
+            "For digital applications edit the declaration in the customer portal; upload"
+                + " supporting PDFs only");
       int version = 1;
       if (replace != null) {
         var old =
@@ -635,8 +738,8 @@ public class DocumentService {
                       } catch (Exception cleanupFailure) {
                         org.slf4j.LoggerFactory.getLogger(DocumentService.class)
                             .warn(
-                                "Private document rollback cleanup failed for key {}; reconcile orphan objects"
-                                    + " with document_versions",
+                                "Private document rollback cleanup failed for key {}; reconcile"
+                                    + " orphan objects with document_versions",
                                 key);
                       }
                   }
@@ -698,6 +801,280 @@ public class DocumentService {
     return detail(id, a);
   }
 
+  void captureDeclaration(
+      String id, String type, Map<String, String> values, int formVersion, Authentication a)
+      throws Exception {
+    var rows =
+        s.db.queryForList(
+            "SELECT * FROM submission_documents WHERE submission_id=? AND document_type=? AND"
+                + " repository_only=FALSE",
+            id,
+            type);
+    String doc = rows.isEmpty() ? s.id("FILE") : (String) rows.getFirst().get("id");
+    int version =
+        rows.isEmpty() ? 1 : ((Number) rows.getFirst().get("current_version")).intValue() + 1;
+    if (rows.isEmpty())
+      s.db.update(
+          "INSERT INTO submission_documents(id,submission_id,document_type) VALUES(?,?,?)",
+          doc,
+          id,
+          type);
+    else s.db.update("UPDATE submission_documents SET current_version=? WHERE id=?", version, doc);
+    String versionId = s.id("VER"), key = UUID.randomUUID() + ".pdf";
+    byte[] bytes = DeclarationReceipt.pdf(type, formVersion, values);
+    org.springframework.transaction.support.TransactionSynchronizationManager
+        .registerSynchronization(
+            new org.springframework.transaction.support.TransactionSynchronization() {
+              public void afterCompletion(int status) {
+                if (status != STATUS_COMMITTED)
+                  try {
+                    storage.delete(key);
+                  } catch (Exception e) {
+                    org.slf4j.LoggerFactory.getLogger(DocumentService.class)
+                        .warn("Declaration receipt rollback cleanup failed for {}", key);
+                  }
+              }
+            });
+    storage.put(key, bytes);
+    var fields = new ArrayList<Object>();
+    int receiptLine = 5;
+    for (var field : values.entrySet()) {
+      int page = 1 + receiptLine / 48;
+      receiptLine +=
+          Math.max(1, (field.getKey().length() + 2 + field.getValue().length() + 84) / 85);
+      if (field.getValue().isBlank()) continue;
+      String evidence =
+          "Authenticated digital declaration / " + field.getKey() + ": " + field.getValue();
+      fields.add(
+          map(
+              "field",
+              field.getKey(),
+              "value",
+              field.getValue(),
+              "page",
+              page,
+              "supporting_text",
+              evidence));
+    }
+    s.db.update(
+        "INSERT INTO document_versions VALUES(?,?,?,?,?,?,?,?,?,?)",
+        versionId,
+        doc,
+        version,
+        "digital-" + type.toLowerCase(Locale.ROOT) + ".pdf",
+        HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)),
+        key,
+        bytes.length,
+        s.json(
+            map(
+                "document_id",
+                doc,
+                "document_type",
+                type,
+                "method",
+                "DIGITAL_EFORM",
+                "requires_review",
+                false,
+                "notes",
+                "Customer-supplied structured declaration; authenticated explicit authorisation,"
+                    + " not Gemini extraction or a handwritten signature.",
+                "fields",
+                fields)),
+        a.getName(),
+        Store.now());
+    for (var field : fields) {
+      var f = (Map<?, ?>) field;
+      s.db.update(
+          "INSERT INTO extracted_fields VALUES(?,?,?,?,?,?,?)",
+          s.id("FIELD"),
+          versionId,
+          f.get("field"),
+          f.get("value"),
+          f.get("page"),
+          f.get("supporting_text"),
+          "DIGITAL_EFORM");
+    }
+    event(
+        id,
+        a,
+        "DECLARATION_CAPTURED",
+        map(
+            "documentId",
+            doc,
+            "version",
+            version,
+            "formVersion",
+            formVersion,
+            "method",
+            "DIGITAL_EFORM"));
+  }
+
+  @Transactional
+  public Object approveForOperations(String id, int revision, Authentication a) {
+    var c = access(id, a, true);
+    if (!reviewer(a))
+      throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
+    editable(c);
+    if (((Number) c.get("revision")).intValue() != revision)
+      throw new ApiException(409, "STALE_REVIEW", "Reload the current case before approval");
+    var checks = evaluate(id);
+    if (checks.isEmpty()
+        || checks.stream().anyMatch(PolicyService::blockingDocumentCheck)
+        || unresolvedBlocking(id) > 0
+        || !currentRevisionValidated(c))
+      throw new ApiException(
+          409,
+          "NOT_READY",
+          "Resolve all blocking findings and revalidate before approval; approval cannot override"
+              + " policy");
+    s.db.update("UPDATE document_submissions SET approved_revision=? WHERE id=?", revision, id);
+    event(
+        id,
+        a,
+        "RESOLUTION_MANAGEMENT_APPROVED",
+        map("revision", revision, "approvedChecks", checks.size()));
+    routeInternal(id, a, checks);
+    syncCustomer(id);
+    return detail(id, a);
+  }
+
+  @Transactional
+  public Object escalate(String id, Authentication a) {
+    var c = access(id, a, true);
+    editable(c);
+    s.db.update(
+        "UPDATE correction_tasks SET status='ESCALATED',assigned_role='RESOLUTION_MANAGEMENT' WHERE"
+            + " submission_id=? AND status<>'RESOLVED'",
+        id);
+    s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
+    event(id, a, "ESCALATED_TO_RESOLUTION_MANAGEMENT", map("revision", c.get("revision")));
+    syncCustomer(id);
+    return map("status", "RESOLUTION_MANAGEMENT");
+  }
+
+  Map<String, Object> latestForm(String id) {
+    var rows =
+        s.db.queryForList(
+            "SELECT payload_json FROM customer_eforms WHERE submission_id=? ORDER BY version DESC"
+                + " LIMIT 1",
+            id);
+    return rows.isEmpty() ? Map.of() : s.readMap((String) rows.getFirst().get("payload_json"));
+  }
+
+  boolean supportRequired(Map<String, Object> c) {
+    var f = latestForm((String) c.get("id"));
+    if (f.isEmpty()) return true;
+    var profile = new CustomerProfiles(s).get((String) c.get("customer_id"));
+    return !normal(f.get("mailingAddress")).equals(normal(profile.get("mailing_address")))
+        || !"singapore".equals(normal(f.get("taxResidency")));
+  }
+
+  Map<String, Object> customerCheck(
+      Map<String, Object> c, List<Map<String, Object>> docs, Map<String, Object> rule) {
+    String key = (String) rule.get("rule_key");
+    if (c.get("customer_id") == null
+        || ("EFORM".equals(rule.get("condition_type"))
+            && !"DIGITAL_EFORM".equals(c.get("capture_method"))))
+      return check(rule, key, true, List.of());
+    var profile = new CustomerProfiles(s).get((String) c.get("customer_id"));
+    var evidence = new ArrayList<Map<String, Object>>();
+    boolean pass = true;
+    if ("PROFILE_MATCH".equals(rule.get("condition_type"))) {
+      String field = (String) rule.get("field_name");
+      var source =
+          fields(
+              docs.stream()
+                  .filter(d -> !"SUPPORTING_DOCUMENT".equals(d.get("document_type")))
+                  .toList(),
+              field);
+      String expected = (String) profile.get(field);
+      evidence.addAll(source);
+      evidence.add(
+          map(
+              "field_name",
+              field,
+              "field_value",
+              expected,
+              "method",
+              "SYNTHETIC_CUSTOMER_PROFILE",
+              "supporting_text",
+              "Authorised synthetic core-banking profile (not Singpass): " + expected));
+      pass = source.stream().allMatch(f -> normal(expected).equals(normal(f.get("field_value"))));
+      if (!pass
+          && key.equals("PROFILE_ADDRESS")
+          && source.stream().map(f -> normal(f.get("field_value"))).distinct().count() == 1) {
+        var support =
+            fields(
+                docs.stream()
+                    .filter(d -> "SUPPORTING_DOCUMENT".equals(d.get("document_type")))
+                    .toList(),
+                "mailing_address");
+        evidence.addAll(support);
+        pass =
+            !support.isEmpty()
+                && support.stream()
+                    .allMatch(
+                        f ->
+                            normal(f.get("field_value"))
+                                .equals(normal(source.getFirst().get("field_value"))));
+      }
+    } else {
+      var f = latestForm((String) c.get("id"));
+      var requested =
+          switch (key) {
+            case "EFORM_REQUIRED" ->
+                List.of("mailing_address", "occupation", "tax_residency", "declaration_date");
+            case "EFORM_TAX" ->
+                List.of(
+                    "tax_declaration", "tax_residency", "foreign_tax_country", "tax_identifier");
+            default -> List.of("mailing_address");
+          };
+      for (String name : requested) evidence.addAll(fields(docs, name));
+      switch (key) {
+        case "EFORM_REQUIRED" ->
+            pass =
+                List.of("mailingAddress", "occupation", "taxResidency").stream()
+                        .allMatch(k -> f.get(k) instanceof String v && !v.isBlank())
+                    && validDate(f.get("declarationDate"));
+        case "EFORM_TAX" ->
+            pass =
+                Boolean.TRUE.equals(f.get("taxDeclaration"))
+                    && ("singapore".equals(normal(f.get("taxResidency")))
+                        || List.of("foreignTaxCountry", "taxIdentifier").stream()
+                            .allMatch(k -> f.get(k) instanceof String v && !v.isBlank()));
+        case "EFORM_ADDRESS" -> {
+          boolean changed =
+              !normal(f.get("mailingAddress")).equals(normal(profile.get("mailing_address")));
+          var support =
+              docs.stream()
+                  .filter(d -> "SUPPORTING_DOCUMENT".equals(d.get("document_type")))
+                  .toList();
+          var addresses = fields(support, "mailing_address");
+          evidence.addAll(addresses);
+          pass =
+              !changed
+                  || (!addresses.isEmpty()
+                      && addresses.stream()
+                          .allMatch(
+                              e ->
+                                  normal(e.get("field_value"))
+                                      .equals(normal(f.get("mailingAddress")))));
+        }
+        default -> pass = false;
+      }
+      evidence.add(
+          map(
+              "field_name",
+              "digital_declaration",
+              "field_value",
+              pass ? "SATISFIED" : "MISSING_OR_UNSUPPORTED",
+              "supporting_text",
+              "Backend checked the authenticated declaration and authorised synthetic profile: "
+                  + key));
+    }
+    return check(rule, key, pass, evidence);
+  }
+
   public byte[] file(String id, String version, Authentication a) throws Exception {
     access(id, a, false);
     var rows =
@@ -736,15 +1113,16 @@ public class DocumentService {
   boolean validDate(Object value) {
     // Normalise unambiguous source date formats without changing the approved
     // DATE rule, inventing a missing date or accepting ambiguous numeric dates.
-    for (var format : List.of(
-        java.time.format.DateTimeFormatter.ISO_LOCAL_DATE,
-        java.time.format.DateTimeFormatter.ofPattern("d MMMM uuuu", Locale.ENGLISH)
-            .withResolverStyle(java.time.format.ResolverStyle.STRICT),
-        java.time.format.DateTimeFormatter.ofPattern("d MMM uuuu", Locale.ENGLISH)
-            .withResolverStyle(java.time.format.ResolverStyle.STRICT))) {
+    for (var format :
+        List.of(
+            java.time.format.DateTimeFormatter.ISO_LOCAL_DATE,
+            java.time.format.DateTimeFormatter.ofPattern("d MMMM uuuu", Locale.ENGLISH)
+                .withResolverStyle(java.time.format.ResolverStyle.STRICT),
+            java.time.format.DateTimeFormatter.ofPattern("d MMM uuuu", Locale.ENGLISH)
+                .withResolverStyle(java.time.format.ResolverStyle.STRICT))) {
       try {
         var date = LocalDate.parse(String.valueOf(value).trim(), format);
-        return !date.isAfter(LocalDate.now(ZoneOffset.UTC)) && date.getYear() >= 2000;
+        return !date.isAfter(LocalDate.now(ZoneId.of("Asia/Singapore"))) && date.getYear() >= 2000;
       } catch (java.time.format.DateTimeParseException ignored) {
         // Try the next explicit format. Raw source evidence remains unchanged.
       }
@@ -762,6 +1140,12 @@ public class DocumentService {
     for (var rule :
         s.db.queryForList(
             "SELECT * FROM validation_rules WHERE status='ACTIVE' ORDER BY rule_key")) {
+      var servicePolicy = new BankingServicePolicy(this, s);
+      if (!servicePolicy.applicable(rule, c)) continue;
+      if (Set.of("SERVICE", "SERVICE_MANUAL").contains(rule.get("condition_type"))) {
+        checks.add(servicePolicy.check(c, docs, rule));
+        continue;
+      }
       String type = (String) rule.get("document_type"),
           condition = (String) rule.get("condition_type"),
           field = (String) rule.get("field_name");
@@ -769,8 +1153,44 @@ public class DocumentService {
           docs.stream()
               .filter(d -> "PACKAGE".equals(type) || type.equals(d.get("document_type")))
               .toList();
+      // Cross-document conflicts already have their own correction request. Compare the agreed
+      // address with the profile only once the customer has reconciled the declarations.
+      if ("PROFILE_ADDRESS".equals(rule.get("rule_key"))
+          && fields(
+                      docs.stream()
+                          .filter(d -> !"SUPPORTING_DOCUMENT".equals(d.get("document_type")))
+                          .toList(),
+                      "mailing_address")
+                  .stream()
+                  .map(f -> normal(f.get("field_value")))
+                  .distinct()
+                  .count()
+              > 1) continue;
+      if (Set.of("PROFILE_MATCH", "EFORM").contains(condition)) {
+        checks.add(customerCheck(c, docs, rule));
+        continue;
+      }
       if (condition.equals("ATTACHMENT")) {
-        checks.add(check(rule, (String) rule.get("rule_key"), !relevant.isEmpty(), List.of()));
+        boolean optional =
+            "SUPPORTING_DOCUMENT".equals(type)
+                && (BankingServicePolicy.REQUESTS.contains(c.get("category"))
+                    ? !servicePolicy.supportRequired(c, docs)
+                    : "DIGITAL_EFORM".equals(c.get("capture_method")) && !supportRequired(c));
+        checks.add(
+            check(
+                rule,
+                (String) rule.get("rule_key"),
+                optional || !relevant.isEmpty(),
+                optional
+                    ? List.of(
+                        map(
+                            "field_name",
+                            "support_requirement",
+                            "field_value",
+                            "NOT_REQUIRED",
+                            "supporting_text",
+                            "No address change or foreign tax residency was declared."))
+                    : List.of()));
         continue;
       }
       if (condition.equals("CLASSIFICATION")) {
@@ -822,7 +1242,11 @@ public class DocumentService {
                   case "REQUIRED" -> !normal(value).isBlank();
                   case "CASE_REFERENCE" ->
                       normal(value).equals(normal(c.get("customer_reference")));
-                  case "EQUALS_PRESENT" -> normal(value).matches("present(?:\\s*[-]\\s*synthetic(?: demonstration)?(?: mark| indicator| example)?)?");
+                  case "EQUALS_PRESENT" ->
+                      normal(value)
+                          .matches(
+                              "present(?:\\s*[-]\\s*synthetic(?: demonstration)?(?: mark|"
+                                  + " indicator| example)?)?");
                   case "DATE" -> validDate(value);
                   default -> false;
                 };
@@ -913,7 +1337,7 @@ public class DocumentService {
           check.get("condition_type").equals("ATTACHMENT")
                   && check.get("document_type").equals("SUPPORTING_DOCUMENT")
               ? "ATTACH_VERIFIED_DOCUMENT"
-              : check.get("condition_type").equals("CLASSIFICATION")
+              : Set.of("CLASSIFICATION", "SERVICE_MANUAL").contains(check.get("condition_type"))
                   ? "ESCALATE_UNCERTAIN_INFORMATION"
                   : "REQUEST_CORRECTION";
       var existing =
@@ -967,14 +1391,20 @@ public class DocumentService {
             s.id("TASK"),
             ex,
             id,
-            action.equals("ESCALATE_UNCERTAIN_INFORMATION") ? "REVIEWER" : "RELATIONSHIP_MANAGER",
+            action.equals("ESCALATE_UNCERTAIN_INFORMATION") || c.get("customer_id") == null
+                ? "RESOLUTION_MANAGEMENT"
+                : "CUSTOMER",
             check.get("severity"),
             action.equals("ESCALATE_UNCERTAIN_INFORMATION") ? "ESCALATED" : "AWAITING_CORRECTION",
             Store.now());
       else
         s.db.update(
-            "UPDATE correction_tasks SET status=?,resolved_at=NULL WHERE exception_id=?",
+            "UPDATE correction_tasks SET status=?,assigned_role=?,resolved_at=NULL WHERE"
+                + " exception_id=?",
             action.equals("ESCALATE_UNCERTAIN_INFORMATION") ? "ESCALATED" : "AWAITING_CORRECTION",
+            action.equals("ESCALATE_UNCERTAIN_INFORMATION") || c.get("customer_id") == null
+                ? "RESOLUTION_MANAGEMENT"
+                : "CUSTOMER",
             ex);
     }
     for (var ex :
@@ -1015,7 +1445,9 @@ public class DocumentService {
     boolean blocked = checks.stream().anyMatch(PolicyService::blockingDocumentCheck);
     long unresolved = unresolvedBlocking(id);
     String status =
-        uncertain ? "HUMAN_REVIEW" : blocked || unresolved > 0 ? "CORRECTION_REQUIRED" : "READY";
+        uncertain
+            ? "RESOLUTION_MANAGEMENT"
+            : blocked || unresolved > 0 ? "CORRECTION_REQUIRED" : "READY";
     s.db.update(
         "UPDATE document_submissions SET status=?,validated_revision=revision,validated_at=? WHERE"
             + " id=?",
@@ -1035,6 +1467,28 @@ public class DocumentService {
             failed.size(),
             "status",
             status));
+    int formVersions =
+        s.db.queryForObject(
+            "SELECT COUNT(*) FROM customer_eforms WHERE submission_id=?", Integer.class, id);
+    int documentVersions =
+        s.db.queryForObject(
+            "SELECT COALESCE(MAX(current_version),0) FROM submission_documents WHERE"
+                + " submission_id=?",
+            Integer.class,
+            id);
+    if (uncertain || (blocked && Math.max(formVersions, documentVersions) >= 3)) {
+      s.db.update(
+          "UPDATE correction_tasks SET status='ESCALATED',assigned_role='RESOLUTION_MANAGEMENT'"
+              + " WHERE submission_id=? AND status<>'RESOLVED'",
+          id);
+      s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
+    }
+    if (checks.stream()
+        .anyMatch(
+            ch ->
+                "SERVICE_MANUAL".equals(ch.get("condition_type"))
+                    && !Boolean.TRUE.equals(ch.get("passed"))))
+      s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
     if (status.equals("READY")) routeInternal(id, a, checks);
   }
 
@@ -1375,6 +1829,11 @@ public class DocumentService {
         || unresolvedBlocking(id) > 0)
       throw new ApiException(
           409, "NOT_READY", "Current package requires validation or human correction");
+    if (Boolean.TRUE.equals(c.get("requires_rm_approval"))
+        && !Objects.equals(c.get("revision"), c.get("approved_revision"))) {
+      s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
+      return;
+    }
     PolicyService.requireDocumentAction("ROUTE_OPERATIONS", true);
     s.db.update(
         "UPDATE document_submissions SET status='OPERATIONS',routed_at=? WHERE id=?",
@@ -1469,20 +1928,36 @@ public class DocumentService {
   @Transactional
   public Object draftAccountDateRule(String action, Authentication a) {
     if (action == null || action.isBlank() || action.length() > 500)
-      throw new ApiException(400, "INVALID_RULE", "Correction guidance is required (at most 500 characters)");
+      throw new ApiException(
+          400, "INVALID_RULE", "Correction guidance is required (at most 500 characters)");
     s.db.queryForObject("SELECT id FROM demo_guard WHERE id=1 FOR UPDATE", Integer.class);
     if (s.db.queryForObject(
-            "SELECT COUNT(*) FROM validation_rules WHERE rule_key='ACCOUNT_DATE' AND status IN ('ACTIVE','DRAFT')",
-            Integer.class) > 0)
-      throw new ApiException(409, "RULE_ALREADY_PROPOSED", "An account declaration-date rule already exists; review its current draft or propose a revision");
-    Integer version = s.db.queryForObject(
-        "SELECT COALESCE(MAX(version),0)+1 FROM validation_rules WHERE rule_key='ACCOUNT_DATE'", Integer.class);
+            "SELECT COUNT(*) FROM validation_rules WHERE rule_key='ACCOUNT_DATE' AND status IN"
+                + " ('ACTIVE','DRAFT')",
+            Integer.class)
+        > 0)
+      throw new ApiException(
+          409,
+          "RULE_ALREADY_PROPOSED",
+          "An account declaration-date rule already exists; review its current draft or propose a"
+              + " revision");
+    Integer version =
+        s.db.queryForObject(
+            "SELECT COALESCE(MAX(version),0)+1 FROM validation_rules WHERE rule_key='ACCOUNT_DATE'",
+            Integer.class);
     String id = s.id("RULE");
     // This endpoint can propose only this supported requirement, never arbitrary
     // conditions or active policies. The existing independent approval path applies.
     s.db.update(
-        "INSERT INTO validation_rules(id,rule_key,name,description,document_type,condition_type,field_name,severity,corrective_action,version,status,created_by) VALUES(?,'ACCOUNT_DATE','Account declaration date','Proposed synthetic intake requirement; independent reviewer approval required','ACCOUNT_APPLICATION','DATE','declaration_date','BLOCKING',?,?,'DRAFT',?)",
-        id, action, version, a.getName());
+        "INSERT INTO"
+            + " validation_rules(id,rule_key,name,description,document_type,condition_type,field_name,severity,corrective_action,version,status,created_by)"
+            + " VALUES(?,'ACCOUNT_DATE','Account declaration date','Proposed synthetic intake"
+            + " requirement; independent reviewer approval"
+            + " required','ACCOUNT_APPLICATION','DATE','declaration_date','BLOCKING',?,?,'DRAFT',?)",
+        id,
+        action,
+        version,
+        a.getName());
     event(null, a, "RULE_DRAFTED", map("ruleId", id, "version", version, "newRequirement", true));
     return rules();
   }

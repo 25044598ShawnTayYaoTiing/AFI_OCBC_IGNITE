@@ -9,6 +9,11 @@ spring:
       max-request-size: 105MB
   profiles:
     default: demo
+  mail:
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:}
   application:
     name: afi-resolve
   datasource:
@@ -32,8 +37,12 @@ management:
     health:
       show-details: never
 afi:
+  synthetic-customers-enabled: ${SYNTHETIC_CUSTOMERS_ENABLED:false}
+  synthetic-customers-password: ${SYNTHETIC_CUSTOMERS_PASSWORD:}
+  mail-enabled: ${SMTP_ENABLED:false}
+  mail-from: ${SMTP_FROM:}
+  mail-starttls: ${SMTP_STARTTLS:true}
   demo-enabled: ${DEMO_ENABLED:true}
-  operator-password: ${OPERATOR_PASSWORD:operator-demo}
   reviewer-password: ${REVIEWER_PASSWORD:reviewer-demo}
   rules-admin-password: ${RULES_ADMIN_PASSWORD:rules-admin-demo}
   document-storage: ${DOCUMENT_STORAGE:.local/documents}

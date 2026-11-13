@@ -29,7 +29,7 @@ Docker Compose **2.24.4 or later** is required for `!override`. The AWS file rep
 | `S3_BUCKET` | `afi-resolve-documents-uniqueid` |
 | `AWS_REGION` | `ap-southeast-1` |
 | `S3_DOCUMENT_PREFIX` | `documents/` |
-| `AWS_OPERATOR_PASSWORD`, `AWS_REVIEWER_PASSWORD`, `AWS_RULES_ADMIN_PASSWORD` | Separate strong application passwords you set on EC2 |
+| `AWS_REVIEWER_PASSWORD`, `AWS_RULES_ADMIN_PASSWORD` | Separate strong application passwords you set on EC2 |
 | `AWS_AI_SERVICE_KEY` | One long random internal key, injected identically into backend and AI containers |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | Optional existing Gemini account configuration; blank key keeps deterministic extraction |
 | `AWS_FRONTEND_ORIGIN` | Exact public origin, initially `http://EC2_PUBLIC_IP`, later `https://your-domain` |

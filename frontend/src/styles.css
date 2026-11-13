@@ -5269,3 +5269,5 @@ html[data-theme="dark"] .banner-grid { opacity: .25; }
   .sidebar-collapsed .nav-item { justify-content: flex-start; padding: 13px; }
   .sidebar-collapsed .sidebar nav { padding-inline: 13px; }
 }
+
+.badge-resolution_management { color:#6b46a5; background:#f2ecfa; }

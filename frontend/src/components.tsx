@@ -20,7 +20,9 @@ export function Badge({ value, text }: { value: string; text?: string }) {
   const names: Record<string, string> = {
     OPERATIONS: "With Operations",
     CORRECTION_REQUIRED: "Needs correction",
-    HUMAN_REVIEW: "Needs review",
+    HUMAN_REVIEW: "Resolution Management",
+    RESOLUTION_MANAGEMENT: "Resolution Management",
+    DIGITAL_EFORM: "Digital declaration",
     PENDING_VALIDATION: "Awaiting validation",
     GEMINI: "Live Gemini",
     DETERMINISTIC_FALLBACK: "Rule-based fallback",

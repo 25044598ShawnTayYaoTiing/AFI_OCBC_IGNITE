@@ -37,6 +37,18 @@ public class DocumentOrchestrator {
   public void run(DocumentService workflow, String id, Authentication actor) {
     var c = workflow.access(id, actor, true);
     if ("OPERATIONS".equals(c.get("status"))) return;
+    if ("CONTACT_UPDATE".equals(c.get("category"))) {
+      workflow.event(
+          id,
+          actor,
+          "CONTACT_VERIFICATION_POLICY",
+          map(
+              "aiUsed",
+              false,
+              "reason",
+              "Contact updates require explicit verification, not AI approval"));
+      return;
+    }
     intelligence.investigate(workflow, id, actor);
     if (!enabled) {
       workflow.event(id, actor, "AUTOMATION_DISABLED", map("revision", c.get("revision")));
@@ -78,9 +90,13 @@ public class DocumentOrchestrator {
         workflow.event(
             id, actor, "AUTOMATION_RETRY_LIMIT", map("exceptionId", ex, "limit", maxAttempts));
         s.db.update(
-            "UPDATE correction_tasks SET status='ESCALATED',assigned_role='REVIEWER' WHERE"
-                + " exception_id=? AND status<>'RESOLVED'",
+            "UPDATE correction_tasks SET status='ESCALATED',assigned_role='RESOLUTION_MANAGEMENT'"
+                + " WHERE exception_id=? AND status<>'RESOLVED'",
             ex);
+        s.db.update(
+            "UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=? AND"
+                + " status<>'OPERATIONS'",
+            id);
         continue;
       }
       String attempt = s.id("AUTO");
@@ -190,9 +206,13 @@ public class DocumentOrchestrator {
                 "reason",
                 "Execution or verification failed safely"));
         s.db.update(
-            "UPDATE correction_tasks SET status='ESCALATED',assigned_role='REVIEWER' WHERE"
-                + " exception_id=? AND status<>'RESOLVED'",
+            "UPDATE correction_tasks SET status='ESCALATED',assigned_role='RESOLUTION_MANAGEMENT'"
+                + " WHERE exception_id=? AND status<>'RESOLVED'",
             ex);
+        s.db.update(
+            "UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=? AND"
+                + " status<>'OPERATIONS'",
+            id);
       } finally {
         DataSourceUtils.releaseConnection(connection, s.db.getDataSource());
       }
