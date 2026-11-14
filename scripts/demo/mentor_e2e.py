@@ -128,13 +128,14 @@ def execute(expected_sha, mailbox=None):
         report["scenarios"]["E"] = {"passed": True, "case": case_id, "revalidatedRevision": revised["submission"]["revision"]}
         print("Scenario E passed / conditional TIN issue reviewed and corrected", flush=True)
 
-        legacy = call(staff, "POST", "/api/documents/demo/restore")
+        legacy = call(staff, "POST", "/api/documents/submissions", json={"customerName":"Alex Tan (Fictional)","customerReference":"SYN-ALEX-001","category":"ACCOUNT_OPENING"})
         case_id = legacy["submission"]["id"]
         ids.append(case_id)
         fixture_root = ROOT / "backend/src/main/resources/synthetic"
         files = [("files", (name, (fixture_root / name).read_bytes(), "application/pdf")) for name in ["customer-information.pdf", "account-application.pdf", "tax-residency.pdf"]]
         legacy = call(staff, "POST", f"/api/documents/submissions/{case_id}/upload", files=files)
-        report["scenarios"]["F"] = {"passed": bool(legacy["checks"]), "case": case_id, "checksPassed": sum(check["passed"] for check in legacy["checks"]), "checksTotal": len(legacy["checks"]), "status": legacy["submission"]["status"]}
+        preflight = call(staff, "POST", f"/api/documents/submissions/{case_id}/preflight")
+        report["scenarios"]["F"] = {"passed": bool(legacy["checks"]), "guardedPreflight": preflight["safeAdministrativeAttachment"], "case": case_id, "checksPassed": sum(check["passed"] for check in legacy["checks"]), "checksTotal": len(legacy["checks"]), "status": legacy["submission"]["status"]}
         live = [document["extraction"]["method"] for id in ids for document in detail(id)["documents"] if document["extraction"]["method"] != "DIGITAL_EFORM"]
         report["liveAiVerified"] = bool(live) and all(method == "GEMINI" for method in live)
         report.update(passed=all(result["passed"] for result in report["scenarios"].values()), status="SUCCEEDED")

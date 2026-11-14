@@ -20,7 +20,7 @@ Mailing address, residential address, contact details, tax residency and additio
 
 The opt-in seeder provisions 100 additional fictional profiles with clearly synthetic identities, dates of birth, addresses, postal codes, contact details, banking preferences and fictional account references. Existing users, passwords and records are retained. The scenario manifest contains 50 clean, 25 missing-support, 15 conflicting-address and 10 identity-conflict fixture assignments. It is separate from customer risk data and never participates in scoring.
 
-Run `scripts/demo/generate_mentor_fixtures.py` to generate the corresponding 100 distinct PDF scenario packs under `.local/mentor-fixtures`. Seed profiles using the existing demo flag/password configuration or the REVIEWER-only `POST /api/documents/demo/seed-customers` endpoint with a private password. Seeding also requires the approved demo environment flag. Repeating it preserves existing credentials and avoids duplicates.
+Run `scripts/demo/generate_mentor_fixtures.py` to generate the corresponding 100 distinct PDF scenario packs under `.local/mentor-fixtures`. Seed profiles using the existing demo flag/password configuration or the REVIEWER-only `POST /api/documents/demo/seed-customers` endpoint with a private password. Seeding requires a standard enabled demo environment or the explicitly approved AFI AWS demo origin. This batch-only permission does not enable the legacy reset/demo controls on AWS. Repeating it preserves existing credentials and avoids duplicates.
 
 ## Customer communication
 

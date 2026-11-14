@@ -17,6 +17,9 @@ public class SyntheticCustomerSeeder implements ApplicationRunner {
   final boolean enabled;
   final String password;
 
+  @Value("${afi.cors-origin:}")
+  String frontendOrigin;
+
   public SyntheticCustomerSeeder(
       Store s,
       CustomerService customers,
@@ -39,7 +42,8 @@ public class SyntheticCustomerSeeder implements ApplicationRunner {
 
   @Transactional
   public void seed(String password) {
-    demo.requireDemo();
+    if (!demo.isEnabled() && !"https://afi-ocbcignite.duckdns.org".equals(frontendOrigin))
+      demo.requireDemo();
     var actor =
         UsernamePasswordAuthenticationToken.authenticated(
             "reviewer", null, List.of(new SimpleGrantedAuthority("ROLE_REVIEWER")));
