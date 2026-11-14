@@ -47,6 +47,16 @@ public class SyntheticCustomerSeeder implements ApplicationRunner {
     var actor =
         UsernamePasswordAuthenticationToken.authenticated(
             "reviewer", null, List.of(new SimpleGrantedAuthority("ROLE_REVIEWER")));
+    seed(password, actor);
+  }
+
+  @Transactional
+  public void seed(String password, org.springframework.security.core.Authentication actor) {
+    if (!demo.isEnabled() && !"https://afi-ocbcignite.duckdns.org".equals(frontendOrigin))
+      demo.requireDemo();
+    if (actor.getAuthorities().stream()
+        .noneMatch(role -> role.getAuthority().equals("ROLE_REVIEWER")))
+      throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
     s.db.queryForObject("SELECT id FROM demo_guard WHERE id=1 FOR UPDATE", Integer.class);
     String[][] people = {
       {

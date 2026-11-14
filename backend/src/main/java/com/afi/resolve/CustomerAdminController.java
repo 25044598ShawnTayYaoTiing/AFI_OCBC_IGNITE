@@ -27,8 +27,8 @@ public class CustomerAdminController {
 
   @PostMapping("/api/documents/demo/seed-customers")
   @PreAuthorize("hasRole('REVIEWER')")
-  public Object seed(@RequestBody SeedCustomers request) {
-    seeder.seed(request.password());
+  public Object seed(@RequestBody SeedCustomers request, Authentication actor) {
+    seeder.seed(request.password(), actor);
     return Domain.map(
         "seededProfiles",
         s.db.queryForObject("SELECT COUNT(*) FROM synthetic_scenario_manifest", Integer.class),
