@@ -45,7 +45,7 @@ export function DocumentOverview() {
     metrics.loading || metrics.error ? "--" : (number ?? "--");
   return (
     <div className="page-stack command-home">
-      <section className="command-masthead"><div><span className="edition-label">Resolution Management / Service operations</span><h1>Every case.<br/>A clear way forward.</h1><p>Investigate the evidence. Resolve the exception. Make a considered decision.</p></div><Link className="command-focus" to="/exceptions"><span>Focus queue</span><strong>{submissions.loading||submissions.error?"?":attention.length}</strong><span>cases need attention<ArrowRight size={20}/></span></Link></section>
+      <section className="command-masthead"><div><span className="eyebrow">Resolution Management · Service Operations</span><h1>Every case. A clear way forward.</h1><p>Investigate cross-source evidence, resolve exceptions, and approve verified Operations handovers.</p></div><Link className="command-focus" to="/exceptions"><span>Focus queue</span><strong>{submissions.loading||submissions.error?"—":attention.length}</strong><span>cases need attention<ArrowRight size={18}/></span></Link></section>
       {metrics.error && (
         <ErrorBox
           message={metrics.error}

@@ -16,7 +16,6 @@ import {
   CircleHelp,
   ClipboardCheck,
   FileBarChart2,
-  GitBranch,
   LayoutDashboard,
   ListFilter,
   LogOut,
@@ -87,9 +86,9 @@ const navigationGroups = [
     items: [
       { to: "/", label: "Command centre", icon: LayoutDashboard },
       { to: "/submissions", label: "Case queue", icon: Boxes },
-      { to: "/exceptions", label: "Resolution Management", icon: ListFilter },
+      { to: "/exceptions", label: "Needs attention", icon: ListFilter },
       { to: "/operations", label: "Completed handovers", icon: ClipboardCheck },
-      { to: "/reports", label: "Reports", icon: FileBarChart2 },
+      { to: "/reports", label: "Reports & audit", icon: FileBarChart2 },
       { to: "/settings", label: "Settings", icon: Settings2 },
     ],
   },
@@ -469,14 +468,6 @@ export default function App() {
         >
           <Activity size={17} />
           <span>Demo environment</span>
-        </NavLink>
-        <NavLink
-          to="/legacy"
-          className="nav-item"
-          onClick={() => setSidebar(false)}
-        >
-          <GitBranch size={17} />
-          <span>Legacy recovery</span>
         </NavLink>
         <p className="sidebar-version">AFI Resolve 2.0</p>
       </div>
