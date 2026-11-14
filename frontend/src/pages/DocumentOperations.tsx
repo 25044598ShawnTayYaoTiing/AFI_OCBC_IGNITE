@@ -39,13 +39,59 @@ export function DocumentOverview() {
   const items = submissions.data || [];
   const m = metrics.data;
   const attention = items.filter((item) =>
-    ["CORRECTION_REQUIRED", "HUMAN_REVIEW", "RESOLUTION_MANAGEMENT"].includes(item.status),
+    [
+      "CORRECTION_REQUIRED",
+      "HUMAN_REVIEW",
+      "RESOLUTION_MANAGEMENT",
+      "ON_HOLD",
+    ].includes(item.status),
   );
   const value = (number: number | undefined) =>
     metrics.loading || metrics.error ? "--" : (number ?? "--");
   return (
     <div className="page-stack command-home">
-      <section className="command-masthead"><div><span className="eyebrow">Resolution Management · Service Operations</span><h1>Every case. A clear way forward.</h1><p>Investigate cross-source evidence, resolve exceptions, and approve verified Operations handovers.</p></div><Link className="command-focus" to="/exceptions"><span>Focus queue</span><strong>{submissions.loading||submissions.error?"—":attention.length}</strong><span>cases need attention<ArrowRight size={18}/></span></Link></section>
+      <section className="command-masthead">
+        <div>
+          <span className="eyebrow">
+            Resolution Management · Service Operations
+          </span>
+          <h1>Every case. A clear way forward.</h1>
+          <p>
+            Investigate cross-source evidence, resolve exceptions, and approve
+            verified Operations handovers.
+          </p>
+        </div>
+        <Link className="command-focus" to="/exceptions">
+          <span>Focus queue</span>
+          <strong>
+            {submissions.loading || submissions.error ? "—" : attention.length}
+          </strong>
+          <span>
+            cases need attention
+            <ArrowRight size={18} />
+          </span>
+        </Link>
+      </section>
+      <div className="risk-counts">
+        {["LOW", "MEDIUM", "HIGH", "UNASSESSED"].map((level) => (
+          <span key={level}>
+            {level} risk{" "}
+            <strong>
+              {metrics.loading || metrics.error
+                ? "--"
+                : m?.riskCounts
+                  ? (m.riskCounts[level] ?? 0)
+                  : "--"}
+            </strong>
+          </span>
+        ))}
+        <span>
+          On hold{" "}
+          <strong>
+            {metrics.loading || metrics.error ? "--" : (m?.onHold ?? "--")}
+          </strong>
+        </span>
+      </div>
       {metrics.error && (
         <ErrorBox
           message={metrics.error}
@@ -183,7 +229,9 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const [status, setStatus] = useState("all");
   const [source, setSource] = useState("all");
   const [requestType, setRequestType] = useState("all");
-  const [sortOrder, setSortOrder] = useState("newest");
+  const [sortOrder, setSortOrder] = useState("risk");
+  const [riskLevel, setRiskLevel] = useState("all");
+  const [validationOutcome, setValidationOutcome] = useState("all");
   const [page, setPage] = useState(0);
   const pageSize = readUiPreferences().pageSize;
   const titles: Record<string, string> = {
@@ -205,13 +253,23 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const items = (result.data || [])
     .filter((item) =>
       mode === "exceptions" || mode === "corrections"
-        ? ["CORRECTION_REQUIRED", "HUMAN_REVIEW", "RESOLUTION_MANAGEMENT"].includes(item.status)
+        ? [
+            "CORRECTION_REQUIRED",
+            "HUMAN_REVIEW",
+            "RESOLUTION_MANAGEMENT",
+            "ON_HOLD",
+          ].includes(item.status)
         : mode === "operations"
           ? item.status === "OPERATIONS"
           : true,
     )
     .filter(
       (item) =>
+        (riskLevel === "all" || item.risk_level === riskLevel) &&
+        (validationOutcome === "all" ||
+          (validationOutcome === "current"
+            ? item.validated_revision === item.revision
+            : item.validated_revision !== item.revision)) &&
         (requestType === "all" || item.category === requestType) &&
         (status === "all" || item.status === status) &&
         (source === "all" || (item.submission_source || "RM") === source) &&
@@ -219,7 +277,15 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
           .toLowerCase()
           .includes(search.toLowerCase()),
     );
-  items.sort((a,b) => sortOrder === "customer" ? a.customer_name.localeCompare(b.customer_name) : (Date.parse(b.created_at)-Date.parse(a.created_at)) * (sortOrder === "oldest" ? -1 : 1));
+  items.sort((a, b) =>
+    sortOrder === "risk"
+      ? Number(!!b.risk_hold) - Number(!!a.risk_hold) ||
+        (b.risk_score ?? -1) - (a.risk_score ?? -1)
+      : sortOrder === "customer"
+        ? a.customer_name.localeCompare(b.customer_name)
+        : (Date.parse(b.created_at) - Date.parse(a.created_at)) *
+          (sortOrder === "oldest" ? -1 : 1),
+  );
   const pages = Math.max(1, Math.ceil(items.length / pageSize));
   const current = Math.min(page, pages - 1);
   const tab =
@@ -234,8 +300,10 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
             : "review";
   return (
     <div className="page-stack">
-      <PageHeader title={titles[mode]} description={descriptions[mode]}>
-      </PageHeader>
+      <PageHeader
+        title={titles[mode]}
+        description={descriptions[mode]}
+      ></PageHeader>
       {mode === "operations" ? (
         <SectionNav
           label="Operations views"
@@ -284,6 +352,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
               "PENDING_VALIDATION",
               "CORRECTION_REQUIRED",
               "RESOLUTION_MANAGEMENT",
+              "ON_HOLD",
               "OPERATIONS",
             ].map((value) => (
               <option key={value} value={value}>
@@ -291,12 +360,74 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
               </option>
             ))}
           </select>
-          <select aria-label="Filter by source" value={source} onChange={(event) => { setSource(event.target.value); setPage(0); }}>
+          <select
+            aria-label="Filter by source"
+            value={source}
+            onChange={(event) => {
+              setSource(event.target.value);
+              setPage(0);
+            }}
+          >
             <option value="all">All sources</option>
             <option value="CUSTOMER_PORTAL">Customer Portal</option>
             <option value="RM">RM upload</option>
           </select>
-          <select aria-label="Filter by request type" value={requestType} onChange={event=>{setRequestType(event.target.value);setPage(0);}}><option value="all">All request types</option>{[...new Set((result.data||[]).map(item=>item.category))].sort().map(value=><option key={value} value={value}>{label(value)}</option>)}</select><select aria-label="Sort submissions" value={sortOrder} onChange={event=>{setSortOrder(event.target.value);setPage(0);}}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="customer">Customer name</option></select><span className="result-count">
+          <select
+            aria-label="Filter by risk"
+            value={riskLevel}
+            onChange={(event) => {
+              setRiskLevel(event.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="all">All risk levels</option>
+            {["LOW", "MEDIUM", "HIGH"].map((level) => (
+              <option key={level}>{level}</option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by validation"
+            value={validationOutcome}
+            onChange={(event) => {
+              setValidationOutcome(event.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="all">All validation states</option>
+            <option value="current">Current revision checked</option>
+            <option value="stale">Needs validation</option>
+          </select>
+          <select
+            aria-label="Filter by request type"
+            value={requestType}
+            onChange={(event) => {
+              setRequestType(event.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="all">All request types</option>
+            {[...new Set((result.data || []).map((item) => item.category))]
+              .sort()
+              .map((value) => (
+                <option key={value} value={value}>
+                  {label(value)}
+                </option>
+              ))}
+          </select>
+          <select
+            aria-label="Sort submissions"
+            value={sortOrder}
+            onChange={(event) => {
+              setSortOrder(event.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="risk">Risk priority</option>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="customer">Customer name</option>
+          </select>
+          <span className="result-count">
             {result.error
               ? "Unavailable"
               : result.loading
@@ -315,7 +446,12 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
           <SubmissionTable
             items={items.slice(current * pageSize, (current + 1) * pageSize)}
             tab={tab}
-            filtered={!!search || status !== "all" || source !== "all" || requestType !== "all"}
+            filtered={
+              !!search ||
+              status !== "all" ||
+              source !== "all" ||
+              requestType !== "all"
+            }
           />
         )}
         {items.length > pageSize && (
@@ -347,7 +483,6 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
     </div>
   );
 }
-
 
 export function DocumentReports() {
   const result = useResource<Metrics>(`${BASE}/analytics`);
@@ -566,7 +701,11 @@ export function DocumentDemo() {
         )}
       </Panel>
       <Panel title="Sample documents">
-        {!session.demoMode && <p className="panel-note">Sample downloads are unavailable because demo mode is disabled.</p>}
+        {!session.demoMode && (
+          <p className="panel-note">
+            Sample downloads are unavailable because demo mode is disabled.
+          </p>
+        )}
         <div className="sample-files">
           {[
             [

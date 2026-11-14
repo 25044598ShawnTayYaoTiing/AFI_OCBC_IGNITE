@@ -16,6 +16,13 @@ public class CustomerEmailDispatcher {
   final TransactionTemplate tx;
   final boolean enabled;
   final String from;
+
+  @Value("${afi.customer-portal-url:https://ocbc-customer-portal.vercel.app}")
+  String portalUrl = "https://ocbc-customer-portal.vercel.app";
+
+  @Value("${afi.mail-test-recipients:}")
+  String testRecipients = "";
+
   JavaMailSenderImpl mail = new JavaMailSenderImpl();
 
   public CustomerEmailDispatcher(
@@ -68,11 +75,21 @@ public class CustomerEmailDispatcher {
                     + " NOT EXISTS (SELECT 1 FROM correction_tasks task WHERE"
                     + " task.submission_id=c.id AND task.status NOT IN ('RESOLVED','ESCALATED')))",
                 Store.now()));
+    tx.executeWithoutResult(
+        t ->
+            s.db.update(
+                "UPDATE customer_email_outbox SET status='UNVERIFIED_TEST_ADDRESS',updated_at=?"
+                    + " WHERE status='PENDING' AND NOT EXISTS (SELECT 1 FROM customer_notifications"
+                    + " n JOIN customer_profiles p ON p.customer_id=n.customer_id WHERE"
+                    + " n.id=customer_email_outbox.notification_id AND"
+                    + " p.email=customer_email_outbox.recipient AND p.email_verified_test=TRUE)",
+                Store.now()));
     for (var row :
         s.db.queryForList(
             "SELECT o.*,n.submission_id,n.message FROM customer_email_outbox o JOIN"
-                + " customer_notifications n ON n.id=o.notification_id WHERE o.status='PENDING'"
-                + " ORDER BY o.created_at LIMIT 10")) {
+                + " customer_notifications n ON n.id=o.notification_id WHERE o.status='PENDING' AND"
+                + " NOT EXISTS (SELECT 1 FROM document_submissions c WHERE c.id=n.submission_id AND"
+                + " c.risk_hold=TRUE) ORDER BY o.created_at LIMIT 10")) {
       String id = (String) row.get("id");
       Integer claimed =
           tx.execute(
@@ -95,7 +112,11 @@ public class CustomerEmailDispatcher {
                 + "\nApplication: "
                 + row.get("submission_id")
                 + "\n"
-                + "Sign in to your customer portal for the exact requests. Do not email identity"
+                + "Sign in at "
+                + portalUrl
+                + "/submissions/"
+                + row.get("submission_id")
+                + " for instructions. Do not email identity"
                 + " documents.\n"
                 + "Synthetic hackathon demonstration.");
         mail.send(message);
@@ -122,7 +143,7 @@ public class CustomerEmailDispatcher {
   }
 
   public void sendContactCode(String recipient, String code) {
-    if (!enabled || recipient == null || recipient.toLowerCase(Locale.ROOT).endsWith(".invalid"))
+    if (!canVerifyContact(recipient))
       throw new ApiException(
           409,
           "OTP_UNAVAILABLE",
@@ -145,6 +166,15 @@ public class CustomerEmailDispatcher {
     return enabled
         && recipient != null
         && recipient.matches("[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+")
-        && !recipient.toLowerCase(Locale.ROOT).endsWith(".invalid");
+        && !recipient.toLowerCase(Locale.ROOT).endsWith(".invalid")
+        && (Arrays.stream(testRecipients.split(","))
+                .map(String::trim)
+                .anyMatch(address -> address.equalsIgnoreCase(recipient))
+            || s.db.queryForObject(
+                    "SELECT COUNT(*) FROM customer_profiles WHERE LOWER(email)=? AND"
+                        + " email_verified_test=TRUE",
+                    Integer.class,
+                    recipient.toLowerCase(Locale.ROOT))
+                > 0);
   }
 }

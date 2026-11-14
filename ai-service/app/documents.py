@@ -11,8 +11,8 @@ from app.config import Settings
 from app.document_intelligence import StrictModel, generate, succeeded, failed, failure_code
 
 DocumentType = Literal['SERVICE_REQUEST', 'CUSTOMER_INFORMATION', 'ACCOUNT_APPLICATION', 'TAX_RESIDENCY', 'SUPPORTING_DOCUMENT', 'UNKNOWN']
-FieldName = Literal['customer_name', 'customer_reference', 'mailing_address', 'residential_address', 'contact_information', 'declaration_date', 'tax_residency', 'signature_indicator', 'required_selection', 'identity_number', 'request_type', 'email', 'mobile', 'foreign_tax_country', 'tax_identifier', 'tax_declaration']
-FIELDS = ('customer_name', 'customer_reference', 'mailing_address', 'residential_address', 'contact_information', 'declaration_date', 'tax_residency', 'signature_indicator', 'required_selection', 'identity_number', 'request_type', 'email', 'mobile', 'foreign_tax_country', 'tax_identifier', 'tax_declaration')
+FieldName = Literal['customer_name', 'customer_reference', 'mailing_address', 'residential_address', 'contact_information', 'declaration_date', 'tax_residency', 'signature_indicator', 'required_selection', 'identity_number', 'request_type', 'email', 'mobile', 'foreign_tax_country', 'tax_identifier', 'tax_declaration', 'account_type', 'currency', 'source_of_funds', 'postal_code']
+FIELDS = ('customer_name', 'customer_reference', 'mailing_address', 'residential_address', 'contact_information', 'declaration_date', 'tax_residency', 'signature_indicator', 'required_selection', 'identity_number', 'request_type', 'email', 'mobile', 'foreign_tax_country', 'tax_identifier', 'tax_declaration', 'account_type', 'currency', 'source_of_funds', 'postal_code')
 TITLES = {'SERVICE_REQUEST': 'Banking Service Request', 'CUSTOMER_INFORMATION': 'Customer Information Form', 'ACCOUNT_APPLICATION': 'Account Application Form', 'TAX_RESIDENCY': 'Tax Residency Declaration', 'SUPPORTING_DOCUMENT': 'Supporting Document'}
 
 class ExtractRequest(StrictModel):

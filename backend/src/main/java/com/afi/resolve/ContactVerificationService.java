@@ -45,6 +45,11 @@ public class ContactVerificationService {
               var c = customers.owned(id, a);
               documents.access(id, a, true);
               documents.editable(c);
+              if (Boolean.TRUE.equals(c.get("risk_hold")))
+                throw new ApiException(
+                    409,
+                    "REVIEW_REQUIRED",
+                    "Resolution Management must review this case before contact verification");
               if (!"CONTACT_UPDATE".equals(c.get("category")))
                 throw new ApiException(
                     409, "NOT_CONTACT_REQUEST", "This case is not a contact-detail update");

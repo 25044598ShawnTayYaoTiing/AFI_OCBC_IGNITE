@@ -52,9 +52,15 @@ public class CustomerNotifications {
       String status =
           !mailEnabled
               ? "DISABLED"
-              : email.toLowerCase(Locale.ROOT).endsWith(".invalid")
-                  ? "NO_DELIVERABLE_ADDRESS"
-                  : "PENDING";
+              : !Boolean.TRUE.equals(
+                      s.db.queryForObject(
+                          "SELECT email_verified_test FROM customer_profiles WHERE customer_id=?",
+                          Boolean.class,
+                          c.get("customer_id")))
+                  ? "UNVERIFIED_TEST_ADDRESS"
+                  : email.toLowerCase(Locale.ROOT).endsWith(".invalid")
+                      ? "NO_DELIVERABLE_ADDRESS"
+                      : "PENDING";
       s.db.update(
           "INSERT INTO customer_email_outbox VALUES(?,?,?,?,?,0,?,?)",
           s.id("EMAIL"),
@@ -74,7 +80,8 @@ public class CustomerNotifications {
         s.db.queryForList(
             "SELECT t.id,t.status,e.rule_id FROM correction_tasks t JOIN document_exceptions e ON"
                 + " e.id=t.exception_id WHERE t.submission_id=? AND e.status='OPEN' AND"
-                + " t.status NOT IN ('RESOLVED','ESCALATED') ORDER BY t.id",
+                + " t.assigned_role='CUSTOMER' AND t.status NOT IN"
+                + " ('RESOLVED','ESCALATED','AWAITING_RESOLVER_AUTHORIZATION') ORDER BY t.id",
             id);
     String state = c.get("revision") + ":" + c.get("status") + ":" + s.json(tasks);
     publish(
@@ -82,7 +89,7 @@ public class CustomerNotifications {
         "VALIDATION_COMPLETED",
         "validated:" + state,
         "Document checks have been recorded for your application.");
-    if (!tasks.isEmpty())
+    if (!tasks.isEmpty() && !Boolean.TRUE.equals(c.get("risk_hold")))
       publish(
           id,
           "CORRECTION_REQUIRED",
@@ -90,7 +97,7 @@ public class CustomerNotifications {
           "Your application has "
               + tasks.size()
               + " outstanding document request(s). Open the application for instructions.");
-    if ("RESOLUTION_MANAGEMENT".equals(c.get("status")))
+    if (Set.of("RESOLUTION_MANAGEMENT", "ON_HOLD").contains(c.get("status")))
       publish(
           id,
           "RESOLUTION_MANAGEMENT",

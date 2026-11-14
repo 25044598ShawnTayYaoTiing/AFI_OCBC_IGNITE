@@ -80,7 +80,7 @@ export function SubmissionTable({
                 >
                   {item.customer_name}
                 </Link>
-                <small className="secondary-line">{label(item.category)} / {["reviewer","operator"].includes(item.owner_name?.toLowerCase()) ? "Resolution Management" : item.owner_name}</small>
+                <small className="secondary-line">{item.risk_level?`${item.risk_level} ${item.risk_score}/100 / `:""}{label(item.category)} / {["reviewer","operator"].includes(item.owner_name?.toLowerCase()) ? "Resolution Management" : item.owner_name}</small>
               </td>
               <td>
                 <span className="reference">{item.customer_reference}</span>

@@ -748,3 +748,5 @@ dialog.ui-dialog:not([open]) { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+.risk-summary{display:flex;gap:24px;align-items:center;margin-bottom:24px}.risk-summary>strong{font-size:48px}.risk-summary small{font-size:12px}.risk-summary p{font-size:13px;color:var(--muted)}.risk-counts{display:flex;gap:24px;flex-wrap:wrap}.risk-counts strong{margin-left:12px}.decision-trace{padding-left:24px;display:grid;gap:24px;margin:24px 0}.decision-trace>li{padding-left:12px;border-left:2px solid var(--border)}.risk-review textarea{display:block;width:100%;margin:12px 0}.risk-review{margin-top:24px}.risk-summary blockquote{overflow-wrap:anywhere}

@@ -37,6 +37,22 @@ public class DocumentController {
     return service.escalate(id, a);
   }
 
+  public record RiskReview(int revision, String note) {}
+
+  @PostMapping("/submissions/{id}/authorize-correction")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object authorizeCorrection(
+      @PathVariable String id, @RequestBody RiskReview r, Authentication actor) {
+    return service.riskDecision(id, r.revision(), r.note(), false, actor);
+  }
+
+  @PostMapping("/submissions/{id}/clear-hold")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object clearHold(
+      @PathVariable String id, @RequestBody RiskReview r, Authentication actor) {
+    return service.riskDecision(id, r.revision(), r.note(), true, actor);
+  }
+
   public record RuleDraft(String sourceId, String correctiveAction, String severity) {}
 
   @GetMapping("/analytics")

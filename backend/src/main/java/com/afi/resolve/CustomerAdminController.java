@@ -8,16 +8,34 @@ import org.springframework.web.bind.annotation.*;
 public class CustomerAdminController {
   final CustomerService customers;
   final Store s;
+  final SyntheticCustomerSeeder seeder;
 
-  public CustomerAdminController(CustomerService customers, Store s) {
+  public CustomerAdminController(
+      CustomerService customers, Store s, SyntheticCustomerSeeder seeder) {
     this.customers = customers;
     this.s = s;
+    this.seeder = seeder;
   }
 
   @PostMapping("/api/documents/customers")
   @PreAuthorize("hasRole('REVIEWER')")
   public Object provision(@RequestBody CustomerService.Provision r, Authentication a) {
     return customers.provision(r, a);
+  }
+
+  public record SeedCustomers(String password) {}
+
+  @PostMapping("/api/documents/demo/seed-customers")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object seed(@RequestBody SeedCustomers request) {
+    seeder.seed(request.password());
+    return Domain.map(
+        "seededProfiles",
+        s.db.queryForObject("SELECT COUNT(*) FROM synthetic_scenario_manifest", Integer.class),
+        "scenarios",
+        s.db.queryForList(
+            "SELECT scenario_key,COUNT(*) AS count FROM synthetic_scenario_manifest GROUP BY"
+                + " scenario_key"));
   }
 
   public record EmailContact(String email) {}
@@ -34,7 +52,8 @@ public class CustomerAdminController {
       throw new ApiException(
           400, "INVALID_EMAIL", "Provide a valid authorised synthetic test mailbox");
     if (s.db.update(
-            "UPDATE customer_profiles SET email=?,updated_at=? WHERE customer_id=?",
+            "UPDATE customer_profiles SET email=?,email_verified_test=TRUE,updated_at=? WHERE"
+                + " customer_id=?",
             email,
             Store.now(),
             id)

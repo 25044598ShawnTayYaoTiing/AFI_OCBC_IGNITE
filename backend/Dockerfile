@@ -5,6 +5,8 @@ RUN mvn -B dependency:go-offline
 COPY src ./src
 RUN mvn -B package -DskipTests
 FROM eclipse-temurin:21-jre-alpine
+ARG AFI_RELEASE_SHA=local
+ENV AFI_RELEASE_SHA=$AFI_RELEASE_SHA
 RUN apk add --no-cache curl
 RUN addgroup -S afi && adduser -S afi -G afi
 WORKDIR /app

@@ -1,5 +1,6 @@
 package com.afi.resolve;
 
+import static com.afi.resolve.Domain.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -99,6 +100,7 @@ class CustomerIntegrationTest {
               var values = new LinkedHashMap<String, String>();
               values.put("customer_name", "Alex Tan");
               values.put("customer_reference", reference);
+              values.put("identity_number", "DEMO-ID-" + reference);
               values.put(
                   "mailing_address",
                   marker.equals("%PDF-TAX")
@@ -259,6 +261,27 @@ class CustomerIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     String id = first.path("submission").path("id").asText();
+    assertThat(first.path("documents").size()).isEqualTo(3);
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/resolve")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(s.json(map("idempotencyKey", UUID.randomUUID().toString()))))
+        .andExpect(status().isOk());
+    var current = get("/api/customer/submissions/" + id, token);
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/authorize-correction")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(
+                    s.json(
+                        map(
+                            "revision",
+                            current.path("submission").path("revision").asInt(),
+                            "note",
+                            "Reviewed conflicting mailing address and missing declaration date"))))
+        .andExpect(status().isOk());
+    first = get("/api/customer/submissions/" + id, token);
     assertThat(first.path("documents").size()).isEqualTo(4);
     assertThat(first.path("corrections").size()).isEqualTo(2);
     assertThat(first.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
@@ -275,7 +298,8 @@ class CustomerIntegrationTest {
     assertThat(staff.path("submission").path("submission_source").asText())
         .isEqualTo("CUSTOMER_PORTAL");
     assertThat(staff.path("submission").path("owner_name").asText()).isEqualTo("reviewer");
-    assertThat(staff.path("automation").get(0).path("status").asText()).isEqualTo("VERIFIED");
+    assertThat(staff.path("documents").size()).isEqualTo(4);
+    assertThat(staff.path("exceptions").toString()).contains("AUTOMATIC_VERIFIED_ATTACHMENT");
     // New login, same persisted request: session-independent replay, not a browser cache.
     token = login(user);
     var replay =
@@ -521,5 +545,50 @@ class CustomerIntegrationTest {
                 Integer.class,
                 customer.path("id").asText()))
         .isEqualTo(1);
+  }
+
+  @Test
+  void demoSeederCreatesExactly100ScenarioProfilesWithoutResettingCredentials() throws Exception {
+    mvc.perform(
+            post("/api/documents/demo/seed-customers")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(s.json(map("password", "fixture-seed-password-one"))))
+        .andExpect(status().isOk());
+    assertThat(
+            s.db.queryForObject("SELECT COUNT(*) FROM synthetic_scenario_manifest", Integer.class))
+        .isEqualTo(100);
+    for (var expected :
+        Map.of("CLEAN", 50, "MISSING_SUPPORT", 25, "ADDRESS_CONFLICT", 15, "IDENTITY_CONFLICT", 10)
+            .entrySet())
+      assertThat(
+              s.db.queryForObject(
+                  "SELECT COUNT(*) FROM synthetic_scenario_manifest WHERE scenario_key=?",
+                  Integer.class,
+                  expected.getKey()))
+          .isEqualTo(expected.getValue());
+    String hash =
+        s.db.queryForObject(
+            "SELECT password_hash FROM customers WHERE username='synthetic-001'", String.class);
+    mvc.perform(
+            post("/api/documents/demo/seed-customers")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(s.json(map("password", "fixture-seed-password-two"))))
+        .andExpect(status().isOk());
+    assertThat(
+            s.db.queryForObject("SELECT COUNT(*) FROM synthetic_scenario_manifest", Integer.class))
+        .isEqualTo(100);
+    assertThat(
+            s.db.queryForObject(
+                "SELECT password_hash FROM customers WHERE username='synthetic-001'", String.class))
+        .isEqualTo(hash);
+    assertThat(
+            s.db.queryForObject(
+                "SELECT COUNT(*) FROM customer_profiles p JOIN synthetic_scenario_manifest m ON"
+                    + " p.customer_id=m.customer_id WHERE p.date_of_birth IS NOT NULL AND p.email"
+                    + " LIKE '%.invalid' AND p.identity_number LIKE 'DEMO-ID-%'",
+                Integer.class))
+        .isEqualTo(100);
   }
 }

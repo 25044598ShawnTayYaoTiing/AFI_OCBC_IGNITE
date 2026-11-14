@@ -7,7 +7,12 @@ import java.util.*;
 /** Request-specific, deterministic demo policy. No core banking record is changed here. */
 final class BankingServicePolicy {
   static final Set<String> REQUESTS =
-      Set.of("ADDRESS_CHANGE", "CONTACT_UPDATE", "TAX_RESIDENCY_UPDATE");
+      Set.of(
+          "ADDRESS_CHANGE",
+          "RESIDENTIAL_ADDRESS_CHANGE",
+          "CONTACT_UPDATE",
+          "TAX_RESIDENCY_UPDATE",
+          "ADDITIONAL_ACCOUNT");
   final DocumentService workflow;
   final Store s;
 
@@ -17,6 +22,29 @@ final class BankingServicePolicy {
   }
 
   void seed() {
+    workflow.seed(
+        "SERVICE_FUNDS",
+        "Current-account source of funds declaration",
+        "PACKAGE",
+        "SERVICE",
+        "source_of_funds",
+        "Provide a source-of-funds description for a current-account request under this demo"
+            + " policy.");
+    workflow.seed(
+        "SERVICE_POSTAL",
+        "Postal code format",
+        "PACKAGE",
+        "SERVICE",
+        "postal_code",
+        "Use a six-digit postal code when a code is supplied under the demo address policy.");
+    workflow.seed(
+        "SERVICE_CONFLICTS",
+        "Declared fields must be unambiguous",
+        "PACKAGE",
+        "SERVICE",
+        "",
+        "Correct duplicate or conflicting values in the request declaration.");
+
     for (var r :
         List.of(
             List.of(
@@ -104,6 +132,7 @@ final class BankingServicePolicy {
     if (!service) return !key.startsWith("SERVICE_");
     return key.startsWith("SERVICE_")
         || Set.of(
+                "DOCUMENT_INTEGRITY",
                 "PROFILE_NAME",
                 "PROFILE_IDENTITY",
                 "CLASSIFICATION",
@@ -132,7 +161,7 @@ final class BankingServicePolicy {
   }
 
   boolean supportRequired(Map<String, Object> c, List<Map<String, Object>> docs) {
-    return "ADDRESS_CHANGE".equals(c.get("category"))
+    return Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(c.get("category"))
         || ("TAX_RESIDENCY_UPDATE".equals(c.get("category"))
             && foreign(value(docs, "tax_residency")));
   }
@@ -159,14 +188,45 @@ final class BankingServicePolicy {
             "request_type",
             "customer_reference",
             "mailing_address",
+            "residential_address",
             "email",
             "mobile",
             "tax_residency",
             "foreign_tax_country",
             "tax_identifier",
-            "tax_declaration")) evidence.addAll(workflow.fields(requestDocs(docs), field));
+            "tax_declaration",
+            "account_type",
+            "currency",
+            "source_of_funds")) evidence.addAll(workflow.fields(requestDocs(docs), field));
     boolean pass;
     switch (key) {
+      case "SERVICE_FUNDS" ->
+          pass =
+              !category.equals("ADDITIONAL_ACCOUNT")
+                  || !value(docs, "account_type").equals("CURRENT")
+                  || !value(docs, "source_of_funds").isBlank();
+      case "SERVICE_POSTAL" ->
+          pass =
+              value(docs, "postal_code").isBlank()
+                  || value(docs, "postal_code").matches("[0-9]{6}");
+      case "SERVICE_CONFLICTS" ->
+          pass =
+              List.of(
+                      "identity_number",
+                      "mailing_address",
+                      "email",
+                      "mobile",
+                      "tax_residency",
+                      "tax_identifier")
+                  .stream()
+                  .allMatch(
+                      field ->
+                          workflow.fields(requestDocs(docs), field).stream()
+                                  .map(item -> workflow.normal(item.get("field_value")))
+                                  .distinct()
+                                  .count()
+                              <= 1);
+
       case "SERVICE_TYPE" ->
           pass =
               requestDocs(docs).size() == 1
@@ -175,9 +235,23 @@ final class BankingServicePolicy {
       case "SERVICE_DETAILS" ->
           pass =
               switch (category) {
-                case "ADDRESS_CHANGE" ->
-                    !value(docs, "mailing_address").isBlank()
-                        && !same(value(docs, "mailing_address"), profile.get("mailing_address"));
+                case "ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE" ->
+                    !value(
+                                docs,
+                                category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                                    ? "residential_address"
+                                    : "mailing_address")
+                            .isBlank()
+                        && !same(
+                            value(
+                                docs,
+                                category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                                    ? "residential_address"
+                                    : "mailing_address"),
+                            profile.get(
+                                category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                                    ? "residential_address"
+                                    : "mailing_address"));
                 case "CONTACT_UPDATE" -> {
                   String email = value(docs, "email"), mobile = value(docs, "mobile");
                   boolean emailValid =
@@ -190,6 +264,9 @@ final class BankingServicePolicy {
                       && ((!email.isBlank() && !same(email, profile.get("email")))
                           || phoneChanged(c, docs, profile));
                 }
+                case "ADDITIONAL_ACCOUNT" ->
+                    Set.of("SAVINGS", "CURRENT").contains(value(docs, "account_type"))
+                        && Set.of("SGD", "USD").contains(value(docs, "currency"));
                 case "TAX_RESIDENCY_UPDATE" ->
                     !value(docs, "tax_residency").isBlank()
                         && same(value(docs, "tax_declaration"), "Confirmed")
@@ -206,8 +283,11 @@ final class BankingServicePolicy {
                   .filter(d -> "SUPPORTING_DOCUMENT".equals(d.get("document_type")))
                   .toList();
           var expectedFields =
-              category.equals("ADDRESS_CHANGE")
-                  ? List.of("mailing_address")
+              Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(category)
+                  ? List.of(
+                      category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                          ? "residential_address"
+                          : "mailing_address")
                   : List.of("foreign_tax_country", "tax_identifier");
           pass = !support.isEmpty();
           for (String field : expectedFields) {
@@ -223,7 +303,11 @@ final class BankingServicePolicy {
                   "field_name",
                   "profile_baseline",
                   "field_value",
-                  Objects.toString(profile.get("mailing_address")),
+                  Objects.toString(
+                      profile.get(
+                          category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                              ? "residential_address"
+                              : "mailing_address")),
                   "method",
                   "SYNTHETIC_CUSTOMER_PROFILE",
                   "supporting_text",
@@ -260,6 +344,23 @@ final class BankingServicePolicy {
                 + category
                 + " at the current case revision; model recommendations cannot override this"
                 + " result."));
-    return workflow.check(rule, key, pass, evidence);
+    var result = workflow.check(rule, key, pass, evidence);
+    boolean applicable =
+        switch (key) {
+          case "SERVICE_CONTACT_VERIFIED", "SERVICE_PHONE_REVIEW" ->
+              category.equals("CONTACT_UPDATE");
+          case "SERVICE_SUPPORT" -> supportRequired(c, docs);
+          case "SERVICE_POSTAL" -> !value(docs, "postal_code").isBlank();
+          case "SERVICE_FUNDS" ->
+              category.equals("ADDITIONAL_ACCOUNT")
+                  && value(docs, "account_type").equals("CURRENT");
+          default -> true;
+        };
+    if (!applicable) result.put("outcome", "NOT_APPLICABLE");
+    if (key.equals("SERVICE_FUNDS")
+        || key.equals("SERVICE_AUTHORISATION")
+        || (key.equals("SERVICE_DETAILS") && category.equals("TAX_RESIDENCY_UPDATE")))
+      result.put("category", "CDD");
+    return result;
   }
 }

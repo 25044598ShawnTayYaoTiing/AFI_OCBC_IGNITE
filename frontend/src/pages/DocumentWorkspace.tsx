@@ -1,3 +1,4 @@
+import { RiskInvestigation } from "./RiskInvestigation";
 import { CaseComparison } from "./CaseComparison";
 import { ContactPhoneReview } from "./ContactPhoneReview";
 import { useEffect, useRef, useState } from "react";
@@ -190,7 +191,7 @@ export function DocumentWorkspace() {
       >
         <Badge value={data.submission.status} />
         {!locked && data.submission.status === "RESOLUTION_MANAGEMENT" && (
-          <button className="button primary" disabled={!!busy || open.length > 0} title={open.length ? "Resolve blocking findings and revalidate before approval" : "Approve the current validated revision"} onClick={() => void run("approve")}>
+          <button className="button primary" disabled={!!busy || open.length > 0 || !!data.submission.risk_hold} title={open.length ? "Resolve blocking findings and revalidate before approval" : "Approve the current validated revision"} onClick={() => void run("approve")}>
             <CheckCircle2 size={15} />Approve for Operations
           </button>
         )}
@@ -266,6 +267,7 @@ export function DocumentWorkspace() {
             until the current package is rechecked.
           </Notice>
         )}
+      <RiskInvestigation detail={data} onUpdate={()=>void result.refresh()}/>
       <Tabs
         id="submission-workspace"
         className="section-nav workspace-tabs"

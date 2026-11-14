@@ -43,7 +43,8 @@ public class DigitalFormService {
       String declarationDate,
       boolean taxDeclaration,
       boolean authorisation,
-      Integer expectedRevision) {}
+      Integer expectedRevision,
+      String sourceOfFunds) {}
 
   public Object get(String id, Authentication a) {
     customers.owned(id, a);
@@ -133,8 +134,15 @@ public class DigitalFormService {
     common.put("identity_number", (String) profile.get("identity_number"));
     common.put("request_type", form.requestType());
     if (!legacy) {
-      if (form.requestType().equals("ADDRESS_CHANGE"))
+      if (Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(form.requestType()))
         common.put("mailing_address", trim(form.mailingAddress()));
+      if (form.requestType().equals("RESIDENTIAL_ADDRESS_CHANGE"))
+        common.put("residential_address", trim(form.mailingAddress()));
+      if (form.requestType().equals("ADDITIONAL_ACCOUNT")) {
+        common.put("account_type", trim(form.accountType()));
+        common.put("currency", trim(form.currency()));
+        common.put("source_of_funds", trim(form.sourceOfFunds()));
+      }
       if (form.requestType().equals("CONTACT_UPDATE")) {
         common.put("email", trim(form.email()));
         common.put("mobile", trim(form.mobile()));
@@ -240,7 +248,8 @@ public class DigitalFormService {
             trim(f.taxResidency()),
             trim(f.foreignTaxCountry()),
             trim(f.taxIdentifier()),
-            trim(f.declarationDate())))
+            trim(f.declarationDate()),
+            trim(f.sourceOfFunds())))
       if (value.length() > 500 || value.chars().anyMatch(c -> c < 32))
         throw new ApiException(
             400, "INVALID_FORM", "Form values must be single-line and at most 500 characters");

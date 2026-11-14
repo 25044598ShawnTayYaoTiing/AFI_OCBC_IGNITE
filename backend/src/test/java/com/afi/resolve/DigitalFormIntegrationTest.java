@@ -49,6 +49,15 @@ class DigitalFormIntegrationTest {
 
   @BeforeEach
   void customer() throws Exception {
+    var storedBytes = new java.util.concurrent.ConcurrentHashMap<String, byte[]>();
+    doAnswer(
+            call -> {
+              storedBytes.put(call.getArgument(0), call.getArgument(1));
+              return null;
+            })
+        .when(storage)
+        .put(anyString(), any(byte[].class));
+    when(storage.read(anyString())).thenAnswer(call -> storedBytes.get(call.getArgument(0)));
     reference = "SYN-" + UUID.randomUUID();
     String username = "digital-" + UUID.randomUUID();
     customer =
@@ -198,7 +207,26 @@ class DigitalFormIntegrationTest {
                         .header("Idempotency-Key", UUID.randomUUID().toString()))
                 .andExpect(status().isOk())
                 .andReturn());
-    assertThat(bad.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
+    assertThat(bad.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
+    assertThat(bad.path("corrections").size()).isZero();
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/authorize-correction")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(
+                    s.json(
+                        map(
+                            "revision",
+                            bad.path("submission").path("revision").asInt(),
+                            "note",
+                            "Verified address mismatch requires a corrected supporting PDF"))))
+        .andExpect(status().isOk());
+    bad =
+        json(
+            mvc.perform(
+                    get("/api/customer/submissions/" + id)
+                        .header("Authorization", "Bearer " + token))
+                .andReturn());
     assertThat(bad.path("corrections").toString()).contains("SERVICE_SUPPORT");
     String support = "";
     for (var d : bad.path("documents"))
@@ -642,7 +670,28 @@ class DigitalFormIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     String id = id(result);
-    assertThat(result.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
+    assertThat(result.path("submission").path("status").asText())
+        .isEqualTo("RESOLUTION_MANAGEMENT");
+    assertThat(result.path("corrections").size()).isZero();
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/authorize-correction")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(
+                    s.json(
+                        map(
+                            "revision",
+                            1,
+                            "note",
+                            "Reviewed missing declarations and evidence; request customer"
+                                + " correction"))))
+        .andExpect(status().isOk());
+    result =
+        json(
+            mvc.perform(
+                    get("/api/customer/submissions/" + id)
+                        .header("Authorization", "Bearer " + token))
+                .andReturn());
     assertThat(result.path("corrections").size()).isGreaterThan(1);
     assertThat(
             s.db.queryForObject(
@@ -666,6 +715,8 @@ class DigitalFormIntegrationTest {
     var dispatcher =
         new CustomerEmailDispatcher(
             s, manager, true, "localhost", 1025, "", "", "demo@example.invalid", false);
+    s.db.update(
+        "UPDATE customer_profiles SET email_verified_test=TRUE WHERE customer_id=?", customer);
     dispatcher.mail = mock(JavaMailSenderImpl.class);
     dispatcher.dispatch();
     dispatcher.dispatch();
@@ -786,5 +837,141 @@ class DigitalFormIntegrationTest {
         .isEqualTo("RESOLUTION_MANAGEMENT");
     assertThat(result.path("corrections").size()).isZero();
     verify(documents, times(4)).extraction(any(byte[].class), anyString());
+  }
+
+  @Test
+  void highIdentityRiskPersistsHoldUntilExplicitReviewedClearance() throws Exception {
+    var initial =
+        json(
+            submit("/api/customer/eforms", UUID.randomUUID().toString(), form())
+                .andExpect(status().isOk())
+                .andReturn());
+    String id = id(initial);
+    String identity =
+        s.db.queryForObject(
+            "SELECT identity_number FROM customer_profiles WHERE customer_id=?",
+            String.class,
+            customer);
+    s.db.update(
+        "UPDATE customer_profiles SET identity_number='DEMO-CONFLICT-ONLY' WHERE customer_id=?",
+        customer);
+    var held =
+        json(
+            mvc.perform(
+                    post("/api/documents/submissions/" + id + "/validate")
+                        .with(httpBasic("reviewer", "reviewer-demo")))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(held.path("submission").path("status").asText()).isEqualTo("ON_HOLD");
+    assertThat(held.path("riskAssessment").path("score").asInt()).isGreaterThanOrEqualTo(80);
+    assertThat(held.path("riskAssessment").path("score").asInt()).isLessThanOrEqualTo(100);
+    String request =
+        s.json(
+            map(
+                "revision",
+                held.path("submission").path("revision").asInt(),
+                "note",
+                "Independent investigation completed with current evidence"));
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/clear-hold")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(request))
+        .andExpect(status().isConflict());
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/approve")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(s.json(map("revision", held.path("submission").path("revision").asInt()))))
+        .andExpect(status().isConflict());
+    var publicCase =
+        json(
+            mvc.perform(
+                    get("/api/customer/submissions/" + id)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(publicCase.toString())
+        .doesNotContain("riskAssessment", "IDENTITY_CONFLICT", "ON_HOLD");
+    s.db.update(
+        "UPDATE customer_profiles SET identity_number=? WHERE customer_id=?", identity, customer);
+    var rechecked =
+        json(
+            mvc.perform(
+                    post("/api/documents/submissions/" + id + "/validate")
+                        .with(httpBasic("reviewer", "reviewer-demo")))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(rechecked.path("submission").path("risk_hold").asBoolean()).isTrue();
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/clear-hold")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(request))
+        .andExpect(status().isOk());
+    assertThat(
+            s.db.queryForObject(
+                "SELECT risk_hold FROM document_submissions WHERE id=?", Boolean.class, id))
+        .isFalse();
+  }
+
+  @Test
+  void additionalSavingsUsesTheSameValidatedApprovalPipeline() throws Exception {
+    var request = form();
+    request.put("requestType", "ADDITIONAL_ACCOUNT");
+    request.put("accountType", "SAVINGS");
+    request.put("currency", "SGD");
+    var result =
+        json(
+            submit("/api/customer/eforms", UUID.randomUUID().toString(), request)
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(result.path("submission").path("status").asText())
+        .isEqualTo("RESOLUTION_MANAGEMENT");
+    assertThat(
+            approve(id(result), result.path("submission").path("revision").asInt())
+                .path("submission")
+                .path("status")
+                .asText())
+        .isEqualTo("OPERATIONS");
+  }
+
+  @Test
+  void independentlyDetectedStoredByteMismatchForcesHold() throws Exception {
+    var request = form();
+    request.put("requestType", "ADDITIONAL_ACCOUNT");
+    request.put("accountType", "SAVINGS");
+    request.put("currency", "SGD");
+    var initial =
+        json(
+            submit("/api/customer/eforms", UUID.randomUUID().toString(), request)
+                .andExpect(status().isOk())
+                .andReturn());
+    String id = id(initial);
+    doReturn("changed stored bytes".getBytes(StandardCharsets.US_ASCII))
+        .when(storage)
+        .read(anyString());
+    var held =
+        json(
+            mvc.perform(
+                    post("/api/documents/submissions/" + id + "/validate")
+                        .with(httpBasic("reviewer", "reviewer-demo")))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(held.path("submission").path("status").asText()).isEqualTo("ON_HOLD");
+    assertThat(held.path("riskAssessment").path("score").asInt()).isEqualTo(80);
+    assertThat(held.path("riskAssessment").toString()).contains("MISMATCH", "MANIPULATION");
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/clear-hold")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(
+                    s.json(
+                        map(
+                            "revision",
+                            initial.path("submission").path("revision").asInt(),
+                            "note",
+                            "A model recommendation cannot clear the integrity mismatch"))))
+        .andExpect(status().isConflict());
   }
 }

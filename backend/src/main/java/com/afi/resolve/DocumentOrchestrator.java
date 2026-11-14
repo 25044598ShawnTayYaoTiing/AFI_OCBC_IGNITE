@@ -50,6 +50,8 @@ public class DocumentOrchestrator {
       return;
     }
     intelligence.investigate(workflow, id, actor);
+    if (Boolean.TRUE.equals(c.get("risk_hold"))
+        || (c.get("risk_score") instanceof Number score && score.intValue() >= 25)) return;
     if (!enabled) {
       workflow.event(id, actor, "AUTOMATION_DISABLED", map("revision", c.get("revision")));
       return;

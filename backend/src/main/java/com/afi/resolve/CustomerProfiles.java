@@ -17,7 +17,9 @@ public class CustomerProfiles {
   public void create(String id, String reference) {
     boolean alex = reference.equals("SYN-ALEX-001");
     s.db.update(
-        "INSERT INTO customer_profiles VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO"
+            + " customer_profiles(customer_id,identity_number,residential_address,mailing_address,email,mobile,nationality,occupation,account_type,currency,tax_residency,risk_rating,provenance,updated_at)"
+            + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         id,
         "DEMO-ID-" + reference,
         alex ? "8 Fictional Avenue" : "1 Fictional Road",
@@ -51,6 +53,12 @@ public class CustomerProfiles {
   public Map<String, Object> dto(String id) {
     var p = get(id);
     return map(
+        "dateOfBirth",
+        p.get("date_of_birth"),
+        "postalCode",
+        p.get("postal_code"),
+        "existingAccountReference",
+        p.get("existing_account_reference"),
         "identityNumber",
         p.get("identity_number"),
         "residentialAddress",
@@ -71,8 +79,6 @@ public class CustomerProfiles {
         p.get("currency"),
         "taxResidency",
         p.get("tax_residency"),
-        "riskRating",
-        p.get("risk_rating"),
         "provenance",
         p.get("provenance"));
   }

@@ -198,6 +198,9 @@ public class DocumentIntelligence {
               recommendations);
     }
     result.put("source_findings", findings);
+    result.put("completed_at", Store.now().toString());
+    result.put("policy_provenance", "SPRING_RULE_SNAPSHOT_V1");
+    result.put("explanation_provenance", "GROUNDED_FINDINGS_AND_PERMITTED_ACTIONS_V1");
     s.db.update(
         "INSERT INTO"
             + " document_investigations(id,submission_id,revision,rule_set,method,result_json,completed_at)"

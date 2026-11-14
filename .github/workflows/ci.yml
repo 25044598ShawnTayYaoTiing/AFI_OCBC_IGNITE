@@ -23,7 +23,7 @@ jobs:
           cache: maven
       - name: Package and test customer routing and shared upload workflow
         working-directory: backend
-        run: mvn -B '-Dtest=CustomerIntegrationTest#customerRoutingAndProductionPortalCorsStaySeparateFromStaffAuthentication+sharedCaseCorrectionAutonomyAndDurableReplay+revocationExpiryAndFailedLoginLockoutArePersistent,CustomerDemoRetryIntegrationTest#syntheticRetriesAreImmediateButOtherAccountsStillLock,DigitalFormIntegrationTest,CustomerEmailTransportTest' package
+        run: mvn -B '-Dtest=CustomerIntegrationTest,CustomerDemoRetryIntegrationTest#syntheticRetriesAreImmediateButOtherAccountsStillLock,DigitalFormIntegrationTest,CustomerEmailTransportTest' package
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -115,7 +115,9 @@ jobs:
           platforms: linux/amd64
           push: ${{ env.PUBLISH_IMAGES == 'true' }}
           tags: ${{ steps.ecr.outputs.registry || 'local' }}/${{ env.REPOSITORY_PREFIX }}/${{ matrix.service }}:${{ github.sha }}
-          build-args: ${{ matrix.service == 'frontend' && 'NGINX_CONFIG=nginx.aws.conf' || '' }}
+          build-args: |
+            AFI_RELEASE_SHA=${{ github.sha }}
+            ${{ matrix.service == 'frontend' && 'NGINX_CONFIG=nginx.aws.conf' || '' }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}

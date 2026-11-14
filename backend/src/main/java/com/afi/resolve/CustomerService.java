@@ -168,7 +168,7 @@ public class CustomerService {
         "caseReference",
         c.get("id"),
         "status",
-        c.get("status"),
+        "ON_HOLD".equals(c.get("status")) ? "RESOLUTION_MANAGEMENT" : c.get("status"),
         "requestType",
         c.get("category"),
         "captureMethod",
@@ -234,7 +234,31 @@ public class CustomerService {
         "corrections",
         corrections(id, a),
         "contactVerification",
-        verification);
+        verification,
+        "processing",
+        map(
+            "received",
+            true,
+            "validated",
+            c.get("validated_at") != null,
+            "revalidation",
+            ((Number) c.get("revision")).intValue() > 1,
+            "reviewRequired",
+            Set.of("RESOLUTION_MANAGEMENT", "ON_HOLD").contains(c.get("status"))),
+        "requirements",
+        s
+            .db
+            .queryForList(
+                "SELECT r.check_key,r.passed,v.name,v.corrective_action FROM validation_results r"
+                    + " JOIN validation_rules v ON v.id=r.rule_id WHERE r.submission_id=? AND"
+                    + " r.revision=? AND r.check_key NOT LIKE 'PROFILE_%' AND r.check_key NOT LIKE"
+                    + " '%CLASSIFICATION%' ORDER BY r.created_at DESC",
+                id, c.get("revision"))
+            .stream()
+            .filter(row -> Boolean.TRUE.equals(row.get("passed")))
+            .map(row -> map("name", row.get("name"), "passed", true))
+            .distinct()
+            .toList());
   }
 
   @SuppressWarnings("unchecked")
@@ -247,8 +271,9 @@ public class CustomerService {
         .queryForList(
             "SELECT t.id,t.status,r.rule_key,r.document_type,r.corrective_action,e.evidence_json"
                 + " FROM correction_tasks t JOIN document_exceptions e ON e.id=t.exception_id JOIN"
-                + " validation_rules r ON r.id=e.rule_id WHERE t.submission_id=? AND t.status NOT"
-                + " IN ('RESOLVED','ESCALATED') AND e.status='OPEN' ORDER BY t.created_at,t.id",
+                + " validation_rules r ON r.id=e.rule_id WHERE t.submission_id=? AND"
+                + " t.assigned_role='CUSTOMER' AND t.status NOT IN ('RESOLVED','ESCALATED') AND"
+                + " e.status='OPEN' ORDER BY t.created_at,t.id",
             id)
         .stream()
         .map(

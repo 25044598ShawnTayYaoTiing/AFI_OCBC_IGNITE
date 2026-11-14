@@ -34,6 +34,11 @@ public class SyntheticCustomerSeeder implements ApplicationRunner {
   @Transactional
   public void run(ApplicationArguments args) {
     if (!enabled) return;
+    seed(password);
+  }
+
+  @Transactional
+  public void seed(String password) {
     demo.requireDemo();
     var actor =
         UsernamePasswordAuthenticationToken.authenticated(
@@ -65,7 +70,7 @@ public class SyntheticCustomerSeeder implements ApplicationRunner {
         "Synthetic business owner"
       }
     };
-    for (var person : people) {
+    for (var person : enabled ? people : new String[0][]) {
       if (s.db.queryForObject(
               "SELECT COUNT(*) FROM customers WHERE username=? OR customer_reference=?",
               Integer.class,
@@ -86,6 +91,53 @@ public class SyntheticCustomerSeeder implements ApplicationRunner {
           person[4],
           person[5],
           created.get("id"));
+    }
+    for (int number = 1; number <= 100; number++) {
+      String reference = String.format(Locale.ROOT, "SYN-DEMO-%03d", number);
+      var existing =
+          s.db.queryForList("SELECT id FROM customers WHERE customer_reference=?", reference);
+      String customerId;
+      if (existing.isEmpty()) {
+        @SuppressWarnings("unchecked")
+        var created =
+            (Map<String, Object>)
+                customers.provision(
+                    new CustomerService.Provision(
+                        String.format(Locale.ROOT, "synthetic-%03d", number),
+                        password,
+                        "Fictional Customer " + number,
+                        reference,
+                        "reviewer",
+                        null),
+                    actor);
+        customerId = (String) created.get("id");
+        s.db.update(
+            "UPDATE customer_profiles SET"
+                + " date_of_birth=?,postal_code=?,existing_account_reference=?,residential_address=?,mailing_address=?"
+                + " WHERE customer_id=?",
+            java.sql.Date.valueOf(
+                java.time.LocalDate.of(1980 + number % 20, 1 + number % 12, 1 + number % 27)),
+            String.format(Locale.ROOT, "%06d", 100000 + number),
+            "FICTIONAL-ACCOUNT-" + number,
+            number + " Fictional Gardens",
+            number + " Fictional Gardens",
+            customerId);
+      } else customerId = (String) existing.getFirst().get("id");
+      if (s.db.queryForObject(
+              "SELECT COUNT(*) FROM synthetic_scenario_manifest WHERE customer_id=?",
+              Integer.class,
+              customerId)
+          == 0)
+        s.db.update(
+            "INSERT INTO synthetic_scenario_manifest VALUES(?,?,?,?)",
+            customerId,
+            number <= 50
+                ? "CLEAN"
+                : number <= 75
+                    ? "MISSING_SUPPORT"
+                    : number <= 90 ? "ADDRESS_CONFLICT" : "IDENTITY_CONFLICT",
+            number,
+            "SYNTHETIC_SCENARIO_FIXTURE_NOT_CUSTOMER_RISK");
     }
   }
 }

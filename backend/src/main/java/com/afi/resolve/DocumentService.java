@@ -49,7 +49,11 @@ public class DocumentService {
           "request_type",
           "foreign_tax_country",
           "tax_identifier",
-          "tax_declaration");
+          "tax_declaration",
+          "account_type",
+          "currency",
+          "source_of_funds",
+          "postal_code");
 
   public DocumentService(
       Store s,
@@ -79,6 +83,14 @@ public class DocumentService {
   @PostConstruct
   void initialise() throws Exception {
     new BankingServicePolicy(this, s).seed();
+    seed(
+        "DOCUMENT_INTEGRITY",
+        "Stored document integrity",
+        "PACKAGE",
+        "INTEGRITY",
+        "sha256",
+        "Investigate a stored-byte SHA-256 or size mismatch. This is an integrity alert, not proof"
+            + " of forgery.");
     seed(
         "PROFILE_NAME",
         "Name must match the synthetic bank profile",
@@ -348,6 +360,14 @@ public class DocumentService {
                 "SELECT exception_id FROM document_automation_attempts WHERE status='VERIFIED'",
                 String.class));
     return map(
+        "riskCounts",
+        cases.stream()
+            .collect(
+                java.util.stream.Collectors.groupingBy(
+                    c -> Objects.toString(c.get("risk_level"), "UNASSESSED"),
+                    java.util.stream.Collectors.counting())),
+        "onHold",
+        cases.stream().filter(c -> Boolean.TRUE.equals(c.get("risk_hold"))).count(),
         "totalSubmissions",
         cases.size(),
         "statuses",
@@ -486,7 +506,7 @@ public class DocumentService {
     var checks =
         s.db.queryForList(
             "SELECT"
-                + " r.*,v.name,v.condition_type,v.field_name,v.severity,v.corrective_action,v.version"
+                + " r.*,v.name,v.rule_key,v.condition_type,v.field_name,v.severity,v.corrective_action,v.version"
                 + " AS rule_version FROM validation_results r JOIN validation_rules v ON"
                 + " v.id=r.rule_id WHERE r.submission_id=? AND r.revision=? ORDER BY"
                 + " r.check_key,r.created_at DESC",
@@ -496,6 +516,24 @@ public class DocumentService {
     var latest = new LinkedHashMap<String, Map<String, Object>>();
     for (var check : checks) {
       check.put("evidence", s.read((String) check.remove("evidence_json"), List.class));
+      check.put(
+          "outcome",
+          check.get("outcome") != null
+              ? check.get("outcome")
+              : Boolean.TRUE.equals(check.get("passed"))
+                  ? "PASS"
+                  : "WARNING".equals(check.get("severity"))
+                      ? "WARNING"
+                      : "CLASSIFICATION".equals(check.get("condition_type"))
+                          ? "UNVERIFIABLE"
+                          : "FAIL");
+      check.put(
+          "category",
+          Objects.toString(check.get("check_key")).contains("TAX")
+              ? "CDD"
+              : Objects.toString(check.get("check_key")).startsWith("PROFILE_")
+                  ? "IDENTIFICATION_PROFILE"
+                  : "CGI");
       latest.putIfAbsent((String) check.get("check_key"), check);
     }
     var exceptions =
@@ -507,6 +545,8 @@ public class DocumentService {
     for (var ex : exceptions)
       ex.put("evidence", s.read((String) ex.remove("evidence_json"), List.class));
     return map(
+        "riskAssessment",
+        new CaseRisk(s).latest(id),
         "submission",
         c,
         "documents",
@@ -939,9 +979,75 @@ public class DocumentService {
   }
 
   @Transactional
+  public Object riskDecision(
+      String id, int revision, String note, boolean clearHold, Authentication actor) {
+    if (!reviewer(actor))
+      throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
+    var c = access(id, actor, true);
+    editable(c);
+    if (!Objects.equals(c.get("revision"), revision) || !currentRevisionValidated(c))
+      throw new ApiException(409, "STALE_REVIEW", "Revalidate and review the current revision");
+    if (note == null || note.trim().length() < 12 || note.length() > 1000)
+      throw new ApiException(
+          400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12?1000 characters");
+    if (clearHold) {
+      var checks = evaluate(id);
+      var assessment = new CaseRisk(s).assess(c, checks);
+      boolean critical =
+          checks.stream()
+              .anyMatch(
+                  ch ->
+                      !Boolean.TRUE.equals(ch.get("passed"))
+                          && (Objects.toString(ch.get("check_key")).startsWith("PROFILE_")
+                              || Set.of("CLASSIFICATION", "INTEGRITY")
+                                  .contains(ch.get("condition_type"))));
+      if (((Number) assessment.get("score")).intValue() >= 60 || critical)
+        throw new ApiException(
+            409,
+            "HOLD_NOT_CLEARABLE",
+            "Resolve critical evidence findings and reduce current risk before explicit clearance");
+      s.db.update("UPDATE document_submissions SET risk_hold=FALSE WHERE id=?", id);
+      event(id, actor, "HOLD_CLEARED", map("revision", revision, "note", note.trim()));
+      validateInternal(id, actor);
+    } else {
+      if (Boolean.TRUE.equals(c.get("risk_hold")))
+        throw new ApiException(
+            409,
+            "CASE_ON_HOLD",
+            "Clear the investigation hold before authorising customer contact");
+      s.db.update(
+          "UPDATE document_submissions SET correction_authorized_revision=? WHERE id=?",
+          revision,
+          id);
+      s.db.update(
+          "UPDATE correction_tasks SET status='AWAITING_CORRECTION',assigned_role='CUSTOMER' WHERE"
+              + " submission_id=? AND status='AWAITING_RESOLVER_AUTHORIZATION' AND exception_id IN"
+              + " (SELECT id FROM document_exceptions WHERE submission_id=? AND"
+              + " action_type='REQUEST_CORRECTION')",
+          id,
+          id);
+      if (s.db.queryForObject(
+              "SELECT COUNT(*) FROM correction_tasks WHERE submission_id=? AND"
+                  + " assigned_role='CUSTOMER' AND status='AWAITING_CORRECTION'",
+              Integer.class,
+              id)
+          > 0)
+        s.db.update("UPDATE document_submissions SET status='CORRECTION_REQUIRED' WHERE id=?", id);
+      event(
+          id,
+          actor,
+          "CUSTOMER_CORRECTION_AUTHORIZED",
+          map("revision", revision, "note", note.trim()));
+    }
+    syncCustomer(id);
+    return detail(id, actor);
+  }
+
+  @Transactional
   public Object escalate(String id, Authentication a) {
     var c = access(id, a, true);
     editable(c);
+    if (Boolean.TRUE.equals(c.get("risk_hold"))) return map("status", "ON_HOLD");
     s.db.update(
         "UPDATE correction_tasks SET status='ESCALATED',assigned_role='RESOLUTION_MANAGEMENT' WHERE"
             + " submission_id=? AND status<>'RESOLVED'",
@@ -999,7 +1105,10 @@ public class DocumentService {
               "SYNTHETIC_CUSTOMER_PROFILE",
               "supporting_text",
               "Authorised synthetic core-banking profile (not Singpass): " + expected));
-      pass = source.stream().allMatch(f -> normal(expected).equals(normal(f.get("field_value"))));
+      pass =
+          (!"PROFILE_IDENTITY".equals(key) || !source.isEmpty())
+              && source.stream()
+                  .allMatch(f -> normal(expected).equals(normal(f.get("field_value"))));
       if (!pass
           && key.equals("PROFILE_ADDRESS")
           && source.stream().map(f -> normal(f.get("field_value"))).distinct().count() == 1) {
@@ -1142,6 +1251,33 @@ public class DocumentService {
             "SELECT * FROM validation_rules WHERE status='ACTIVE' ORDER BY rule_key")) {
       var servicePolicy = new BankingServicePolicy(this, s);
       if (!servicePolicy.applicable(rule, c)) continue;
+      if ("INTEGRITY".equals(rule.get("condition_type"))) {
+        for (var document : docs) {
+          String integrity = integrityStatus(document);
+          checks.add(
+              check(
+                  rule,
+                  "DOCUMENT_INTEGRITY:" + document.get("id"),
+                  "MATCH".equals(integrity),
+                  List.of(
+                      map(
+                          "document_id",
+                          document.get("id"),
+                          "version_id",
+                          document.get("version_id"),
+                          "filename",
+                          document.get("filename"),
+                          "field_name",
+                          "stored_sha256",
+                          "field_value",
+                          document.get("sha256"),
+                          "method",
+                          "INDEPENDENT_STORAGE_DIGEST",
+                          "integrity_status",
+                          integrity))));
+        }
+        continue;
+      }
       if (Set.of("SERVICE", "SERVICE_MANUAL").contains(rule.get("condition_type"))) {
         checks.add(servicePolicy.check(c, docs, rule));
         continue;
@@ -1285,6 +1421,22 @@ public class DocumentService {
         key,
         "name",
         rule.get("name"),
+        "rule_version",
+        rule.get("version"),
+        "outcome",
+        pass
+            ? "PASS"
+            : "WARNING".equals(rule.get("severity"))
+                ? "WARNING"
+                : "CLASSIFICATION".equals(rule.get("condition_type")) ? "UNVERIFIABLE" : "FAIL",
+        "evaluated_at",
+        Store.now().toString(),
+        "category",
+        Objects.toString(rule.get("rule_key")).contains("TAX")
+            ? "CDD"
+            : Objects.toString(rule.get("rule_key")).startsWith("PROFILE_")
+                ? "IDENTIFICATION_PROFILE"
+                : "CGI",
         "passed",
         pass,
         "severity",
@@ -1321,8 +1473,8 @@ public class DocumentService {
       String key = (String) check.get("check_key");
       s.db.update(
           "INSERT INTO"
-              + " validation_results(id,submission_id,revision,rule_id,check_key,passed,evidence_json,created_at)"
-              + " VALUES(?,?,?,?,?,?,?,?)",
+              + " validation_results(id,submission_id,revision,rule_id,check_key,passed,evidence_json,created_at,outcome,category)"
+              + " VALUES(?,?,?,?,?,?,?,?,?,?)",
           s.id("CHECK"),
           id,
           c.get("revision"),
@@ -1330,14 +1482,17 @@ public class DocumentService {
           key,
           check.get("passed"),
           s.json(check.get("evidence")),
-          Store.now());
+          Store.now(),
+          check.get("outcome"),
+          check.get("category"));
       if (Boolean.TRUE.equals(check.get("passed"))) continue;
       failed.add(key);
       String action =
           check.get("condition_type").equals("ATTACHMENT")
                   && check.get("document_type").equals("SUPPORTING_DOCUMENT")
               ? "ATTACH_VERIFIED_DOCUMENT"
-              : Set.of("CLASSIFICATION", "SERVICE_MANUAL").contains(check.get("condition_type"))
+              : Set.of("CLASSIFICATION", "SERVICE_MANUAL", "INTEGRITY")
+                      .contains(check.get("condition_type"))
                   ? "ESCALATE_UNCERTAIN_INFORMATION"
                   : "REQUEST_CORRECTION";
       var existing =
@@ -1440,7 +1595,7 @@ public class DocumentService {
         checks.stream()
             .anyMatch(
                 ch ->
-                    ch.get("condition_type").equals("CLASSIFICATION")
+                    Set.of("CLASSIFICATION", "INTEGRITY").contains(ch.get("condition_type"))
                         && !Boolean.TRUE.equals(ch.get("passed")));
     boolean blocked = checks.stream().anyMatch(PolicyService::blockingDocumentCheck);
     long unresolved = unresolvedBlocking(id);
@@ -1476,7 +1631,7 @@ public class DocumentService {
                 + " submission_id=?",
             Integer.class,
             id);
-    if (uncertain || (blocked && Math.max(formVersions, documentVersions) >= 3)) {
+    if (uncertain || (blocked && Math.max(formVersions, documentVersions) >= 4)) {
       s.db.update(
           "UPDATE correction_tasks SET status='ESCALATED',assigned_role='RESOLUTION_MANAGEMENT'"
               + " WHERE submission_id=? AND status<>'RESOLVED'",
@@ -1489,7 +1644,9 @@ public class DocumentService {
                 "SERVICE_MANUAL".equals(ch.get("condition_type"))
                     && !Boolean.TRUE.equals(ch.get("passed"))))
       s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
-    if (status.equals("READY")) routeInternal(id, a, checks);
+    new CaseRisk(s).apply(this, id, checks, a);
+    if (status.equals("READY") && !Boolean.TRUE.equals(access(id, a, false).get("risk_hold")))
+      routeInternal(id, a, checks);
   }
 
   boolean currentRevisionValidated(Map<String, Object> c) {
@@ -1497,6 +1654,10 @@ public class DocumentService {
   }
 
   boolean storageVerified(Map<String, Object> document) {
+    return "MATCH".equals(integrityStatus(document));
+  }
+
+  String integrityStatus(Map<String, Object> document) {
     try {
       String key =
           s.db.queryForObject(
@@ -1504,12 +1665,15 @@ public class DocumentService {
               String.class,
               document.get("version_id"));
       byte[] bytes = storage.read(key);
-      return bytes.length == ((Number) document.get("size_bytes")).longValue()
-          && HexFormat.of()
-              .formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))
-              .equals(document.get("sha256"));
+      if (bytes == null) return "UNAVAILABLE";
+      boolean matches =
+          bytes.length == ((Number) document.get("size_bytes")).longValue()
+              && HexFormat.of()
+                  .formatHex(MessageDigest.getInstance("SHA-256").digest(bytes))
+                  .equals(document.get("sha256"));
+      return matches ? "MATCH" : "MISMATCH";
     } catch (Exception failure) {
-      return false;
+      return "UNAVAILABLE";
     }
   }
 
@@ -1537,6 +1701,9 @@ public class DocumentService {
   Object resolveWithPreflight(
       String id, String key, Authentication a, Map<String, Object> proposed) {
     var c = access(id, a, true);
+    if (Boolean.TRUE.equals(c.get("risk_hold")))
+      throw new ApiException(
+          409, "CASE_ON_HOLD", "Clear the reviewed hold before resolution actions");
     if (key == null || !key.matches("[A-Za-z0-9-]{8,100}"))
       throw new ApiException(
           400, "INVALID_KEY", "Supply an idempotency key of 8 to 100 letters, digits or hyphens");
@@ -1821,6 +1988,9 @@ public class DocumentService {
   }
 
   void routeInternal(String id, Authentication a, List<Map<String, Object>> checks) {
+    if (Boolean.TRUE.equals(access(id, a, false).get("risk_hold")))
+      throw new ApiException(
+          409, "CASE_ON_HOLD", "Resolution Management must clear the hold before routing");
     if (checks.isEmpty() || checks.stream().anyMatch(PolicyService::blockingDocumentCheck))
       throw new ApiException(409, "NOT_READY", "Blocking intake checks remain");
     var c = access(id, a, true);
