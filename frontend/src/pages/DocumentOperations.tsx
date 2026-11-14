@@ -44,12 +44,8 @@ export function DocumentOverview() {
   const value = (number: number | undefined) =>
     metrics.loading || metrics.error ? "--" : (number ?? "--");
   return (
-    <div className="page-stack">
-      <PageHeader
-        title="Resolution Management"
-        description="Your submissions, exceptions and completed handovers."
-      >
-      </PageHeader>
+    <div className="page-stack command-home">
+      <section className="command-masthead"><div><span className="edition-label">Resolution Management / Service operations</span><h1>Every case.<br/>A clear way forward.</h1><p>Investigate the evidence. Resolve the exception. Make a considered decision.</p></div><Link className="command-focus" to="/exceptions"><span>Focus queue</span><strong>{submissions.loading||submissions.error?"?":attention.length}</strong><span>cases need attention<ArrowRight size={20}/></span></Link></section>
       {metrics.error && (
         <ErrorBox
           message={metrics.error}
@@ -186,6 +182,8 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [source, setSource] = useState("all");
+  const [requestType, setRequestType] = useState("all");
+  const [sortOrder, setSortOrder] = useState("newest");
   const [page, setPage] = useState(0);
   const pageSize = readUiPreferences().pageSize;
   const titles: Record<string, string> = {
@@ -214,12 +212,14 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
     )
     .filter(
       (item) =>
+        (requestType === "all" || item.category === requestType) &&
         (status === "all" || item.status === status) &&
         (source === "all" || (item.submission_source || "RM") === source) &&
         `${item.customer_name} ${item.customer_reference} ${item.id}`
           .toLowerCase()
           .includes(search.toLowerCase()),
     );
+  items.sort((a,b) => sortOrder === "customer" ? a.customer_name.localeCompare(b.customer_name) : (Date.parse(b.created_at)-Date.parse(a.created_at)) * (sortOrder === "oldest" ? -1 : 1));
   const pages = Math.max(1, Math.ceil(items.length / pageSize));
   const current = Math.min(page, pages - 1);
   const tab =
@@ -296,7 +296,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
             <option value="CUSTOMER_PORTAL">Customer Portal</option>
             <option value="RM">RM upload</option>
           </select>
-          <span className="result-count">
+          <select aria-label="Filter by request type" value={requestType} onChange={event=>{setRequestType(event.target.value);setPage(0);}}><option value="all">All request types</option>{[...new Set((result.data||[]).map(item=>item.category))].sort().map(value=><option key={value} value={value}>{label(value)}</option>)}</select><select aria-label="Sort submissions" value={sortOrder} onChange={event=>{setSortOrder(event.target.value);setPage(0);}}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="customer">Customer name</option></select><span className="result-count">
             {result.error
               ? "Unavailable"
               : result.loading
@@ -315,7 +315,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
           <SubmissionTable
             items={items.slice(current * pageSize, (current + 1) * pageSize)}
             tab={tab}
-            filtered={!!search || status !== "all" || source !== "all"}
+            filtered={!!search || status !== "all" || source !== "all" || requestType !== "all"}
           />
         )}
         {items.length > pageSize && (

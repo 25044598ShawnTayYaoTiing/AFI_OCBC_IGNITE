@@ -85,10 +85,10 @@ const navigationGroups = [
   {
     title: "",
     items: [
-      { to: "/", label: "Overview", icon: LayoutDashboard },
-      { to: "/submissions", label: "Submissions", icon: Boxes },
+      { to: "/", label: "Command centre", icon: LayoutDashboard },
+      { to: "/submissions", label: "Case queue", icon: Boxes },
       { to: "/exceptions", label: "Resolution Management", icon: ListFilter },
-      { to: "/operations", label: "Operations", icon: ClipboardCheck },
+      { to: "/operations", label: "Completed handovers", icon: ClipboardCheck },
       { to: "/reports", label: "Reports", icon: FileBarChart2 },
       { to: "/settings", label: "Settings", icon: Settings2 },
     ],
@@ -548,7 +548,7 @@ export default function App() {
                 >
                   <Menu size={20} />
                 </button>
-                <span>Workspace</span>
+                <span>Resolve</span>
                 <span className="breadcrumb-divider">/</span>
                 <strong>{currentLabel}</strong>
               </div>
@@ -576,17 +576,17 @@ export default function App() {
                   className="user-button"
                   ref={userMenuTrigger}
                   data-account-menu-trigger
-                  aria-label={`Account menu for ${session.username}`}
+                  aria-label="Resolution Management account menu"
                   onClick={() => setUserMenu(!userMenu)}
                   aria-expanded={userMenu}
                 >
                   <span className="avatar">
-                    {session.username.slice(0, 2).toUpperCase()}
+                    RM
                   </span>
                   <span className="user-info">
-                    <strong>{session.username}</strong>
+                    <strong>Resolution Management</strong>
                     <small>
-                      {"Resolution Management"}
+                      {"Service operations"}
                     </small>
                   </span>
                   <ChevronDown size={14} />

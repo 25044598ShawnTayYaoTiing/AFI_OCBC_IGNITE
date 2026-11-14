@@ -66,7 +66,7 @@ export function Login({
     setError("");
     passwordInput.current?.focus();
   }
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState("reviewer");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -86,7 +86,7 @@ export function Login({
       <div className="login-icon">
         <LockKeyhole size={24} />
       </div>
-      <div className="eyebrow">RESOLUTION MANAGEMENT</div>
+      <div className="eyebrow">RESOLUTION MANAGEMENT WORKSPACE</div>
       <h1>{modal ? "Switch account" : "Welcome to AFI Resolve"}</h1>
       <p className="muted">
         Sign in to validate synthetic forms and coordinate document corrections.

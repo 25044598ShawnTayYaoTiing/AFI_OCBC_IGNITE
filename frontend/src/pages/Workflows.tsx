@@ -813,7 +813,7 @@ export function ResolutionPage() {
                     <div className="reviewer-required">
                       <LockKeyhole size={23} />
                       <div>
-                        <h3>A reviewer account is required</h3>
+                        <h3>Resolution Management access is required</h3>
                         <p>
                           Sign in with Resolution Management credentials to record a
                           decision.
@@ -1424,7 +1424,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                 <div>
                   <span>Role</span>
                   <strong>
-                    {isReviewer(session) ? "Resolution Management" : "Operations Analyst"}
+                    {isReviewer(session) ? "Resolution Management" : "Resolution Management"}
                   </strong>
                 </div>
                 <div>
@@ -1677,7 +1677,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
             >
               <div className="access-roles" id="access">
                 <div>
-                  <strong>Operations Analyst</strong>
+                  <strong>Resolution Management</strong>
                   <p>
                     Own document submissions, upload synthetic PDFs, validate
                     evidence and execute permitted administrative actions.
@@ -1689,13 +1689,13 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                   <p>
                     Review submissions across owners and approve rule revisions
                     authored by another authorised approver. Legacy demo reset remains
-                    reviewer-restricted.
+                    restricted to Resolution Management.
                   </p>
                 </div>
                 <div>
                   <strong>Administrator</strong>
                   <p>
-                    The rules-admin demo reviewer provides independent approval.
+                    The rules-admin demo approver provides independent approval.
                     Account management is configured on the backend.
                   </p>
                 </div>
@@ -1827,7 +1827,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
       )}
       {!isReviewer(session) && (
         <Notice>
-          Demo reset and failure controls require a reviewer.{" "}
+          Demo reset and failure controls require Resolution Management access.{" "}
           <button className="text-button" onClick={switchUser}>
             Sign in with Resolution Management credentials →
           </button>
@@ -1936,7 +1936,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                 </p>
                 <p className="small muted">
                   Reset affects this shared demo workspace. Only an authorised
-                  reviewer can perform it.
+                  Resolution Management can perform it.
                 </p>
                 <button
                   className="button danger-outline"

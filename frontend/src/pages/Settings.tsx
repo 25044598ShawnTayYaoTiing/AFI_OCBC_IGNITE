@@ -325,7 +325,7 @@ export function SettingsWorkspace() {
                     <div>
                       <h3>Rules administrator</h3>
                       <p>
-                        Provides an independent reviewer account. Account
+                        Provides an independent Resolution Management account. Account
                         management is configured on the backend.
                       </p>
                     </div>

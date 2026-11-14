@@ -237,7 +237,7 @@ export function Overview() {
         {
           label: "Pending approvals",
           value: formatNumber(pendingCount),
-          hint: "Awaiting a reviewer decision",
+          hint: "Awaiting a Resolution Management decision",
           icon: Users,
           tone: "purple",
         },
