@@ -43,6 +43,11 @@ class DigitalFormIntegrationTest {
   @MockitoSpyBean CustomerEmailDispatcher mail;
   String token, customer, reference;
 
+  @Test
+  void disabledOptionalSmtpDoesNotFailCoreReadiness() throws Exception {
+    mvc.perform(get("/actuator/health")).andExpect(status().isOk());
+  }
+
   JsonNode json(MvcResult r) throws Exception {
     return s.json.readTree(r.getResponse().getContentAsString());
   }

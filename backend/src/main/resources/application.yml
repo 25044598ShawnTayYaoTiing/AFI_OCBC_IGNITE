@@ -29,6 +29,11 @@ spring:
   flyway:
     enabled: true
 management:
+  health:
+    # SMTP is an optional notification channel. Its outbox records delivery failures.
+    # A missing/unavailable mail relay must not fail the application's Docker readiness.
+    mail:
+      enabled: false
   endpoints:
     web:
       exposure:

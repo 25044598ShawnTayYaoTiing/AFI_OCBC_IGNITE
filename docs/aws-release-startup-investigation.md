@@ -1,6 +1,6 @@
 # Failed release startup: evidence and access blocker
 
-> **Procedure update:** [Demo deployment and debugging](demo-deployment.md) replaces the custom diagnostic workflow/document proposal below. Those uninstalled templates have been removed. The historical SSM failure and IAM denial remain valid evidence; they do not establish the startup root cause.
+> **Resolved diagnosis:** [Demo deployment and debugging](demo-deployment.md#confirmed-smtp-health-check-defect) records the subsequently captured SMTP Actuator health-check failure and regression-tested fix. It also replaces the custom diagnostic workflow/document proposal below. Those uninstalled templates have been removed. This earlier investigation is retained as history.
 
 ## Confirmed evidence
 

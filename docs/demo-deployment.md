@@ -40,6 +40,24 @@ Actions now displays the returned redacted SSM stdout/stderr instead of replacin
 
 ## Current release investigation
 
+### Confirmed SMTP health-check defect
+
+With the updated host helper installed, automatic deployment [43722618548](https://github.com/25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE/actions/runs/43722618548) captured a running backend (exit 0, OOMKilled=false) whose health endpoint returned 503. The stack ended in `SMTPTransport.openServer` and `java.net.ConnectException: Connection refused`. FastAPI health checks returned 200. Automatic rollback restored the previous healthy images and retained the redacted report under `.local/deployment/failure-80e0779c215e1baf5269b81a2b8b1e13b6706beb-20261115T141445Z.log`.
+
+A focused Spring regression test reproduced the exact mechanism:
+
+```text
+MailHealthIndicator: Mail health check failed
+MailConnectException: Couldn't connect to host, port: localhost, 587
+Expected /actuator/health 200; received 503
+```
+
+Adding the mail starter enabled Spring's automatic mail health contributor even while the application's optional SMTP dispatcher was disabled. An empty configured mail host led its health probe to localhost. This made Compose reject a running application and prevented the frontend dependency from starting. The earlier original failure's logs are unavailable; this reproduced release failure provides the concrete diagnosis.
+
+The minimal fix sets `management.health.mail.enabled=false`. Database/disk health checks remain active; email sending is unchanged and actual transport outcomes remain in the durable outbox/audit. The focused readiness test failed before this change and passed afterward; both existing SMTP transport tests also passed. New-release EC2 health and end-to-end verification must still be checked after CI deploys the fix.
+
+### Earlier investigation history
+
 The original failure's retained SSM output contains only exit 1 and the old helper's generic error. A read-only host-log attempt was denied by IAM. No evidence establishes a Flyway, seeder, SMTP, risk-engine or eForm defect. The healthy previous release remains the recovery target.
 
 If rollback removed the failed containers, their original local logs may be gone. Install the new logging helper, then perform a controlled deployment: it will preserve the next failed startup evidence before automatic rollback. Diagnose that captured error before patching application code. The new helper, auto-deployment and complete new-release end-to-end workflow must be verified on EC2 separately from local tests.
