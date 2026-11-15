@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import urlopen
 
-FILES = ['scripts/aws/deploy.py', 'scripts/aws/log_redaction.py', 'scripts/aws/check_public_endpoints.py']
+FILES = ['scripts/aws/log_redaction.py', 'scripts/aws/check_public_endpoints.py', 'scripts/aws/deploy.py']
 
 
 def install(revision, root=Path('/opt/afi-resolve')):

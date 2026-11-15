@@ -2,7 +2,7 @@
 import os
 import re
 
-SENSITIVE = re.compile(r'password|secret|token|credential|api.?key|access.?key|authorization|smtp.username|mail.from', re.I)
+SENSITIVE = re.compile(r'password|secret|token|credential|(?:^|_)key$|service.?key|api.?key|access.?key|authorization|smtp.username|mail.from', re.I)
 
 
 class Redactor:
@@ -21,7 +21,7 @@ class Redactor:
             result = result.replace(value, '[REDACTED]')
         result = re.sub(r'-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----', '[REDACTED PRIVATE KEY]', result)
         result = re.sub(r'(?i)(authorization\s*[:=]\s*)(?:basic|bearer)\s+[^\s,;]+', r'\1[REDACTED]', result)
-        result = re.sub(r'(?i)((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|smtp_username)\s*[=:]\s*)[^\s,;\"\']+', r'\1[REDACTED]', result)
+        result = re.sub(r'(?i)((?:password|passwd|secret|token|service[_-]?key|api[_-]?key|access[_-]?key|smtp_username)\s*[=:]\s*)[^\s,;\"\']+', r'\1[REDACTED]', result)
         result = re.sub(r'(://)[^/@\s]+:[^/@\s]+@', r'\1[REDACTED]@', result)
         result = re.sub(r'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b', '[REDACTED AWS KEY]', result)
         result = re.sub(r'\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[REDACTED JWT]', result)

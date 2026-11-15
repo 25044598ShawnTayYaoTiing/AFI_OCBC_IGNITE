@@ -13,4 +13,6 @@ class RedactionTest(unittest.TestCase):
     def test_container_secrets_can_be_added_before_log_capture(self):
         redact = Redactor({})
         redact.add({'GEMINI_API_KEY': 'provider-private-fixture'})
+        redact.add({'AWS_AI_SERVICE_KEY': 'internal-ai-private-fixture'})
         self.assertEqual(redact('Error: provider-private-fixture'), 'Error: [REDACTED]')
+        self.assertEqual(redact('Error: internal-ai-private-fixture'), 'Error: [REDACTED]')
