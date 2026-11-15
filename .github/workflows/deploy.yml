@@ -72,7 +72,7 @@ jobs:
         id: release
         run: python3 scripts/aws/dispatch_deployment.py
       - name: Restore previous images if deployment failed
-        if: failure() && steps.release.outputs.legacy_host_failure == 'true' && env.RELEASE_SHA != 'rollback'
+        if: failure() && steps.release.outputs.legacy_host_failure == 'true' && inputs.image_sha != 'rollback'
         env:
           RELEASE_SHA: rollback
           SELECTED_SERVICES: all
