@@ -1,10 +1,11 @@
 """Fixed read-only host probe. Never deploy, restart, read environments or print raw logs."""
-import base64
 import json
 import subprocess
 import time
 
 from read_deployment_diagnostics import INSTANCE, summarise
+
+DOCUMENT = 'AFI-ResolveDiagnostics'
 
 HOST_PROBE = r'''
 import subprocess,json,re
@@ -64,18 +65,15 @@ def aws(*args):
     if result.returncode:
         code = 'AccessDeniedException' if 'AccessDenied' in result.stderr else 'AWS_REQUEST_FAILED'
         print(json.dumps({'error': code, 'requestedAction': 'ssm:SendCommand',
-                          'document': 'arn:aws:ssm:ap-southeast-1::document/AWS-RunShellScript',
+                          'document': 'arn:aws:ssm:ap-southeast-1:092004973012:document/' + DOCUMENT,
                           'target': 'arn:aws:ec2:ap-southeast-1:092004973012:instance/' + INSTANCE}))
         raise SystemExit(1)
     return json.loads(result.stdout)
 
 
 def main():
-    encoded = base64.b64encode(HOST_PROBE.encode()).decode()
-    command = "python3 -c \"import base64;exec(base64.b64decode('" + encoded + "'))\""
     result = aws('ssm', 'send-command', '--instance-ids', INSTANCE,
-                 '--document-name', 'AWS-RunShellScript', '--parameters',
-                 json.dumps({'commands': [command], 'executionTimeout': ['120']}),
+                 '--document-name', DOCUMENT, '--document-version', '1',
                  '--timeout-seconds', '180', '--comment', 'Read-only failed AFI release diagnostics')
     command_id = result['Command']['CommandId']
     print('Read-only diagnostic command: ' + command_id, flush=True)

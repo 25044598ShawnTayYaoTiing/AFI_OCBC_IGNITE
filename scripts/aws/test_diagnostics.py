@@ -1,4 +1,6 @@
 import unittest
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 from read_deployment_diagnostics import summarise
@@ -32,6 +34,16 @@ class DiagnosticsTest(unittest.TestCase):
             with patch('builtins.print'):
                 exec(read_failed_host.HOST_PROBE, {})
         self.assertEqual([x[1] for x in commands], ['ps', 'events'])
+
+    def test_fixed_ssm_document_matches_reviewed_probe(self):
+        root = Path(__file__).resolve().parents[2]
+        document = json.loads((root / 'infrastructure/aws/ssm-diagnostics-document.json').read_text())
+        self.assertNotIn('parameters', document)
+        lines = document['mainSteps'][0]['inputs']['runCommand']
+        self.assertEqual('\n'.join(lines[1:-1]), read_failed_host.HOST_PROBE.strip())
+        policy = json.loads((root / 'infrastructure/aws/github-diagnostics-policy.json').read_text())
+        self.assertEqual(policy['Statement'][0]['Action'], 'ssm:SendCommand')
+        self.assertTrue(all('*' not in arn for arn in policy['Statement'][0]['Resource']))
 
 
 if __name__ == '__main__':
