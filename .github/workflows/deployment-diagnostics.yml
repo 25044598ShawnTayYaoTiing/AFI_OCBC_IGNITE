@@ -7,6 +7,10 @@ name: AFI Read Failed Deployment
         type: string
         required: true
         default: 9facf8e8-8b3e-4e67-b715-0db749c21392
+      read_host_logs:
+        description: Also attempt fixed read-only Docker diagnostics using existing IAM permissions
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -29,3 +33,6 @@ jobs:
         env:
           FAILED_COMMAND_ID: ${{ inputs.command_id }}
         run: python3 scripts/aws/read_deployment_diagnostics.py
+      - name: Attempt fixed read-only host diagnostics without changing IAM
+        if: inputs.read_host_logs
+        run: python3 scripts/aws/read_failed_host.py
