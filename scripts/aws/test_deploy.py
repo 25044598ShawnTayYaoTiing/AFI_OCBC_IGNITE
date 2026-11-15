@@ -26,6 +26,7 @@ class DeploySafetyTest(unittest.TestCase):
                        for i, name in enumerate(deploy.SERVICES, 1)}
         self.commands = []
         self.fail_up = False
+        self.fail_up_once = False
         self.fake_fcntl = types.SimpleNamespace(flock=lambda *args: None, LOCK_EX=1, LOCK_NB=2)
 
     def tearDown(self):
@@ -42,6 +43,9 @@ class DeploySafetyTest(unittest.TestCase):
             return 'unit-test-only'
         if self.fail_up and 'up' in args:
             raise RuntimeError('Simulated health failure')
+        if self.fail_up_once and 'up' in args:
+            self.fail_up_once = False
+            raise RuntimeError('Simulated startup failure')
         return ''
 
     def execute(self, version, services='backend'):
@@ -83,6 +87,15 @@ class DeploySafetyTest(unittest.TestCase):
         self.assertFalse(any(c[:2] == ['aws', 'ecr'] or 'pull' in c for c in self.commands))
         readiness.assert_called_once_with('https://example.invalid', customer=False)
         self.assertFalse((state / 'pending.json').exists())
+
+    def test_failed_release_captures_logs_and_automatically_restores_previous_images(self):
+        self.fail_up_once = True
+        with self.assertRaisesRegex(RuntimeError, 'automatic rollback restored healthy'):
+            self.execute('a' * 40)
+        state = self.root / '.local/deployment'
+        self.assertFalse((state / 'pending.json').exists())
+        self.assertEqual(len(list(state.glob('failure-*.log'))), 1)
+        self.assertEqual(len([c for c in self.commands if 'up' in c]), 2)
 
     def test_invalid_release_cannot_execute_commands(self):
         with self.assertRaises(RuntimeError):

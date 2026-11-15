@@ -1,5 +1,7 @@
 # Failed release startup: evidence and access blocker
 
+> **Procedure update:** [Demo deployment and debugging](demo-deployment.md) replaces the custom diagnostic workflow/document proposal below. Those uninstalled templates have been removed. The historical SSM failure and IAM denial remain valid evidence; they do not establish the startup root cause.
+
 ## Confirmed evidence
 
 The failed release was `a576e58f8dcfef416037f74e6f090bebda122dfb`. Its [deployment run](https://github.com/25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE/actions/runs/43614949573) failed on EC2. The [rollback run](https://github.com/25044598ShawnTayYaoTiing/AFI_OCBC_IGNITE/actions/runs/43617117199) succeeded.
