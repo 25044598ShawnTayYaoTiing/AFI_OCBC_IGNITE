@@ -1,12 +1,14 @@
 # AFI Resolve 2.0
 
-**Current demo scope:** existing-customer mailing-address, contact-detail and tax-residency updates. See [scope correction, OTP controls and real-test results](docs/service-request-scope-and-verification.md). Historical account-opening cases remain supported; new eForms use service requests.
+**Deployment and debugging:** [Push-to-main demo deployment, Session Manager, redacted logs and automatic rollback](docs/demo-deployment.md). This supersedes older approval-gate and deployment instructions in historical reports.
+
+**Current demo scope:** existing-customer mailing/residential-address changes, contact-detail and tax-residency updates, and additional savings/current accounts. See [risk policies and mentor implementation](docs/mentor-risk-implementation.md). Historical account-opening cases remain supported; new eForms use service requests.
 
 **13 November enhancements:** [Digital eForms, synthetic profiles, Resolution Management and SMTP setup](docs/enhancement-delivery-2026-11-13.md). New customer cases now require Resolution Management approval after successful validation. The Operator login and staff intake interface have been removed.
 
 **Customer Portal integration (11 November 2026):** see [customer API, shared workflow, local startup and verification](docs/customer-api-integration.md). The sibling Customer Portal now uses this application's existing Spring/FastAPI/PostgreSQL stack; portal notifications are persisted; correction emails use an opt-in SMTP outbox (disabled by default). Current provider limitations and fallback results are documented separately.
 
-The final shared database target is **Amazon RDS for PostgreSQL, not yet configured or verified**. Use [disposable Docker PostgreSQL for local integration testing](docs/customer-api-integration.md#run-locally-with-temporary-docker-postgresql); this creates no permanent customer database and does not establish AWS deployment readiness.
+The shared deployment database is **Amazon RDS for PostgreSQL**. Use AWS/RDS for the current release verification; do not infer live connectivity from local tests or historical reports. See the current deployment runbook for release evidence and remaining verification. Earlier disposable local test instructions are retained as history and create no permanent customer database.
 
 **Validate. Reconcile. Resolve. Prevent.** - Team AFI's intelligent document exception-resolution prototype for OCBC Ignite Challenge 2026, Problem Statement 2.
 
