@@ -58,6 +58,7 @@ public class CustomerSessions {
   public Object login(String username, String password) {
     if (username == null
         || password == null
+        || password.isEmpty()
         || username.length() > 80
         || password.getBytes(StandardCharsets.UTF_8).length > 72) throw invalid();
     var rows = s.db.queryForList("SELECT * FROM customers WHERE username=? FOR UPDATE", username);
@@ -71,9 +72,7 @@ public class CustomerSessions {
         passwords.matches(password, c == null ? dummyHash : (String) c.get("password_hash"));
     boolean synthetic = c != null && c.get("customer_reference") instanceof String reference
         && (reference.startsWith("SYN-") || reference.startsWith("DEMO-"));
-    boolean passwordless = synthetic && password.isEmpty();
-    matches = matches || passwordless;
-    boolean lockoutApplies = !(passwordless || (demoRetryEnabled && synthetic));
+    boolean lockoutApplies = !(demoRetryEnabled && synthetic);
     boolean locked =
         lockoutApplies &&
         c != null

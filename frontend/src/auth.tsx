@@ -58,10 +58,11 @@ export function Login({
     setUsername(user);
     setError("");
   }
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState("reviewer");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  async function submit(user = username, pass = "") {
+  async function submit(user = username, pass = password) {
     setBusy(true);
     setError("");
     try {
@@ -98,6 +99,7 @@ export function Login({
             required
           />
         </label>
+        <label>Password<input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
         {error && (
           <div className="error-message" role="alert">
             {error}
@@ -125,7 +127,7 @@ export function Login({
         </button>
       </div>
       <p className="login-notice">
-        <LockKeyhole size={13} /> Choose an account and sign in. No password is required.
+        <LockKeyhole size={13} /> Sign in with your staff credentials.
       </p>
     </div>
   );

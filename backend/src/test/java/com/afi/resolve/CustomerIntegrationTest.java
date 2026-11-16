@@ -26,6 +26,7 @@ import org.springframework.test.web.servlet.*;
 @SpringBootTest(
     properties = {
       "afi.demo-enabled=true",
+      "afi.seed-named-demo-customers=false",
       "afi.customer-portal-origins=https://ocbc-customer-portal.vercel.app,http://localhost:5174",
       "afi.reviewer-password=reviewer-demo",
       "afi.rules-admin-password=rules-admin-demo"
@@ -236,7 +237,7 @@ class CustomerIntegrationTest {
 
   @Test
   void sharedCaseCorrectionAutonomyAndDurableReplay() throws Exception {
-    reference = "SYN-ALEX-001";
+    reference = "SYN-" + UUID.randomUUID();
     String repository =
         json(mvc.perform(
                     post("/api/documents/demo/restore")
@@ -246,6 +247,8 @@ class CustomerIntegrationTest {
             .path("submission")
             .path("id")
             .asText();
+    s.db.update("UPDATE document_submissions SET customer_reference=? WHERE id=?", reference, repository);
+    s.db.update("UPDATE submission_documents SET verified_reference=? WHERE submission_id=? AND repository_only=TRUE", reference, repository);
     String user = username();
     provision(user, reference, repository);
     String token = login(user), key = UUID.randomUUID().toString();
@@ -590,5 +593,18 @@ class CustomerIntegrationTest {
                     + " LIKE '%.invalid' AND p.identity_number LIKE 'DEMO-ID-%'",
                 Integer.class))
         .isEqualTo(100);
+    String outside = username();
+    provision(outside, "SYN-" + UUID.randomUUID(), null);
+    String outsideHash = s.db.queryForObject("SELECT password_hash FROM customers WHERE username=?", String.class, outside);
+    String reset = s.json(map("password", "temporary-demo-test-password"));
+    mvc.perform(post("/api/documents/demo/reset-synthetic-passwords").contentType("application/json").content(reset))
+        .andExpect(status().isUnauthorized());
+    mvc.perform(post("/api/documents/demo/reset-synthetic-passwords").with(httpBasic("reviewer", "reviewer-demo"))
+        .contentType("application/json").content(reset)).andExpect(status().isOk());
+    assertThat(s.db.queryForObject("SELECT password_hash FROM customers WHERE username=?", String.class, outside)).isEqualTo(outsideHash);
+    mvc.perform(post("/api/customer/auth/token").contentType("application/json")
+        .content(s.json(map("username", "synthetic-001", "password", "temporary-demo-test-password")))).andExpect(status().isOk());
+    mvc.perform(post("/api/customer/auth/token").contentType("application/json")
+        .content(s.json(map("username", outside, "password", "temporary-demo-test-password")))).andExpect(status().isUnauthorized());
   }
 }

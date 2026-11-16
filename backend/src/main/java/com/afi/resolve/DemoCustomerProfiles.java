@@ -6,10 +6,12 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.transaction.annotation.Transactional;
 
 /** The selectable, fictional customer identities used by the demonstration. */
 @Component
+@ConditionalOnProperty(name = "afi.seed-named-demo-customers", havingValue = "true", matchIfMissing = true)
 public class DemoCustomerProfiles implements ApplicationRunner {
   static final List<String> NAMES = List.of(
       "Alex", "Billy", "Charlie", "Daniel", "Ethan", "Felix", "George", "Henry", "Isaac", "Jack");

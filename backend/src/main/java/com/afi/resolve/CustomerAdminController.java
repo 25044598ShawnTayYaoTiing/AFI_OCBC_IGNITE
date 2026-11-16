@@ -9,12 +9,16 @@ public class CustomerAdminController {
   final CustomerService customers;
   final Store s;
   final SyntheticCustomerSeeder seeder;
+  final DemoService demo;
+  final org.springframework.security.crypto.password.PasswordEncoder passwords;
 
   public CustomerAdminController(
-      CustomerService customers, Store s, SyntheticCustomerSeeder seeder) {
+      CustomerService customers, Store s, SyntheticCustomerSeeder seeder, DemoService demo, org.springframework.security.crypto.password.PasswordEncoder passwords) {
     this.customers = customers;
     this.s = s;
     this.seeder = seeder;
+    this.demo = demo;
+    this.passwords = passwords;
   }
 
   @PostMapping("/api/documents/customers")
@@ -36,6 +40,32 @@ public class CustomerAdminController {
         s.db.queryForList(
             "SELECT scenario_key,COUNT(*) AS count FROM synthetic_scenario_manifest GROUP BY"
                 + " scenario_key"));
+  }
+
+  public record ResetSyntheticPasswords(String password) {}
+
+  @PostMapping("/api/documents/demo/reset-synthetic-passwords")
+  @PreAuthorize("hasRole('REVIEWER')")
+  @org.springframework.transaction.annotation.Transactional
+  public Object resetSyntheticPasswords(@RequestBody ResetSyntheticPasswords request, Authentication actor) {
+    demo.requireDemo();
+    String password = request.password();
+    if (password == null || password.length() < 8 || password.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 72)
+      throw new ApiException(400, "INVALID_PASSWORD", "Provide a password of 8 to 72 bytes");
+    var rows = s.db.queryForList("SELECT c.id,c.username,c.customer_reference,m.fixture_number FROM customers c JOIN synthetic_scenario_manifest m ON m.customer_id=c.id ORDER BY m.fixture_number FOR UPDATE");
+    if (rows.size() != 100) throw new ApiException(409, "INVALID_DEMO_MANIFEST", "Expected exactly 100 synthetic demo accounts");
+    var ids = new java.util.ArrayList<String>();
+    for (int i = 1; i <= 100; i++) {
+      var row = rows.get(i - 1);
+      if (((Number) row.get("fixture_number")).intValue() != i
+          || !String.format(java.util.Locale.ROOT, "synthetic-%03d", i).equals(row.get("username"))
+          || !String.format(java.util.Locale.ROOT, "SYN-DEMO-%03d", i).equals(row.get("customer_reference")))
+        throw new ApiException(409, "INVALID_DEMO_MANIFEST", "Synthetic demo account identity mismatch");
+      ids.add((String) row.get("id"));
+    }
+    for (String id : ids) s.db.update("UPDATE customers SET password_hash=?, failed_logins=0, locked_until=NULL WHERE id=?", passwords.encode(password), id);
+    s.audit(null, actor.getName(), "SYNTHETIC_PASSWORDS_RESET", s.json(Domain.map("count", ids.size())), "COMPLETED", null);
+    return Domain.map("updated", ids.size());
   }
 
   public record EmailContact(String email) {}
