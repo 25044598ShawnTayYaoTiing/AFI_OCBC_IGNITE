@@ -6,7 +6,6 @@ spring:
     password: ${DB_PASSWORD}
 afi:
   demo-enabled: ${DEMO_ENABLED:false}
-  operator-password: ${OPERATOR_PASSWORD}
   reviewer-password: ${REVIEWER_PASSWORD}
   rules-admin-password: ${RULES_ADMIN_PASSWORD}
   ai-key: ${AI_SERVICE_KEY}

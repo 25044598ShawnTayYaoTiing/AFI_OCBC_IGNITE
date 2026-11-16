@@ -54,6 +54,6 @@ export function issueGuidance(issue: Finding, caseReference: string): string | n
   if (rule === "ATTACH_SUPPORTING_DOCUMENT")
     return "The required supporting document is missing. Supply the required PDF or arrange an authorised, verified case repository source. Automatic attachment remains subject to preflight and policy checks.";
   if (rule === "ACCOUNT_SELECTION")
-    return "The active prototype rule requires an explicit selection indicator of Present. Changing this requirement needs reviewer approval. If the form already names an account category, ask a rule reviewer whether that evidence should satisfy the rule; otherwise request a corrected form with the required indicator. Do not invent an indicator.";
+    return "The active prototype rule requires an explicit selection indicator of Present. Changing this requirement needs Resolution Management approval. If the form already names an account category, ask a Resolution Management approver whether that evidence should satisfy the rule; otherwise request a corrected form with the required indicator. Do not invent an indicator.";
   return null;
 }

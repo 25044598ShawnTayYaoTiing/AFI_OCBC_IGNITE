@@ -268,7 +268,7 @@ export const formatNumber = (n: number | undefined | null) =>
     ? "—"
     : new Intl.NumberFormat("en-SG", { maximumFractionDigits: 1 }).format(n);
 export const label = (text: string | undefined | null) =>
-  text
+  text === "REVIEWER" ? "Resolution Management" : text
     ? text
         .toLowerCase()
         .replaceAll("_", " ")

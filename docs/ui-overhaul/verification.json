@@ -1,0 +1,10 @@
+{
+  "passed": true,
+  "scope": "Built React UI with intercepted fixture APIs; not a real backend or cloud end-to-end test",
+  "profilePrefill": true,
+  "conditionalFields": true,
+  "mobile390NoOverflow": true,
+  "operatorRemoved": true,
+  "approvalUi": true,
+  "errors": []
+}

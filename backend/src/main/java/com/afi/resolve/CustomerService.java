@@ -66,7 +66,7 @@ public class CustomerService {
     try {
       var rm = staff.loadUserByUsername(p.relationshipManager());
       if (!rm.isEnabled()
-          || rm.getAuthorities().stream().noneMatch(r -> r.getAuthority().equals("ROLE_OPERATOR")))
+          || rm.getAuthorities().stream().noneMatch(r -> r.getAuthority().equals("ROLE_REVIEWER")))
         throw new UsernameNotFoundException("Not an RM");
       manager = rm.getUsername();
     } catch (UsernameNotFoundException e) {
@@ -104,6 +104,7 @@ public class CustomerService {
         manager,
         p.repositorySubmissionId(),
         Store.now());
+    new CustomerProfiles(s).create(id, p.customerReference());
     s.audit(
         null,
         actor.getName(),
@@ -151,7 +152,9 @@ public class CustomerService {
         "name",
         c.get("customer_name"),
         "customerReference",
-        c.get("customer_reference"));
+        c.get("customer_reference"),
+        "bankingProfile",
+        new CustomerProfiles(s).dto((String) c.get("id")));
   }
 
   Object timestamp(Object value) {
@@ -165,7 +168,11 @@ public class CustomerService {
         "caseReference",
         c.get("id"),
         "status",
-        c.get("status"),
+        "ON_HOLD".equals(c.get("status")) ? "RESOLUTION_MANAGEMENT" : c.get("status"),
+        "requestType",
+        c.get("category"),
+        "captureMethod",
+        c.get("capture_method"),
         "revision",
         c.get("revision"),
         "createdAt",
@@ -201,9 +208,57 @@ public class CustomerService {
                         "version",
                         d.get("current_version"),
                         "filename",
-                        d.get("filename")))
+                        d.get("filename"),
+                        "captureMethod",
+                        s.readMap((String) d.get("extraction_json")).get("method")))
             .toList();
-    return map("submission", summary(c), "documents", files, "corrections", corrections(id, a));
+    var verification =
+        "CONTACT_UPDATE".equals(c.get("category"))
+            ? map(
+                "emailVerified",
+                s.db.queryForObject(
+                        "SELECT COUNT(*) FROM contact_verifications WHERE submission_id=? AND"
+                            + " revision=? AND status='VERIFIED'",
+                        Integer.class,
+                        id,
+                        c.get("revision"))
+                    > 0,
+                "phoneVerified",
+                Objects.equals(c.get("revision"), c.get("phone_verified_revision")))
+            : null;
+    return map(
+        "submission",
+        summary(c),
+        "documents",
+        files,
+        "corrections",
+        corrections(id, a),
+        "contactVerification",
+        verification,
+        "processing",
+        map(
+            "received",
+            true,
+            "validated",
+            c.get("validated_at") != null,
+            "revalidation",
+            ((Number) c.get("revision")).intValue() > 1,
+            "reviewRequired",
+            Set.of("RESOLUTION_MANAGEMENT", "ON_HOLD").contains(c.get("status"))),
+        "requirements",
+        s
+            .db
+            .queryForList(
+                "SELECT r.check_key,r.passed,v.name,v.corrective_action FROM validation_results r"
+                    + " JOIN validation_rules v ON v.id=r.rule_id WHERE r.submission_id=? AND"
+                    + " r.revision=? AND r.check_key NOT LIKE 'PROFILE_%' AND r.check_key NOT LIKE"
+                    + " '%CLASSIFICATION%' ORDER BY r.created_at DESC",
+                id, c.get("revision"))
+            .stream()
+            .filter(row -> Boolean.TRUE.equals(row.get("passed")))
+            .map(row -> map("name", row.get("name"), "passed", true))
+            .distinct()
+            .toList());
   }
 
   @SuppressWarnings("unchecked")
@@ -214,10 +269,11 @@ public class CustomerService {
     return s
         .db
         .queryForList(
-            "SELECT t.id,t.status,t.assigned_role,r.name AS rule_name,r.condition_type,r.document_type,r.corrective_action,e.description AS finding_reason,e.evidence_json FROM"
+            "SELECT t.id,t.status,r.rule_key,t.assigned_role,r.name AS rule_name,r.condition_type,r.document_type,r.corrective_action,e.description AS finding_reason,e.evidence_json FROM"
                 + " correction_tasks t JOIN document_exceptions e ON e.id=t.exception_id JOIN"
                 + " validation_rules r ON r.id=e.rule_id WHERE t.submission_id=? AND"
-                + " t.status<>'RESOLVED' AND e.status='OPEN' ORDER BY t.created_at,t.id",
+                + " t.assigned_role='CUSTOMER' AND t.status NOT IN ('RESOLVED','ESCALATED') AND"
+                + " e.status='OPEN' ORDER BY t.created_at,t.id",
             id)
         .stream()
         .map(
@@ -228,6 +284,15 @@ public class CustomerService {
                   evidence.stream()
                       .map(e -> e.get("document_id"))
                       .filter(available::contains)
+                      .filter(
+                          doc ->
+                              !"SERVICE_SUPPORT".equals(t.get("rule_key"))
+                                  || documents.documents(id, false).stream()
+                                      .anyMatch(
+                                          d ->
+                                              doc.equals(d.get("id"))
+                                                  && "SUPPORTING_DOCUMENT"
+                                                      .equals(d.get("document_type"))))
                       .distinct()
                       .toList();
               return map(
@@ -235,6 +300,8 @@ public class CustomerService {
                   t.get("id"),
                   "status",
                   t.get("status"),
+                  "ruleKey",
+                  t.get("rule_key"),
                   "documentType",
                   t.get("document_type"),
                   "documentIds",
@@ -253,8 +320,9 @@ public class CustomerService {
     return s
         .db
         .queryForList(
-            "SELECT * FROM customer_notifications WHERE customer_id=? ORDER BY created_at DESC,id"
-                + " DESC LIMIT 100",
+            "SELECT n.*,o.status AS email_status FROM customer_notifications n LEFT JOIN"
+                + " customer_email_outbox o ON o.notification_id=n.id WHERE n.customer_id=? ORDER"
+                + " BY n.created_at DESC,n.id DESC LIMIT 100",
             customer(a, false).get("id"))
         .stream()
         .map(
@@ -272,6 +340,8 @@ public class CustomerService {
                     n.get("channel"),
                     "deliveryStatus",
                     n.get("delivery_status"),
+                    "emailDeliveryStatus",
+                    n.get("email_status"),
                     "createdAt",
                     timestamp(n.get("created_at"))))
         .toList();
@@ -282,8 +352,25 @@ public class CustomerService {
   public Object upload(
       String id, String replace, String key, List<MultipartFile> files, Authentication a)
       throws Exception {
+    return uploadRequest(id, replace, key, files, a, "ACCOUNT_OPENING");
+  }
+
+  @Transactional(rollbackFor = Exception.class)
+  public Object uploadRequest(
+      String id,
+      String replace,
+      String key,
+      List<MultipartFile> files,
+      Authentication a,
+      String requestType)
+      throws Exception {
     var c = customer(a, true);
     if (id != null) owned(id, a);
+    if (id == null
+        && !("ACCOUNT_OPENING".equals(requestType)
+            || BankingServicePolicy.REQUESTS.contains(requestType)))
+      throw new ApiException(
+          400, "INVALID_REQUEST_TYPE", "Choose address, contact or tax-residency update");
     if (key == null || !key.matches("[A-Za-z0-9_-]{8,100}"))
       throw new ApiException(
           400,
@@ -322,6 +409,8 @@ public class CustomerService {
                 + id
                 + "/documents"
                 + (replace == null ? "" : "/" + replace + "/replacement");
+    if (id == null && !"ACCOUNT_OPENING".equals(requestType))
+      operation += "?requestType=" + requestType;
     if (operation.length() > 220)
       throw new ApiException(400, "INVALID_REQUEST", "Document identifier is too long");
     String fingerprint = CustomerSessions.hash(s.json(fingerprints));
@@ -343,9 +432,10 @@ public class CustomerService {
     boolean initial = id == null;
     if (initial) {
       id =
-          documents.createCustomer(
+          documents.createOwned(
               (String) c.get("customer_name"),
               (String) c.get("customer_reference"),
+              requestType,
               (String) c.get("relationship_manager"),
               (String) c.get("id"),
               a);
@@ -353,6 +443,16 @@ public class CustomerService {
       notifications.publish(
           id, "SUBMISSION_RECEIVED", "received", "Your document application has been received.");
     }
+    if (replace != null
+        && "DIGITAL_EFORM".equals(owned(id, a).get("capture_method"))
+        && documents.documents(id, false).stream()
+            .anyMatch(
+                d ->
+                    replace.equals(d.get("id"))
+                        && "DIGITAL_EFORM"
+                            .equals(s.readMap((String) d.get("extraction_json")).get("method"))))
+      throw new ApiException(
+          409, "EDIT_EFORM", "Edit the digital declaration instead of replacing its receipt");
     documents.upload(id, files, replace, a);
     if (!initial)
       notifications.publish(

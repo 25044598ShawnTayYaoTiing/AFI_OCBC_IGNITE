@@ -356,20 +356,20 @@ class WorkflowIntegrationTest {
   void backendEnforcesRolesAndAuthentication() throws Exception {
     mvc.perform(get("/api/dashboard/summary")).andExpect(status().isUnauthorized());
     mvc.perform(post("/api/demo/reset").with(httpBasic("operator", "operator-demo")))
-        .andExpect(status().isForbidden());
+        .andExpect(status().isUnauthorized());
     mvc.perform(
             post("/api/exceptions/EX-nonexistent/approval")
                 .with(httpBasic("operator", "operator-demo"))
                 .contentType("application/json")
                 .content(
                     "{\"decision\":\"APPROVED\",\"actionType\":\"REQUEST_MANUAL_REVIEW\",\"comments\":\"Review\"}"))
-        .andExpect(status().isForbidden());
+        .andExpect(status().isUnauthorized());
     mvc.perform(get("/api/auth/me").with(httpBasic("reviewer", "reviewer-demo")))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.roles[1]").value("REVIEWER"));
+        .andExpect(jsonPath("$.roles[0]").value("REVIEWER"));
     mvc.perform(
             get("/api/exceptions?sort=id;DROP%20TABLE%20exceptions")
-                .with(httpBasic("operator", "operator-demo")))
+                .with(httpBasic("reviewer", "reviewer-demo")))
         .andExpect(status().isBadRequest());
   }
 

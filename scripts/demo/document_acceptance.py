@@ -14,7 +14,7 @@ ROOT=Path(__file__).resolve().parents[2]
 load_dotenv(ROOT/'.env',override=False,encoding='utf-8-sig')
 BASE=os.getenv('AFI_API','http://127.0.0.1:8080')+'/api/documents'
 client=requests.Session()
-client.auth=('operator',os.getenv('OPERATOR_PASSWORD','operator-demo'))
+client.auth=('reviewer',os.getenv('REVIEWER_PASSWORD','reviewer-demo'))
 
 def call(method,path,**kwargs):
     response=client.request(method,BASE+path,timeout=90,**kwargs)
@@ -42,7 +42,7 @@ def main():
     with (ROOT/'backend/src/main/resources/synthetic/customer-information.pdf').open('rb') as pdf:
         assert client.post(BASE+path+'/upload',files=[('files',('duplicate.pdf',pdf,'application/pdf'))],timeout=30).status_code==409
     assert client.post(BASE+path+'/upload',files=[('files',('invalid.pdf',b'not a PDF','application/pdf'))],timeout=30).status_code==400
-    assert client.post(BASE+'/rules/draft',json={'sourceId':'none','correctiveAction':'test','severity':'WARNING'},timeout=10).status_code==403
+    assert requests.post(BASE+'/rules/draft',json={'sourceId':'none','correctiveAction':'test','severity':'WARNING'},timeout=10).status_code==401
     version=data['documents'][0]['version_id']
     private=client.get(BASE+path+'/versions/'+version+'/pdf',timeout=10)
     assert private.status_code==200 and private.content.startswith(b'%PDF-')
@@ -89,7 +89,7 @@ def main():
         for page in reader.pages: writer.add_page(page)
     merged=io.BytesIO();writer.write(merged)
     uncertain=call('POST',other_path+'/upload',files=[('files',('ambiguous.pdf',merged.getvalue(),'application/pdf'))])
-    assert uncertain['submission']['status']=='HUMAN_REVIEW'
+    assert uncertain['submission']['status']=='RESOLUTION_MANAGEMENT'
     assert uncertain['documents'][0]['extraction']['requires_review']
     assert not uncertain['routing']
     assert not any(at['status']=='VERIFIED' for at in uncertain['automation'])

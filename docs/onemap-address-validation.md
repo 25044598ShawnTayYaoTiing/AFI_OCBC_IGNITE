@@ -41,7 +41,7 @@ During package validation, the backend collects OneMap evidence for extracted ad
 
 Resolution Management displays the original quote, document/version/page reference, separately cited postal code, live result and matching OneMap record. These findings are also included as distinct sources in advisory AI investigations. Investigation caching accounts for changed evidence at the same document revision. Simulations read saved snapshots and do not trigger external network calls.
 
-`V5__onemap_addresses.sql` creates **draft** rules `ONEMAP_MAILING` and `ONEMAP_RESIDENTIAL`. A reviewer must approve these through the existing Settings rule-approval flow before they affect document routing. Evidence is collected and displayed even while the rules are drafts. Once active:
+`V8__onemap_addresses.sql` creates **draft** rules `ONEMAP_MAILING` and `ONEMAP_RESIDENTIAL`. A reviewer must approve these through the existing Settings rule-approval flow before they affect document routing. Evidence is collected and displayed even while the rules are drafts. Once active:
 
 - A confirmed conflict creates a correction task through the existing validation machinery.
 - Unavailable/inconclusive verification creates a reviewer escalation; it does not label the address invalid.

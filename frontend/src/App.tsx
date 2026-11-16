@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { NavLink, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import {
   Activity,
   Bell,
@@ -16,7 +16,6 @@ import {
   CircleHelp,
   ClipboardCheck,
   FileBarChart2,
-  GitBranch,
   LayoutDashboard,
   ListFilter,
   LogOut,
@@ -28,7 +27,7 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import { AuthContext, Brand, Login, isReviewer } from "./auth";
+import { AuthContext, Brand, Login } from "./auth";
 import { clearSession, useResource, label, dateTime } from "./api";
 import type { Audit, Session } from "./api";
 import { Empty, Loading, ErrorBox } from "./components";
@@ -73,7 +72,6 @@ const LegacySettingsPage = lazy(() =>
 import {
   DocumentOverview,
   DocumentQueue,
-  NewDocumentSubmission,
   DocumentWorkspace,
   DocumentReports,
   DocumentAudit,
@@ -87,12 +85,12 @@ const navigationGroups = [
   {
     title: "",
     items: [
-      { to: "/", label: "Overview", icon: LayoutDashboard },
-      { to: "/submissions", label: "Customer cases", icon: Boxes },
-      { to: "/exceptions", label: "Issues & corrections", icon: ListFilter },
+      { to: "/", label: "Command centre", icon: LayoutDashboard },
+      { to: "/submissions", label: "Case queue", icon: Boxes },
+      { to: "/exceptions", label: "Needs attention", icon: ListFilter },
+      { to: "/operations", label: "Completed handovers", icon: ClipboardCheck },
+      { to: "/reports", label: "Reports & audit", icon: FileBarChart2 },
       { to: "/address-requests", label: "Address changes", icon: ClipboardCheck },
-      { to: "/operations", label: "Operations", icon: ClipboardCheck },
-      { to: "/reports", label: "Reports", icon: FileBarChart2 },
       { to: "/settings", label: "Settings", icon: Settings2 },
     ],
   },
@@ -244,7 +242,7 @@ function NotificationCenter() {
       .filter(
         (c) =>
           (c.status === "CORRECTION_REQUIRED" && preferences.critical) ||
-          (c.status === "HUMAN_REVIEW" && preferences.approvals),
+          (["HUMAN_REVIEW", "RESOLUTION_MANAGEMENT"].includes(c.status) && preferences.approvals),
       )
       .map((c) => ({
         id: c.id,
@@ -473,14 +471,6 @@ export default function App() {
           <Activity size={17} />
           <span>Demo environment</span>
         </NavLink>
-        <NavLink
-          to="/legacy"
-          className="nav-item"
-          onClick={() => setSidebar(false)}
-        >
-          <GitBranch size={17} />
-          <span>Legacy recovery</span>
-        </NavLink>
         <p className="sidebar-version">AFI Resolve 2.0</p>
       </div>
     </>
@@ -551,7 +541,7 @@ export default function App() {
                 >
                   <Menu size={20} />
                 </button>
-                <span>Workspace</span>
+                <span>Resolve</span>
                 <span className="breadcrumb-divider">/</span>
                 <strong>{currentLabel}</strong>
               </div>
@@ -579,19 +569,17 @@ export default function App() {
                   className="user-button"
                   ref={userMenuTrigger}
                   data-account-menu-trigger
-                  aria-label={`Account menu for ${session.username}`}
+                  aria-label="Resolution Management account menu"
                   onClick={() => setUserMenu(!userMenu)}
                   aria-expanded={userMenu}
                 >
                   <span className="avatar">
-                    {session.username.slice(0, 2).toUpperCase()}
+                    RM
                   </span>
                   <span className="user-info">
-                    <strong>{session.username}</strong>
+                    <strong>Resolution Management</strong>
                     <small>
-                      {isReviewer(session)
-                        ? "Reviewer"
-                        : "Relationship manager"}
+                      {"Service operations"}
                     </small>
                   </span>
                   <ChevronDown size={14} />
@@ -665,7 +653,7 @@ export default function App() {
         <Route path="/address-requests" element={<AddressRequests />} />
                 <Route path="/" element={<DocumentOverview />} />
                 <Route path="/submissions" element={<DocumentQueue />} />
-                <Route path="/new" element={<NewDocumentSubmission />} />
+                <Route path="/new" element={<Navigate to="/submissions" replace />} />
                 <Route
                   path="/submissions/:id"
                   element={<DocumentWorkspace />}

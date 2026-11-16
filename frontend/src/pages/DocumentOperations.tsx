@@ -7,7 +7,6 @@ import {
   ChevronRight,
   Download,
   FileText,
-  Plus,
 } from "lucide-react";
 import { detailText, label, post, privatePdf, useResource } from "../api";
 import type { Audit } from "../api";
@@ -41,21 +40,59 @@ export function DocumentOverview() {
   const items = submissions.data || [];
   const m = metrics.data;
   const attention = items.filter((item) =>
-    ["CORRECTION_REQUIRED", "HUMAN_REVIEW"].includes(item.status),
+    [
+      "CORRECTION_REQUIRED",
+      "HUMAN_REVIEW",
+      "RESOLUTION_MANAGEMENT",
+      "ON_HOLD",
+    ].includes(item.status),
   );
   const value = (number: number | undefined) =>
     metrics.loading || metrics.error ? "--" : (number ?? "--");
   return (
-    <div className="page-stack">
-      <PageHeader
-        title="Resolution management"
-        description="Prioritise cases, resolve document issues and confirm Operations handover."
-      >
-        <Link className="button primary" to="/new">
-          <Plus size={16} />
-          New submission
+    <div className="page-stack command-home">
+      <section className="command-masthead">
+        <div>
+          <span className="eyebrow">
+            Resolution Management · Service Operations
+          </span>
+          <h1>Every case. A clear way forward.</h1>
+          <p>
+            Investigate cross-source evidence, resolve exceptions, and approve
+            verified Operations handovers.
+          </p>
+        </div>
+        <Link className="command-focus" to="/exceptions">
+          <span>Focus queue</span>
+          <strong>
+            {submissions.loading || submissions.error ? "—" : attention.length}
+          </strong>
+          <span>
+            cases need attention
+            <ArrowRight size={18} />
+          </span>
         </Link>
-      </PageHeader>
+      </section>
+      <div className="risk-counts">
+        {["LOW", "MEDIUM", "HIGH", "UNASSESSED"].map((level) => (
+          <span key={level}>
+            {level} risk{" "}
+            <strong>
+              {metrics.loading || metrics.error
+                ? "--"
+                : m?.riskCounts
+                  ? (m.riskCounts[level] ?? 0)
+                  : "--"}
+            </strong>
+          </span>
+        ))}
+        <span>
+          On hold{" "}
+          <strong>
+            {metrics.loading || metrics.error ? "--" : (m?.onHold ?? "--")}
+          </strong>
+        </span>
+      </div>
       {metrics.error && (
         <ErrorBox
           message={metrics.error}
@@ -193,13 +230,16 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [source, setSource] = useState("all");
-  const [sort, setSort] = useState("attention");
+  const [requestType, setRequestType] = useState("all");
+  const [sortOrder, setSortOrder] = useState("risk");
+  const [riskLevel, setRiskLevel] = useState("all");
+  const [validationOutcome, setValidationOutcome] = useState("all");
   const [page, setPage] = useState(0);
   const pageSize = readUiPreferences().pageSize;
   const titles: Record<string, string> = {
     submissions: "Customer cases",
     investigations: "Investigations",
-    exceptions: "Issues & corrections",
+    exceptions: "Resolution Management",
     corrections: "Corrections",
     operations: "Operations",
     preflight: "Handover readiness",
@@ -215,23 +255,39 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const items = (result.data || [])
     .filter((item) =>
       mode === "exceptions" || mode === "corrections"
-        ? ["CORRECTION_REQUIRED", "HUMAN_REVIEW"].includes(item.status)
+        ? [
+            "CORRECTION_REQUIRED",
+            "HUMAN_REVIEW",
+            "RESOLUTION_MANAGEMENT",
+            "ON_HOLD",
+          ].includes(item.status)
         : mode === "operations"
           ? item.status === "OPERATIONS"
           : true,
     )
     .filter(
       (item) =>
+        (riskLevel === "all" || item.risk_level === riskLevel) &&
+        (validationOutcome === "all" ||
+          (validationOutcome === "current"
+            ? item.validated_revision === item.revision
+            : item.validated_revision !== item.revision)) &&
+        (requestType === "all" || item.category === requestType) &&
         (status === "all" || item.status === status) &&
         (source === "all" || (item.submission_source || "RM") === source) &&
         `${item.customer_name} ${item.customer_reference} ${item.id}`
           .toLowerCase()
           .includes(search.toLowerCase()),
-    ).sort((a, b) => {
-      if (sort === "newest") return b.created_at.localeCompare(a.created_at);
-      const priority = (item: Submission) => ["HUMAN_REVIEW", "CORRECTION_REQUIRED"].includes(item.status) ? 3 : ["DRAFT", "PENDING_VALIDATION"].includes(item.status) ? 2 : item.status === "OPERATIONS" ? 0 : 1;
-      return priority(b) - priority(a) || (b.open_exceptions ?? 0) - (a.open_exceptions ?? 0) || b.created_at.localeCompare(a.created_at);
-    });
+    );
+  items.sort((a, b) =>
+    sortOrder === "risk"
+      ? Number(!!b.risk_hold) - Number(!!a.risk_hold) ||
+        (b.risk_score ?? -1) - (a.risk_score ?? -1)
+      : sortOrder === "customer"
+        ? a.customer_name.localeCompare(b.customer_name)
+        : (Date.parse(b.created_at) - Date.parse(a.created_at)) *
+          (sortOrder === "oldest" ? -1 : 1),
+  );
   const pages = Math.max(1, Math.ceil(items.length / pageSize));
   const current = Math.min(page, pages - 1);
   const tab =
@@ -246,12 +302,10 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
             : "review";
   return (
     <div className="page-stack">
-      <PageHeader title={titles[mode]} description={descriptions[mode]}>
-        <Link className="button primary" to="/new">
-          <Plus size={16} />
-          New submission
-        </Link>
-      </PageHeader>
+      <PageHeader
+        title={titles[mode]}
+        description={descriptions[mode]}
+      ></PageHeader>
       {mode === "operations" ? (
         <SectionNav
           label="Operations views"
@@ -299,8 +353,8 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
               "DRAFT",
               "PENDING_VALIDATION",
               "CORRECTION_REQUIRED",
-              "HUMAN_REVIEW",
-              "READY",
+              "RESOLUTION_MANAGEMENT",
+              "ON_HOLD",
               "OPERATIONS",
             ].map((value) => (
               <option key={value} value={value}>
@@ -308,12 +362,73 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
               </option>
             ))}
           </select>
-          <select aria-label="Filter by source" value={source} onChange={(event) => { setSource(event.target.value); setPage(0); }}>
+          <select
+            aria-label="Filter by source"
+            value={source}
+            onChange={(event) => {
+              setSource(event.target.value);
+              setPage(0);
+            }}
+          >
             <option value="all">All sources</option>
             <option value="CUSTOMER_PORTAL">Customer Portal</option>
             <option value="RM">RM upload</option>
           </select>
-          <select aria-label="Sort cases" value={sort} onChange={event => { setSort(event.target.value); setPage(0); }}><option value="attention">Action required first</option><option value="newest">Newest first</option></select>
+          <select
+            aria-label="Filter by risk"
+            value={riskLevel}
+            onChange={(event) => {
+              setRiskLevel(event.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="all">All risk levels</option>
+            {["LOW", "MEDIUM", "HIGH"].map((level) => (
+              <option key={level}>{level}</option>
+            ))}
+          </select>
+          <select
+            aria-label="Filter by validation"
+            value={validationOutcome}
+            onChange={(event) => {
+              setValidationOutcome(event.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="all">All validation states</option>
+            <option value="current">Current revision checked</option>
+            <option value="stale">Needs validation</option>
+          </select>
+          <select
+            aria-label="Filter by request type"
+            value={requestType}
+            onChange={(event) => {
+              setRequestType(event.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="all">All request types</option>
+            {[...new Set((result.data || []).map((item) => item.category))]
+              .sort()
+              .map((value) => (
+                <option key={value} value={value}>
+                  {label(value)}
+                </option>
+              ))}
+          </select>
+          <select
+            aria-label="Sort submissions"
+            value={sortOrder}
+            onChange={(event) => {
+              setSortOrder(event.target.value);
+              setPage(0);
+            }}
+          >
+            <option value="risk">Risk priority</option>
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="customer">Customer name</option>
+          </select>
           <span className="result-count">
             {result.error
               ? "Unavailable"
@@ -333,7 +448,12 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
           <SubmissionTable
             items={items.slice(current * pageSize, (current + 1) * pageSize)}
             tab={tab}
-            filtered={!!search || status !== "all" || source !== "all"}
+            filtered={
+              !!search ||
+              status !== "all" ||
+              source !== "all" ||
+              requestType !== "all"
+            }
           />
         )}
         {items.length > pageSize && (
@@ -361,89 +481,6 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
             </div>
           </div>
         )}
-      </Panel>
-    </div>
-  );
-}
-
-export function NewDocumentSubmission() {
-  const navigate = useNavigate();
-  const [name, setName] = useState("");
-  const [reference, setReference] = useState("SYN-");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  return (
-    <div className="page-stack">
-      <PageHeader
-        title="New submission"
-        description="Start a customer document package."
-      />
-      <Panel title="Customer details">
-        <form
-          className="form-layout"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            setBusy(true);
-            setError("");
-            try {
-              const data = await post<Detail>(`${BASE}/submissions`, {
-                customerName: name,
-                customerReference: reference,
-                category: "ACCOUNT_OPENING",
-              });
-              navigate(`/submissions/${data.submission.id}`);
-            } catch (error) {
-              setError(message(error));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          <label>
-            Customer name
-            <input
-              autoFocus
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              required
-              maxLength={160}
-              autoComplete="off"
-            />
-            <small>Use a fictional identity in this synthetic workspace.</small>
-          </label>
-          <label>
-            Customer reference
-            <input
-              value={reference}
-              onChange={(event) => setReference(event.target.value)}
-              pattern="(SYN|DEMO)-[A-Za-z0-9-]{1,60}"
-              required
-            />
-            <small>
-              Use the synthetic customer reference shown on the forms. Start with SYN- or DEMO-, followed by letters, numbers or hyphens.
-            </small>
-          </label>
-          <label>
-            Submission type
-            <select aria-label="Submission type">
-              <option>Account opening</option>
-            </select>
-          </label>
-          <p className="muted">
-            You'll add the customer information form, account application and
-            tax declaration next.
-          </p>
-          {error && <ErrorBox message={error} />}
-          <div className="form-actions">
-            <Link className="button secondary" to="/submissions">
-              Cancel
-            </Link>
-            <button className="button primary" disabled={busy}>
-              {busy ? "Creating..." : "Create submission"}
-              <ArrowRight size={16} />
-            </button>
-          </div>
-        </form>
       </Panel>
     </div>
   );
@@ -666,7 +703,11 @@ export function DocumentDemo() {
         )}
       </Panel>
       <Panel title="Sample documents">
-        {!session.demoMode && <p className="panel-note">Sample downloads are unavailable because demo mode is disabled.</p>}
+        {!session.demoMode && (
+          <p className="panel-note">
+            Sample downloads are unavailable because demo mode is disabled.
+          </p>
+        )}
         <div className="sample-files">
           {[
             [

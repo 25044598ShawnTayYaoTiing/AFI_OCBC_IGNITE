@@ -24,7 +24,7 @@ export const reportNav = [
   { to: "/audit", label: "Audit history" },
 ];
 export function provenance(method?: string) {
-  return method === "GEMINI"
+  return method === "DIGITAL_EFORM" ? "Customer digital declaration" : method === "GEMINI"
     ? "Live Gemini"
     : method === "HUMAN_REVIEW"
       ? "Human review required"
@@ -82,12 +82,12 @@ export function SubmissionTable({
                 >
                   {item.customer_name}
                 </Link>
-                <small className="secondary-line">{item.owner_name}</small>
+                <small className="secondary-line">{item.risk_level?`${item.risk_level} ${item.risk_score}/100 / `:""}{label(item.category)} / {["reviewer","operator"].includes(item.owner_name?.toLowerCase()) ? "Resolution Management" : item.owner_name}</small>
               </td>
               <td>
                 <span className="reference">{item.customer_reference}</span>
               </td>
-              <td>{item.submission_source === "CUSTOMER_PORTAL" ? "Customer Portal" : "RM upload"}</td>
+              <td>{item.submission_source === "CUSTOMER_PORTAL" ? item.capture_method === "DIGITAL_EFORM" ? "Digital eForm" : "Customer PDF" : "Staff PDF archive"}</td>
               <td>
                 <Badge value={item.status} />
               </td>

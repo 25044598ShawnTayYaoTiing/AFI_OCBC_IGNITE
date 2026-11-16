@@ -3,8 +3,10 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import "./styles.css";
-import "./design-system.css";
 import "./enterprise.css";
+
+document.documentElement.dataset.release = import.meta.env.VITE_RELEASE_SHA || "local";
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter>

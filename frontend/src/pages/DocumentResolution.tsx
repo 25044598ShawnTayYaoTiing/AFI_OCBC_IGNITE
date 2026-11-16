@@ -69,7 +69,7 @@ export function CorrectionTasks({
       ) : (
         <Empty
           title="No corrections requested"
-          description="Tasks appear when a form needs customer or reviewer input."
+          description="Tasks appear when a form needs customer or Resolution Management input."
         />
       )}
     </Panel>

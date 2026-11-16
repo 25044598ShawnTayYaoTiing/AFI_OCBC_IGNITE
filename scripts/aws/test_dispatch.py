@@ -1,6 +1,8 @@
 """Check dispatch fails closed; these tests never contact AWS."""
 import os
 import unittest
+import contextlib
+import io
 from unittest.mock import patch
 
 import dispatch_deployment
@@ -8,7 +10,7 @@ import dispatch_deployment
 
 class DispatchSafetyTest(unittest.TestCase):
     def environment(self, version):
-        return {'RELEASE_SHA': version, 'SELECTED_SERVICES': 'backend', 'DEPLOY_TRANSPORT': 'ssm',
+        return {'RELEASE_SHA': version, 'SELECTED_SERVICES': 'backend',
                 'EC2_INSTANCE_ID': 'i-0368a57f3e9ccafa7', 'ECR_REPOSITORY_PREFIX': 'afi-resolve'}
 
     def test_unvalidated_release_cannot_contact_aws(self):
@@ -20,8 +22,6 @@ class DispatchSafetyTest(unittest.TestCase):
 
     def test_unregistered_ssm_node_cannot_receive_a_deployment_command(self):
         def response(*args):
-            if args[:2] == ('ecr', 'describe-images'):
-                return {'imageDetails': [{'imageDigest': 'unit-test-only'}]}
             if args[:2] == ('ssm', 'describe-instance-information'):
                 return {'InstanceInformationList': []}
             self.fail('Offline SSM node must never receive a command.')
@@ -31,6 +31,19 @@ class DispatchSafetyTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 dispatch_deployment.dispatch()
             self.assertFalse(any(call.args[:2] == ('ssm', 'send-command') for call in aws.call_args_list))
+
+    def test_failed_ssm_output_is_visible_and_redacted(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, self.environment('a' * 40), clear=True), \
+                patch.object(dispatch_deployment, 'aws', side_effect=[
+                    {'InstanceInformationList': [{'PingStatus': 'Online'}]},
+                    {'Command': {'CommandId': 'unit-command'}},
+                    {'Status': 'Failed', 'ResponseCode': 1, 'StandardErrorContent': 'PSQLException password=private-value'},
+                ]), contextlib.redirect_stdout(output):
+            with self.assertRaisesRegex(RuntimeError, 'exit 1'):
+                dispatch_deployment.dispatch()
+        self.assertIn('PSQLException', output.getvalue())
+        self.assertNotIn('private-value', output.getvalue())
 
 
 if __name__ == '__main__':

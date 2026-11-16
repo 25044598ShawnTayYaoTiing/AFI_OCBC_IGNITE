@@ -1,6 +1,10 @@
+import { RiskInvestigation } from "./RiskInvestigation";
+import { CaseComparison } from "./CaseComparison";
+import { ContactPhoneReview } from "./ContactPhoneReview";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
+  CheckCircle2,
   ArrowLeft,
   ArrowRight,
   RefreshCw,
@@ -100,7 +104,7 @@ export function DocumentWorkspace() {
     setError("");
     setNotice("");
     try {
-      await post(`${BASE}/submissions/${id}/${action}`);
+      await post(`${BASE}/submissions/${id}/${action}`, action === "approve" ? { revision: data!.submission.revision } : {});
       await result.refresh();
       setNotice(
         action === "preflight"
@@ -163,6 +167,7 @@ export function DocumentWorkspace() {
     setReviewPane("issues");
   }
   function chooseReplacement() {
+    if (doc?.extraction.method === "DIGITAL_EFORM") { setNotice("The customer must edit the digital declaration in their portal. Add supporting PDFs using Add documents."); return; }
     if (doc) {
       setReplacement(doc.id);
       fileInput.current?.click();
@@ -177,16 +182,21 @@ export function DocumentWorkspace() {
       />
     );
   return (
-    <div className="page-stack">
+    <div className="investigation-shell"><aside className="case-dossier" aria-label="Case dossier"><Link className="dossier-back" to="/submissions"><ArrowLeft size={15}/>All cases</Link><span className="edition-label">Case dossier</span><div className="dossier-avatar">{data.submission.customer_name.slice(0,1)}</div><h2>{data.submission.customer_name}</h2><p>{data.submission.customer_reference}</p><Badge value={data.submission.status}/><dl><div><dt>Service request</dt><dd>{label(data.submission.category)}</dd></div><div><dt>Intake</dt><dd>{data.submission.capture_method === "DIGITAL_EFORM" ? "Digital declaration" : "PDF documents"}</dd></div><div><dt>Current revision</dt><dd>{data.submission.revision}</dd></div><div><dt>Validation</dt><dd>{data.submission.validated_revision===data.submission.revision?"Current revision checked":"Revalidation needed"}</dd></div></dl><div className="dossier-section"><h3>Evidence library <span>{data.documents.length}</span></h3>{data.documents.length?data.documents.map(document=><button key={document.id} className="dossier-document" onClick={()=>{setSelected(document.id);setParams({tab:"review"});}}><span>PDF</span><div><strong>{label(document.document_type)}</strong><small>{document.filename}</small></div></button>):<p>No document evidence recorded.</p>}</div><div className="dossier-section"><h3>Review checkpoints</h3><button className="dossier-check" onClick={()=>setParams({tab:"exceptions"})}><span>{open.length}</span>Open findings<ArrowRight size={14}/></button><button className="dossier-check" onClick={()=>setParams({tab:"preflight"})}><span>{data.checks.filter(check=>check.passed).length}/{data.checks.length}</span>Checks passed<ArrowRight size={14}/></button><button className="dossier-check" onClick={()=>setParams({tab:"history"})}>Decision history<ArrowRight size={14}/></button></div><p className="dossier-footnote">Decisions follow backend policy. AI recommendations remain advisory.</p></aside><div className="page-stack investigation-main">
       <Link className="back-link" to="/submissions">
         <ArrowLeft size={15} />
         Submissions
       </Link>
       <PageHeader
         title={data.submission.customer_name}
-        description={`${data.submission.customer_reference} / Account opening`}
+        description={`${data.submission.customer_reference} / ${label(data.submission.category)} / ${data.submission.capture_method === "DIGITAL_EFORM" ? "Digital eForm" : "PDF"}`}
       >
         <Badge value={data.submission.status} />
+        {!locked && data.submission.status === "RESOLUTION_MANAGEMENT" && (
+          <button className="button primary" disabled={!!busy || open.length > 0 || !!data.submission.risk_hold} title={open.length ? "Resolve blocking findings and revalidate before approval" : "Approve the current validated revision"} onClick={() => void run("approve")}>
+            <CheckCircle2 size={15} />Approve for Operations
+          </button>
+        )}
         {!locked && (
           <button
             className="button secondary"
@@ -198,6 +208,7 @@ export function DocumentWorkspace() {
           </button>
         )}
       </PageHeader>
+      {!locked && data.submission.category === "CONTACT_UPDATE" && open.some(item=>item.check_key === "SERVICE_PHONE_REVIEW") && <ContactPhoneReview id={id} revision={data.submission.revision} onUpdate={()=>void result.refresh()}/>}
       {error && <ErrorBox message={error} />}{" "}
       {notice && <Notice success>{notice}</Notice>}
       {busy && (
@@ -226,6 +237,7 @@ export function DocumentWorkspace() {
           </Notice>
         )}
       <AddressVerificationPanel detail={data} onInspect={inspect} />
+      <RiskInvestigation detail={data} onUpdate={()=>void result.refresh()}/>
       <Tabs
         id="submission-workspace"
         className="section-nav workspace-tabs"
@@ -265,6 +277,7 @@ export function DocumentWorkspace() {
       >
         {tab === "review" && (
           <>
+            <CaseComparison detail={data}/>
             {!locked && (
               <div
                 className="upload-area"
@@ -305,7 +318,7 @@ export function DocumentWorkspace() {
             {!doc ? (
               <Empty
                 title="Ready for the document package"
-                description="Add the customer information form, account application and tax declaration."
+                description={data.submission.category === "ACCOUNT_OPENING" ? "Add the customer information form, account application and tax declaration." : "Submitted declarations and supporting PDFs appear here when available. Check the request status and findings before taking action."}
               />
             ) : (
               <div className="review-layout">
@@ -346,7 +359,7 @@ export function DocumentWorkspace() {
                         </option>
                       ))}
                     </select>
-                    {!locked && (
+                    {!locked && doc.extraction.method !== "DIGITAL_EFORM" && (
                       <button
                         className="button secondary"
                         disabled={!!busy}
@@ -457,7 +470,7 @@ export function DocumentWorkspace() {
                         <strong>AI observations - not validation findings</strong>
                         <p>Review these against the PDF and applicable rules; they are not additional validation results.</p>
                         {doc.document_type === "ACCOUNT_APPLICATION" && doc.extraction.observations.some((item) => item.field === "declaration_date") && !data.checks.some((check) => check.condition_type === "DATE" && check.field_name === "declaration_date" && check.evidence.some((field) => field.document_id === doc.id)) && (
-                          <p>No active mandatory-date check covers this account form. A reviewer can propose the account declaration-date requirement in Settings; a different reviewer must approve it before validation changes.</p>
+                          <p>No active mandatory-date check covers this account form. Resolution Management can propose the account declaration-date requirement in Settings; a different authorised approver must approve it before validation changes.</p>
                         )}
                         {doc.extraction.observations.map((observation, index) => (
                           <p key={`${observation.field}-${observation.page}-${index}`}>
@@ -518,7 +531,7 @@ export function DocumentWorkspace() {
                                       ? "Resolved and verified"
                                       : item.action_type === "ATTACH_VERIFIED_DOCUMENT"
                                         ? "Automatic action requires review"
-                                        : "Customer or reviewer action needed"}
+                                        : "Customer or Resolution Management action needed"}
                                   </small>
                                 </span>
                                 <Badge value={item.status} />
@@ -689,6 +702,6 @@ export function DocumentWorkspace() {
         )}
         {tab === "history" && <HandoverHistory detail={data} />}
       </TabPanel>
-    </div>
+    </div></div>
   );
 }

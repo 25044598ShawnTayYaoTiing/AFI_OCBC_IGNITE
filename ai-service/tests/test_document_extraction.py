@@ -45,6 +45,28 @@ def test_closed_schema_rejects_unknown_fields():
         d.ModelEvidenceField(field='account_password', value='anything', page=1, supporting_text='anything')
 
 
+def test_existing_customer_service_request_fields_remain_grounded():
+    page = 'Banking Service Request\nRequest Type: CONTACT_UPDATE\nNew Email: new@example.invalid\nNew Mobile: +65 8000 1234'
+    model = d.ModelExtraction(document_type='SERVICE_REQUEST', requires_review=False, fields=[
+        d.ModelEvidenceField(field='request_type', value='CONTACT_UPDATE', page=1, supporting_text='Request Type: CONTACT_UPDATE'),
+        d.ModelEvidenceField(field='new email', value='new@example.invalid', page=1, supporting_text='New Email: new@example.invalid'),
+        d.ModelEvidenceField(field='new mobile', value='+65 8000 1234', page=1, supporting_text='New Mobile: +65 8000 1234')])
+    fields, observations = d.normalise(model, [page])
+    assert [f.field for f in fields] == ['request_type', 'email', 'mobile']
+    assert not observations
+    assert all(f.value in f.supporting_text and f.supporting_text in page for f in fields)
+
+
+def test_service_tax_identifiers_are_not_customer_references():
+    page = 'Foreign Tax Country: Exampleland\nTIN: DEMO-TIN-123\nTax Declaration: Confirmed'
+    model = d.ModelExtraction(document_type='SERVICE_REQUEST', requires_review=False, fields=[
+        d.ModelEvidenceField(field='foreign tax country', value='Exampleland', page=1, supporting_text='Foreign Tax Country: Exampleland'),
+        d.ModelEvidenceField(field='tin', value='DEMO-TIN-123', page=1, supporting_text='TIN: DEMO-TIN-123'),
+        d.ModelEvidenceField(field='tax declaration', value='Confirmed', page=1, supporting_text='Tax Declaration: Confirmed')])
+    fields, _ = d.normalise(model, [page])
+    assert [f.field for f in fields] == ['foreign_tax_country', 'tax_identifier', 'tax_declaration']
+
+
 def test_duplicate_fields_require_rejection():
     field = d.ModelEvidenceField(field='customer_name', value='Alex', page=1, supporting_text='Customer Name: Alex')
     model = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False, fields=[field, field])

@@ -22,6 +22,37 @@ public class DocumentController {
 
   public record Action(String idempotencyKey) {}
 
+  public record Approval(int revision) {}
+
+  @PostMapping("/submissions/{id}/approve")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object approveCase(
+      @PathVariable String id, @RequestBody Approval request, Authentication a) {
+    return service.approveForOperations(id, request.revision(), a);
+  }
+
+  @PostMapping("/submissions/{id}/escalate")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object escalateCase(@PathVariable String id, Authentication a) {
+    return service.escalate(id, a);
+  }
+
+  public record RiskReview(int revision, String note) {}
+
+  @PostMapping("/submissions/{id}/authorize-correction")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object authorizeCorrection(
+      @PathVariable String id, @RequestBody RiskReview r, Authentication actor) {
+    return service.riskDecision(id, r.revision(), r.note(), false, actor);
+  }
+
+  @PostMapping("/submissions/{id}/clear-hold")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object clearHold(
+      @PathVariable String id, @RequestBody RiskReview r, Authentication actor) {
+    return service.riskDecision(id, r.revision(), r.note(), true, actor);
+  }
+
   public record RuleDraft(String sourceId, String correctiveAction, String severity) {}
 
   @GetMapping("/analytics")
@@ -45,7 +76,7 @@ public class DocumentController {
   }
 
   @PostMapping("/submissions")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object create(@RequestBody NewSubmission r, Authentication a) {
     return service.create(r.customerName(), r.customerReference(), r.category(), a);
   }
@@ -56,7 +87,7 @@ public class DocumentController {
   }
 
   @PostMapping(value = "/submissions/{id}/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object upload(
       @PathVariable String id,
       @RequestParam("files") List<MultipartFile> files,
@@ -78,25 +109,25 @@ public class DocumentController {
   }
 
   @PostMapping("/submissions/{id}/validate")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object validate(@PathVariable String id, Authentication a) {
     return service.validate(id, a);
   }
 
   @PostMapping("/submissions/{id}/resolve")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object resolve(@PathVariable String id, @RequestBody Action r, Authentication a) {
     return service.resolve(id, r.idempotencyKey(), a);
   }
 
   @PostMapping("/submissions/{id}/preflight")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object preflight(@PathVariable String id, Authentication a) {
     return service.preflight(id, a);
   }
 
   @PostMapping("/submissions/{id}/route")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object route(@PathVariable String id, Authentication a) {
     return service.route(id, a);
   }
@@ -125,7 +156,7 @@ public class DocumentController {
   }
 
   @PostMapping("/demo/restore")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object demo(Authentication a) throws Exception {
     return service.demo(a);
   }

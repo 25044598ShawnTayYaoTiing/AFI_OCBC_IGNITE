@@ -1,3 +1,5 @@
+> **13 November update:** [Digital eForms and Resolution Management](enhancement-delivery-2026-11-13.md) supersedes the staff role, automatic final routing and portal-only email descriptions below. Operator login is removed. New customer cases need explicit Resolution Management approval; SMTP is opt-in.
+
 # Customer Portal / RM integration
 
 Implemented and verified locally on 11 November 2026 (Asia/Singapore). This guide describes the current integration; PROJECT_STATUS_AUDIT.md remains the historical 10 November audit.

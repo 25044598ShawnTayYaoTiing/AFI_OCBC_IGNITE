@@ -13,7 +13,7 @@ VALUES = {'AFI_TEST_CUSTOMER_EMAIL': 'synthetic-test',
 
 
 class StubApi:
-    def __init__(self, roles=('OPERATOR', 'REVIEWER'), conflict=False):
+    def __init__(self, roles=('REVIEWER',), conflict=False):
         self.calls = []
         self.roles = roles
         self.conflict = conflict

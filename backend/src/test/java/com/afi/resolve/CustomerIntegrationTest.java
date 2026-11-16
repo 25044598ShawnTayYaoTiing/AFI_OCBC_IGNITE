@@ -1,5 +1,6 @@
 package com.afi.resolve;
 
+import static com.afi.resolve.Domain.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -25,8 +26,7 @@ import org.springframework.test.web.servlet.*;
 @SpringBootTest(
     properties = {
       "afi.demo-enabled=true",
-      "afi.customer-portal-origins=https://ocbc-customer-portal.vercel.app",
-      "afi.operator-password=operator-demo",
+      "afi.customer-portal-origins=https://ocbc-customer-portal.vercel.app,http://localhost:5174",
       "afi.reviewer-password=reviewer-demo",
       "afi.rules-admin-password=rules-admin-demo"
     })
@@ -100,9 +100,12 @@ class CustomerIntegrationTest {
               var values = new LinkedHashMap<String, String>();
               values.put("customer_name", "Alex Tan");
               values.put("customer_reference", reference);
+              values.put("identity_number", "DEMO-ID-" + reference);
               values.put(
                   "mailing_address",
-                  marker.equals("%PDF-TAX") ? "2 Fictional Road" : "1 Fictional Road");
+                  marker.equals("%PDF-TAX")
+                      ? "2 Fictional Road"
+                      : reference.equals("SYN-ALEX-001") ? "123 Example Road" : "1 Fictional Road");
               values.put("signature_indicator", "Present");
               values.put("required_selection", "Present");
               values.put("tax_residency", "Singapore");
@@ -143,7 +146,7 @@ class CustomerIntegrationTest {
                                 "customerReference",
                                 ref,
                                 "relationshipManager",
-                                "operator",
+                                "reviewer",
                                 "repositorySubmissionId",
                                 repository))))
             .andExpect(status().isOk())
@@ -192,31 +195,42 @@ class CustomerIntegrationTest {
   }
 
   @Test
-  void customerRoutingAndProductionPortalCorsStaySeparateFromStaffAuthentication() throws Exception {
-    var response = mvc.perform(
-            org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/customer/me"))
-        .andExpect(status().isUnauthorized())
-        .andReturn();
-    assertThat(json(response).path("message").asText()).isEqualTo("Sign in with a customer account");
+  void customerRoutingAndProductionPortalCorsStaySeparateFromStaffAuthentication()
+      throws Exception {
+    var response =
+        mvc.perform(
+                org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                    "/api/customer/me"))
+            .andExpect(status().isUnauthorized())
+            .andReturn();
+    assertThat(json(response).path("message").asText())
+        .isEqualTo("Sign in with a customer account");
 
-    var tokenRoute = mvc.perform(post("/api/customer/auth/token")
-            .contentType("application/json").content("{}"))
-        .andExpect(status().isUnauthorized()).andReturn();
+    var tokenRoute =
+        mvc.perform(post("/api/customer/auth/token").contentType("application/json").content("{}"))
+            .andExpect(status().isUnauthorized())
+            .andReturn();
     assertThat(json(tokenRoute).path("code").asText()).isEqualTo("INVALID_CREDENTIALS");
 
-    var preflight = mvc.perform(options("/api/customer/auth/token")
-            .header("Origin", "https://ocbc-customer-portal.vercel.app")
-            .header("Access-Control-Request-Method", "POST")
-            .header("Access-Control-Request-Headers", "authorization,content-type,idempotency-key"))
-        .andExpect(status().isOk())
-        .andReturn().getResponse();
+    var preflight =
+        mvc.perform(
+                options("/api/customer/auth/token")
+                    .header("Origin", "https://ocbc-customer-portal.vercel.app")
+                    .header("Access-Control-Request-Method", "POST")
+                    .header(
+                        "Access-Control-Request-Headers",
+                        "authorization,content-type,idempotency-key"))
+            .andExpect(status().isOk())
+            .andReturn()
+            .getResponse();
     assertThat(preflight.getHeader("Access-Control-Allow-Origin"))
         .isEqualTo("https://ocbc-customer-portal.vercel.app");
     assertThat(preflight.getHeader("Access-Control-Allow-Headers").toLowerCase(Locale.ROOT))
         .contains("authorization", "content-type", "idempotency-key");
-    mvc.perform(options("/api/customer/auth/token")
-            .header("Origin", "https://untrusted.example")
-            .header("Access-Control-Request-Method", "POST"))
+    mvc.perform(
+            options("/api/customer/auth/token")
+                .header("Origin", "https://untrusted.example")
+                .header("Access-Control-Request-Method", "POST"))
         .andExpect(status().isForbidden());
   }
 
@@ -226,7 +240,7 @@ class CustomerIntegrationTest {
     String repository =
         json(mvc.perform(
                     post("/api/documents/demo/restore")
-                        .with(httpBasic("operator", "operator-demo")))
+                        .with(httpBasic("reviewer", "reviewer-demo")))
                 .andExpect(status().isOk())
                 .andReturn())
             .path("submission")
@@ -247,6 +261,27 @@ class CustomerIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     String id = first.path("submission").path("id").asText();
+    assertThat(first.path("documents").size()).isEqualTo(3);
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/resolve")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(s.json(map("idempotencyKey", UUID.randomUUID().toString()))))
+        .andExpect(status().isOk());
+    var current = get("/api/customer/submissions/" + id, token);
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/authorize-correction")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(
+                    s.json(
+                        map(
+                            "revision",
+                            current.path("submission").path("revision").asInt(),
+                            "note",
+                            "Reviewed conflicting mailing address and missing declaration date"))))
+        .andExpect(status().isOk());
+    first = get("/api/customer/submissions/" + id, token);
     assertThat(first.path("documents").size()).isEqualTo(4);
     assertThat(first.path("corrections").size()).isEqualTo(2);
     assertThat(first.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
@@ -257,13 +292,14 @@ class CustomerIntegrationTest {
             mvc.perform(
                     org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
                             "/api/documents/submissions/" + id)
-                        .with(httpBasic("operator", "operator-demo")))
+                        .with(httpBasic("reviewer", "reviewer-demo")))
                 .andExpect(status().isOk())
                 .andReturn());
     assertThat(staff.path("submission").path("submission_source").asText())
         .isEqualTo("CUSTOMER_PORTAL");
-    assertThat(staff.path("submission").path("owner_name").asText()).isEqualTo("operator");
-    assertThat(staff.path("automation").get(0).path("status").asText()).isEqualTo("VERIFIED");
+    assertThat(staff.path("submission").path("owner_name").asText()).isEqualTo("reviewer");
+    assertThat(staff.path("documents").size()).isEqualTo(4);
+    assertThat(staff.path("exceptions").toString()).contains("AUTOMATIC_VERIFIED_ATTACHMENT");
     // New login, same persisted request: session-independent replay, not a browser cache.
     token = login(user);
     var replay =
@@ -290,7 +326,17 @@ class CustomerIntegrationTest {
             upload(path, token, replaceKey, file("TAX-corrected"))
                 .andExpect(status().isOk())
                 .andReturn());
-    assertThat(corrected.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    assertThat(corrected.path("submission").path("status").asText())
+        .isEqualTo("RESOLUTION_MANAGEMENT");
+    mvc.perform(
+            post("/api/documents/submissions/" + id + "/approve")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(
+                    s.json(
+                        Domain.map(
+                            "revision", corrected.path("submission").path("revision").asInt()))))
+        .andExpect(status().isOk());
     assertThat(corrected.path("corrections").size()).isZero();
     upload(path, token, replaceKey, file("TAX-corrected")).andExpect(status().isOk());
     upload(path, token, UUID.randomUUID().toString(), file("TAX-again"))
@@ -339,7 +385,7 @@ class CustomerIntegrationTest {
     int notices = get("/api/customer/notifications", a).size();
     mvc.perform(
             post("/api/documents/submissions/" + id + "/validate")
-                .with(httpBasic("operator", "operator-demo")))
+                .with(httpBasic("reviewer", "reviewer-demo")))
         .andExpect(status().isOk());
     assertThat(get("/api/customer/notifications", a).size()).isEqualTo(notices);
     mvc.perform(
@@ -350,14 +396,14 @@ class CustomerIntegrationTest {
     mvc.perform(
             org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
                     "/api/customer/me")
-                .with(httpBasic("operator", "operator-demo")))
+                .with(httpBasic("reviewer", "reviewer-demo")))
         .andExpect(status().isUnauthorized());
     mvc.perform(
             post("/api/documents/customers")
                 .with(httpBasic("operator", "operator-demo"))
                 .contentType("application/json")
                 .content("{}"))
-        .andExpect(status().isForbidden());
+        .andExpect(status().isUnauthorized());
     mvc.perform(
             options("/api/customer/submissions")
                 .header("Origin", "http://localhost:5174")
@@ -383,7 +429,7 @@ class CustomerIntegrationTest {
         json(
             mvc.perform(
                     post("/api/documents/submissions")
-                        .with(httpBasic("operator", "operator-demo"))
+                        .with(httpBasic("reviewer", "reviewer-demo"))
                         .contentType("application/json")
                         .content(
                             s.json(
@@ -415,10 +461,10 @@ class CustomerIntegrationTest {
                                     "customerReference",
                                     "SYN-" + UUID.randomUUID(),
                                     "relationshipManager",
-                                    "Operator"))))
+                                    "Reviewer"))))
                 .andExpect(status().isOk())
                 .andReturn());
-    assertThat(canonical.path("relationshipManager").asText()).isEqualTo("operator");
+    assertThat(canonical.path("relationshipManager").asText()).isEqualTo("reviewer");
   }
 
   @Test
@@ -499,5 +545,50 @@ class CustomerIntegrationTest {
                 Integer.class,
                 customer.path("id").asText()))
         .isEqualTo(1);
+  }
+
+  @Test
+  void demoSeederCreatesExactly100ScenarioProfilesWithoutResettingCredentials() throws Exception {
+    mvc.perform(
+            post("/api/documents/demo/seed-customers")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(s.json(map("password", "fixture-seed-password-one"))))
+        .andExpect(status().isOk());
+    assertThat(
+            s.db.queryForObject("SELECT COUNT(*) FROM synthetic_scenario_manifest", Integer.class))
+        .isEqualTo(100);
+    for (var expected :
+        Map.of("CLEAN", 50, "MISSING_SUPPORT", 25, "ADDRESS_CONFLICT", 15, "IDENTITY_CONFLICT", 10)
+            .entrySet())
+      assertThat(
+              s.db.queryForObject(
+                  "SELECT COUNT(*) FROM synthetic_scenario_manifest WHERE scenario_key=?",
+                  Integer.class,
+                  expected.getKey()))
+          .isEqualTo(expected.getValue());
+    String hash =
+        s.db.queryForObject(
+            "SELECT password_hash FROM customers WHERE username='synthetic-001'", String.class);
+    mvc.perform(
+            post("/api/documents/demo/seed-customers")
+                .with(httpBasic("reviewer", "reviewer-demo"))
+                .contentType("application/json")
+                .content(s.json(map("password", "fixture-seed-password-two"))))
+        .andExpect(status().isOk());
+    assertThat(
+            s.db.queryForObject("SELECT COUNT(*) FROM synthetic_scenario_manifest", Integer.class))
+        .isEqualTo(100);
+    assertThat(
+            s.db.queryForObject(
+                "SELECT password_hash FROM customers WHERE username='synthetic-001'", String.class))
+        .isEqualTo(hash);
+    assertThat(
+            s.db.queryForObject(
+                "SELECT COUNT(*) FROM customer_profiles p JOIN synthetic_scenario_manifest m ON"
+                    + " p.customer_id=m.customer_id WHERE p.date_of_birth IS NOT NULL AND p.email"
+                    + " LIKE '%.invalid' AND p.identity_number LIKE 'DEMO-ID-%'",
+                Integer.class))
+        .isEqualTo(100);
   }
 }

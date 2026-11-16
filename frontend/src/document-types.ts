@@ -3,6 +3,12 @@ import type { Audit } from "./api";
 export interface Submission {
   id: string;
   category: string;
+  risk_score?: number | null;
+  risk_level?: string | null;
+  risk_hold?: boolean;
+  capture_method?: "PDF" | "DIGITAL_EFORM";
+  requires_rm_approval?: boolean;
+  approved_revision?: number | null;
   customer_name: string;
   customer_reference: string;
   status: string;
@@ -14,7 +20,6 @@ export interface Submission {
   created_at: string;
   routed_at: string | null;
   ai_method?: string;
-  risk_score?: number | null;
   checks_total?: number;
   checks_passed?: number;
   open_severities?: string[];
@@ -52,7 +57,12 @@ export interface Doc {
     method: string;
     requires_review: boolean;
     notes: string;
-    observations?: { field: string; page: number; supporting_text: string; issue_type: string }[];
+    observations?: {
+      field: string;
+      page: number;
+      supporting_text: string;
+      issue_type: string;
+    }[];
   };
 }
 export interface Finding {
@@ -74,6 +84,9 @@ export interface Finding {
   resolution_method: string;
 }
 export interface Check {
+  outcome?: string;
+  category?: string;
+  created_at?: string;
   id?: string;
   condition_type?: string;
   field_name?: string;
@@ -131,6 +144,7 @@ export interface Investigation {
   method: string;
   model: string | null;
   fallback_reason: string | null;
+  completed_at?: string;
   recommendations: Recommendation[];
   source_findings: {
     exception_id: string;
@@ -168,6 +182,7 @@ export interface AiStatus {
 export interface Detail {
   addressVerifications?: { result: AddressVerification; evidence: Field & { postalEvidence?: Field } }[];
   addressValidationRulesActive?: string[];
+  riskAssessment?: RiskAssessment | null;
   investigations: Investigation[];
   automation: AutomationAttempt[];
   automationEnabled: boolean;
@@ -185,6 +200,8 @@ export interface Metrics {
   humanInterventionRequired: number;
   successfullyRouted: number;
   failedOrBlockedAutomation: number;
+  riskCounts?: Record<string, number>;
+  onHold?: number;
   totalSubmissions: number;
   statuses: Record<string, number>;
   automaticallyResolved: number;
@@ -208,4 +225,21 @@ export interface Rule {
   status: string;
   created_by: string;
   approved_by: string | null;
+}
+
+export interface RiskAssessment {
+  score: number;
+  level: string;
+  policy: string;
+  assessedAt: string;
+  blockingFindings: number;
+  correctionAttempts: number;
+  contributions: {
+    issue: string;
+    ruleId: string;
+    weight: number;
+    policyVersion: number;
+    explanation: string;
+    evidence: Field[];
+  }[];
 }

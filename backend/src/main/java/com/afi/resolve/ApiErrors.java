@@ -80,7 +80,12 @@ public class ApiErrors {
   @ExceptionHandler(AccessDeniedException.class)
   public ResponseEntity<?> denied() {
     return ResponseEntity.status(403)
-        .body(map("code", "FORBIDDEN", "message", "This operation requires reviewer privileges"));
+        .body(
+            map(
+                "code",
+                "FORBIDDEN",
+                "message",
+                "This operation requires Resolution Management privileges"));
   }
 
   @ExceptionHandler(Exception.class)

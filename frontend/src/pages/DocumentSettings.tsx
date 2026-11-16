@@ -124,7 +124,7 @@ export function ValidationRules() {
       setSelected("");
       setNotice(
         body
-          ? "Draft saved. A different reviewer must approve it."
+          ? "Draft saved. A different authorised approver must approve it."
           : "Rule version approved. Open packages require revalidation.",
       );
     } catch (error) {
@@ -301,7 +301,7 @@ export function ValidationRules() {
               </select>
             </label>
             <p className="muted">
-              A different authorised reviewer must approve this draft before it affects validation.
+              A different authorised Resolution Management approver must approve this draft before it affects validation.
               {selected === "ACCOUNT_DATE_PROPOSAL" && " This proposes a blocking date check for the account application only; it does not activate the requirement."}
             </p>
             <div className="form-actions">
@@ -321,8 +321,8 @@ export function ValidationRules() {
       )}
       <Disclosure title="Policy safeguards">
         <p>
-          Reviewers can propose supported revisions and a new account declaration-date requirement as inactive drafts.
-          Another reviewer must approve activation. Gemini
+          Resolution Management can propose supported revisions and a new account declaration-date requirement as inactive drafts.
+          Another Resolution Management approver must approve activation. Gemini
           cannot create or activate policies. Prior rule versions and approvals
           are retained.
         </p>

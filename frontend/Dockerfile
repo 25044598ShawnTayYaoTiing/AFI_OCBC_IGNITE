@@ -3,6 +3,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
+ARG AFI_RELEASE_SHA=local
+ENV VITE_RELEASE_SHA=$AFI_RELEASE_SHA
 RUN npm run build
 FROM nginx:1.27-alpine
 ARG NGINX_CONFIG=nginx.conf

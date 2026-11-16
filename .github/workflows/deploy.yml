@@ -1,5 +1,9 @@
 name: AFI Resolve Deploy
 'on':
+  workflow_run:
+    workflows: [AFI Resolve CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       image_sha:
@@ -11,11 +15,6 @@ name: AFI Resolve Deploy
         type: choice
         options: [all, backend, frontend, ai-service]
         default: all
-      transport:
-        description: SSM preferred; EIC requires approved network reachability and a pinned SSH host key
-        type: choice
-        options: [ssm, eic]
-        default: ssm
 permissions:
   contents: read
   actions: read
@@ -25,23 +24,28 @@ concurrency:
   cancel-in-progress: false
 jobs:
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     environment: production
     runs-on: ${{ vars.DEPLOY_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 25
     env:
-      RELEASE_SHA: ${{ inputs.image_sha }}
-      SELECTED_SERVICES: ${{ inputs.services }}
-      DEPLOY_TRANSPORT: ${{ inputs.transport }}
+      RELEASE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.image_sha }}
+      SELECTED_SERVICES: ${{ inputs.services || 'all' }}
       AWS_REGION: ap-southeast-1
       EC2_INSTANCE_ID: i-0368a57f3e9ccafa7
       ECR_REPOSITORY_PREFIX: ${{ vars.ECR_REPOSITORY_PREFIX || 'afi-resolve' }}
-      EC2_SSH_HOST_KEY: ${{ vars.EC2_SSH_HOST_KEY }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
       - name: Require a successful main CI run for the selected commit
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -65,4 +69,11 @@ jobs:
           aws-region: ap-southeast-1
           allowed-account-ids: '092004973012'
       - name: Deploy existing images without changing AWS infrastructure
+        id: release
+        run: python3 scripts/aws/dispatch_deployment.py
+      - name: Restore previous images if deployment failed
+        if: failure() && steps.release.outputs.legacy_host_failure == 'true' && inputs.image_sha != 'rollback'
+        env:
+          RELEASE_SHA: rollback
+          SELECTED_SERVICES: all
         run: python3 scripts/aws/dispatch_deployment.py

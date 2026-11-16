@@ -81,13 +81,13 @@ public class ApiController {
   }
 
   @PostMapping("/exceptions/detect")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object detect(Authentication a) {
     return detection.detect(a.getName());
   }
 
   @PostMapping("/exceptions/{id}/investigate")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   @Operation(
       summary = "Queue investigation",
       description =
@@ -108,7 +108,7 @@ public class ApiController {
   }
 
   @PostMapping("/exceptions/{id}/simulate")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   public Object simulate(@PathVariable String id, Authentication a) {
     return workflow.simulate(id, a.getName());
   }
@@ -120,7 +120,7 @@ public class ApiController {
   }
 
   @PostMapping("/exceptions/{id}/resolve")
-  @PreAuthorize("hasRole('OPERATOR')")
+  @PreAuthorize("hasRole('REVIEWER')")
   @Operation(
       summary = "Execute eligible selective recovery",
       description =

@@ -8,7 +8,7 @@ root = Path(__file__).resolve().parents[2]
 env = os.environ.copy()
 env.update({
     'DB_USERNAME': 'validation', 'DB_PASSWORD': 'validation-only',
-    'AWS_AI_SERVICE_KEY': 'validation-only', 'AWS_OPERATOR_PASSWORD': 'validation-only',
+    'AWS_AI_SERVICE_KEY': 'validation-only',
     'AWS_REVIEWER_PASSWORD': 'validation-only', 'AWS_RULES_ADMIN_PASSWORD': 'validation-only',
     'AWS_FRONTEND_ORIGIN': 'https://afi-ocbcignite.duckdns.org',
     'AWS_CUSTOMER_PORTAL_ORIGINS': 'https://ocbc-customer-portal.vercel.app',

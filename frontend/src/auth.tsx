@@ -3,7 +3,6 @@ import type { FormEvent } from "react";
 import {
   ArrowRight,
   Check,
-  Fingerprint,
   Layers3,
   LockKeyhole,
   ShieldCheck,
@@ -27,19 +26,14 @@ export function Brand({ compact = false }: { compact?: boolean }) {
     <div className={`brand ${compact ? "brand-dark" : ""}`}>
       <span className="brand-symbol">
         <svg
-          width="28"
-          height="28"
-          viewBox="0 0 32 32"
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
           fill="none"
           aria-hidden="true"
         >
-          <path d="m6 24 10-18 10 18h-6l-4-7-4 7H6Z" fill="currentColor" />
-          <path
-            d="M16 26v-5"
-            stroke="white"
-            strokeWidth="3"
-            strokeLinecap="round"
-          />
+          <path d="M5 17.5L12 5.5L19 17.5H15.2L12 11.8L8.8 17.5H5Z" fill="currentColor" />
+          <rect x="6" y="19" width="12" height="2" rx="1" fill="currentColor" opacity="0.7" />
         </svg>
       </span>
       <span>
@@ -83,7 +77,7 @@ export function Login({
       <div className="login-icon">
         <LockKeyhole size={24} />
       </div>
-      <div className="eyebrow">OPERATIONS WORKSPACE</div>
+      <div className="eyebrow">RESOLUTION MANAGEMENT WORKSPACE</div>
       <h1>{modal ? "Switch account" : "Welcome to AFI Resolve"}</h1>
       <p className="muted">
         Sign in to validate synthetic forms and coordinate document corrections.
@@ -120,23 +114,12 @@ export function Login({
       <div className="demo-accounts">
         <button
           disabled={busy}
-          onClick={() => chooseAccount("operator")}
-        >
-          <Fingerprint size={20} />
-          <span>
-            <strong>Use operator account</strong>
-            <small>Validate & reconcile</small>
-          </span>
-          <ArrowRight size={16} />
-        </button>
-        <button
-          disabled={busy}
           onClick={() => chooseAccount("reviewer")}
         >
           <ShieldCheck size={20} />
           <span>
-            <strong>Use reviewer account</strong>
-            <small>Review & manage demo</small>
+            <strong>Resolution Management</strong>
+            <small>Investigate, review and approve</small>
           </span>
           <ArrowRight size={16} />
         </button>
@@ -168,7 +151,7 @@ export function Login({
   return (
     <main className="login-page">
       <section className="login-story">
-        <Brand />
+        <Brand compact />
         <div className="login-story-content">
           <span className="outline-pill">TEAM AFI · IGNITE 2026</span>
           <h2>

@@ -1,7 +1,6 @@
 ﻿export {
   DocumentOverview,
   DocumentQueue,
-  NewDocumentSubmission,
   DocumentReports,
   DocumentAudit,
   DocumentDemo,
