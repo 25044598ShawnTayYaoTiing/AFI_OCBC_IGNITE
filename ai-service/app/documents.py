@@ -11,8 +11,8 @@ from app.config import Settings
 from app.document_intelligence import StrictModel, generate, succeeded, failed, failure_code
 
 DocumentType = Literal['CUSTOMER_INFORMATION', 'ACCOUNT_APPLICATION', 'TAX_RESIDENCY', 'SUPPORTING_DOCUMENT', 'UNKNOWN']
-FieldName = Literal['customer_name', 'customer_reference', 'mailing_address', 'residential_address', 'contact_information', 'declaration_date', 'tax_residency', 'signature_indicator', 'required_selection']
-FIELDS = ('customer_name', 'customer_reference', 'mailing_address', 'residential_address', 'contact_information', 'declaration_date', 'tax_residency', 'signature_indicator', 'required_selection')
+FieldName = Literal['new_mailing_address', 'new_residential_address', 'existing_mailing_address', 'existing_residential_address', 'postal_code', 'mailing_postal_code', 'residential_postal_code', 'new_mailing_postal_code', 'new_residential_postal_code', 'customer_name', 'customer_reference', 'mailing_address', 'residential_address', 'contact_information', 'declaration_date', 'tax_residency', 'signature_indicator', 'required_selection']
+FIELDS = ('new_mailing_address', 'new_residential_address', 'existing_mailing_address', 'existing_residential_address', 'postal_code', 'mailing_postal_code', 'residential_postal_code', 'new_mailing_postal_code', 'new_residential_postal_code', 'customer_name', 'customer_reference', 'mailing_address', 'residential_address', 'contact_information', 'declaration_date', 'tax_residency', 'signature_indicator', 'required_selection')
 TITLES = {'CUSTOMER_INFORMATION': 'Customer Information Form', 'ACCOUNT_APPLICATION': 'Account Application Form', 'TAX_RESIDENCY': 'Tax Residency Declaration', 'SUPPORTING_DOCUMENT': 'Supporting Document'}
 
 class ExtractRequest(StrictModel):
@@ -21,6 +21,15 @@ class ExtractRequest(StrictModel):
 
 # Model labels are normalised before the same closed field enum is validated.
 ALIASES = {
+    'new_mailing_address': ('proposed mailing address', 'updated mailing address', 'new correspondence address'),
+    'new_residential_address': ('proposed residential address', 'updated residential address', 'new home address'),
+    'existing_mailing_address': ('old mailing address', 'existing registered mailing address'),
+    'existing_residential_address': ('old residential address', 'existing registered residential address'),
+    'postal_code': ('postal code', 'postcode'),
+    'mailing_postal_code': ('mailing postal code',),
+    'residential_postal_code': ('residential postal code',),
+    'new_mailing_postal_code': ('new mailing postal code',),
+    'new_residential_postal_code': ('new residential postal code',),
     'customer_name': ('customer full name', 'applicant full name', 'applicant name', 'full name', 'client name', 'client full name', 'name of customer', 'name of applicant'),
     'customer_reference': ('customer ref', 'client reference', 'customer id', 'client id', 'customer number', 'customer identifier', 'customer reference number'),
     'mailing_address': ('postal address', 'correspondence address', 'correspondence mailing address', 'postal mailing address'),
@@ -246,6 +255,7 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
             'Normalise field labels to the schema: Customer/Applicant Full Name -> customer_name; Customer Reference/Client ID -> customer_reference; '
             'Email Address/Contact Number -> contact_information; Tax Residency Country -> tax_residency; Account Category/Account Selection -> required_selection. Terms Acknowledged and Declaration Confirmed are consent fields, NOT account selection. '
             'Case Reference and Tax Identification Reference are NOT customer_reference. Do not combine distinct address types or invent fields. '
+            'Keep explicitly labelled new/proposed addresses in new_mailing_address or new_residential_address and old/existing addresses in existing_mailing_address or existing_residential_address. Never substitute an old address for a new address. Return separately labelled postal codes in their corresponding postal-code fields. '
             'Labels may be above their values or in tables. Cite the source label corresponding to each field using the supplied recognised_labels; if it cannot be cited, omit that field and set requires_review=true. Return each field only once. '
             'Return each value as one contiguous verbatim source block, without adding punctuation or labels. Do not append separately labelled postal codes to addresses. Choose email for contact_information when present; do not concatenate email and phone. Return supporting source text containing the label and value, with its exact page. Preserve newlines in citations. '
             'Omit blank, [BLANK], [NOT COMPLETED], incomplete, missing and not-provided values from fields; cite them as POTENTIALLY_MISSING observations only when that label actually occurs on the PDF. Do not report missing schema fields that are not on this form and never cite a schema label as PDF evidence. '

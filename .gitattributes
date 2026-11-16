@@ -1,0 +1,2 @@
+# PDF byte offsets must survive Windows checkouts without newline conversion.
+*.pdf binary

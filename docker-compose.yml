@@ -32,6 +32,9 @@ services:
 
   backend:
     build: ./backend
+    env_file:
+      - path: .local/onemap.env
+        required: false
     environment:
       SPRING_PROFILES_ACTIVE: demo
       DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-afi_resolve}

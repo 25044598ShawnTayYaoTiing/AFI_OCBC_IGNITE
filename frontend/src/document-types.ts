@@ -1,3 +1,4 @@
+import type { AddressVerification } from "./address-types";
 import type { Audit } from "./api";
 export interface Submission {
   id: string;
@@ -13,6 +14,12 @@ export interface Submission {
   created_at: string;
   routed_at: string | null;
   ai_method?: string;
+  risk_score?: number | null;
+  checks_total?: number;
+  checks_passed?: number;
+  open_severities?: string[];
+  next_action?: string | null;
+  primary_finding?: string | null;
   open_exceptions?: number;
   verified_automations?: number;
 }
@@ -52,6 +59,10 @@ export interface Finding {
   id: string;
   check_key: string;
   rule_id: string;
+  document_type?: string;
+  condition_type?: string;
+  rule_description?: string;
+  rule_version?: number;
   name: string;
   description: string;
   status: string;
@@ -114,6 +125,7 @@ export interface Recommendation {
   human_review_required: boolean;
 }
 export interface Investigation {
+  rule_set?: string;
   submission_id: string;
   revision: number;
   method: string;
@@ -154,6 +166,8 @@ export interface AiStatus {
   liveRequestsFailed?: number;
 }
 export interface Detail {
+  addressVerifications?: { result: AddressVerification; evidence: Field & { postalEvidence?: Field } }[];
+  addressValidationRulesActive?: string[];
   investigations: Investigation[];
   automation: AutomationAttempt[];
   automationEnabled: boolean;

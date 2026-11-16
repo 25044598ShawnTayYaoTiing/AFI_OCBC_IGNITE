@@ -180,3 +180,21 @@ def test_spacing_between_label_and_value_does_not_create_missing_data():
     proposed = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False,
         fields=[d.ModelEvidenceField(field='customer_name', value='Alex Tan', page=1, supporting_text=source)])
     assert d.normalise(proposed, [source])[0][0].value == 'Alex Tan'
+
+
+def test_new_address_cannot_be_cited_from_the_registered_address_label():
+    source = 'Existing Mailing Address: 1 Old Road Singapore 123456\nNew Mailing Address: 640 Rowell Road Singapore 200640'
+    proposed = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False,
+        fields=[d.ModelEvidenceField(field='new_mailing_address', value='1 Old Road Singapore 123456', page=1,
+            supporting_text='Existing Mailing Address: 1 Old Road Singapore 123456')])
+    with pytest.raises(ValueError):
+        d.normalise(proposed, [source])
+
+
+def test_new_address_and_separate_postal_code_retain_their_own_citations():
+    source = 'New Mailing Address: 640 Rowell Road\nNew Mailing Postal Code: 200640'
+    proposed = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False, fields=[
+        d.ModelEvidenceField(field='new_mailing_address', value='640 Rowell Road', page=1, supporting_text='New Mailing Address: 640 Rowell Road'),
+        d.ModelEvidenceField(field='new_mailing_postal_code', value='200640', page=1, supporting_text='New Mailing Postal Code: 200640')])
+    fields, _ = d.normalise(proposed, [source])
+    assert [(field.field, field.value) for field in fields] == [('new_mailing_address', '640 Rowell Road'), ('new_mailing_postal_code', '200640')]

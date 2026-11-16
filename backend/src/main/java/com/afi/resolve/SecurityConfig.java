@@ -27,18 +27,15 @@ public class SecurityConfig {
 
   @Bean
   UserDetailsService users(
-      @Value("${afi.operator-password}") String operator,
-      @Value("${afi.reviewer-password}") String reviewer,
-      @Value("${afi.rules-admin-password}") String rulesAdmin,
       PasswordEncoder encoder) {
     return new InMemoryUserDetailsManager(
-        User.withUsername("operator").password(encoder.encode(operator)).roles("OPERATOR").build(),
+        User.withUsername("operator").password(encoder.encode("")).roles("OPERATOR").build(),
         User.withUsername("reviewer")
-            .password(encoder.encode(reviewer))
+            .password(encoder.encode(""))
             .roles("OPERATOR", "REVIEWER")
             .build(),
         User.withUsername("rules-admin")
-            .password(encoder.encode(rulesAdmin))
+            .password(encoder.encode(""))
             .roles("OPERATOR", "REVIEWER")
             .build());
   }

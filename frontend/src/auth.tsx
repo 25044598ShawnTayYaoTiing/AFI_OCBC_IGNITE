@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef, useState } from "react";
+import { createContext, useContext, useState } from "react";
 import type { FormEvent } from "react";
 import {
   ArrowRight,
@@ -60,18 +60,14 @@ export function Login({
   modal?: boolean;
   onClose?: () => void;
 }) {
-  const passwordInput = useRef<HTMLInputElement>(null);
   function chooseAccount(user: string) {
     setUsername(user);
-    setPassword("");
     setError("");
-    passwordInput.current?.focus();
   }
   const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  async function submit(user = username, pass = password) {
+  async function submit(user = username, pass = "") {
     setBusy(true);
     setError("");
     try {
@@ -105,18 +101,6 @@ export function Login({
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             placeholder="Enter your username"
-            required
-          />
-        </label>
-        <label>
-          Password
-          <input
-            ref={passwordInput}
-            autoComplete="current-password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Enter your password"
             required
           />
         </label>
@@ -158,7 +142,7 @@ export function Login({
         </button>
       </div>
       <p className="login-notice">
-        <LockKeyhole size={13} /> Enter the configured account password. Credentials stay in memory.
+        <LockKeyhole size={13} /> Choose an account and sign in. No password is required.
       </p>
     </div>
   );

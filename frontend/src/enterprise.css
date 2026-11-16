@@ -1,0 +1,168 @@
+/* Shared operational design system. Keep this file identical in both applications. */
+:root { --muted: #526176; --border: #d9e1eb; --radius: 8px; }
+html[data-theme="dark"] { --muted: #b5c1d1; --border: #3e4d61; }
+body { font-family: Inter, "Segoe UI", Arial, sans-serif; font-size: 14px; line-height: 1.6; }
+h1 { font-size: clamp(23px, 2.3vw, 28px); line-height: 1.25; letter-spacing: -.5px; }
+h2 { font-size: 17px; line-height: 1.4; }
+h3, h4 { font-size: 14px; line-height: 1.5; color: var(--heading); }
+button, input, select, textarea { font: inherit; }
+input, select, textarea { min-height: 42px; border-radius: 6px; }
+.button { min-height: 42px; border-radius: 6px; font-size: 14px; font-weight: 600; }
+.button.small { min-height: 38px; font-size: 13px; }
+button:disabled, .button:disabled { opacity: .6; cursor: not-allowed; }
+:where(a,button,input,select,textarea,summary):focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+small, .secondary-line, .secondary-text, .field-hint, .page-note, .muted { color: var(--muted); }
+.eyebrow, .content-label { font-size: 11px; letter-spacing: .7px; font-weight: 700; color: var(--muted); }
+.page-stack { gap: 18px; }
+.panel { border-color: var(--border); border-radius: var(--radius); box-shadow: none; }
+.panel-header { padding: 16px 20px; }
+.panel-body { padding: 18px 20px; }
+.panel-header p, .page-header p, .page-heading p { font-size: 14px; color: var(--muted); }
+.sidebar nav a, .sidebar nav .nav-item { font-size: 14px; min-height: 44px; }
+.table-scroll { max-width: 100%; overflow-x: auto; }
+th { font-size: 12px; color: var(--muted); font-weight: 700; }
+td { font-size: 14px; vertical-align: top; }
+.submission-table td { padding-block: 16px; }
+.submission-table td:nth-child(5) { min-width: 130px; }
+.submission-table td:nth-child(6) { min-width: 230px; max-width: 340px; }
+.submission-table td:nth-child(6) > strong { font-size: 13px; font-weight: 600; }
+.secondary-line { margin-top: 5px; font-size: 12px; }
+.record-row { min-height: 76px; }
+.queue-next-action { font-size: 13px; color: var(--heading); margin-top: 5px; }
+.badge { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.badge-blocking, .badge-critical, .badge-high { background: var(--danger-bg); color: var(--danger-text); }
+.badge-ready, .badge-operations, .badge-resolved { color: var(--success-text); background: var(--success-bg); }
+.case-brief { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.case-brief-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 18px 22px; }
+.case-brief-top h2 { margin: 4px 0; font-size: 20px; }
+.case-brief-top p { color: var(--muted); font-size: 13px; }
+.brief-state { background: var(--active-bg); color: var(--blue); border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.brief-state.attention { background: var(--warning-bg); color: var(--warning-text); }
+.case-facts { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-block: 1px solid var(--border); }
+.case-facts > div { padding: 14px 22px; border-inline-end: 1px solid var(--border); min-width: 0; }
+.case-facts > div:last-child { border: 0; }
+.case-facts span { display: block; font-size: 12px; color: var(--muted); }
+.case-facts strong { display: block; font-size: 20px; line-height: 1.4; color: var(--heading); margin-block: 4px; }
+.case-facts small { display: block; font-size: 12px; }
+.case-facts progress { width: 100%; height: 7px; accent-color: var(--blue); }
+.case-next-step, .customer-next-step { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 16px 22px; background: var(--active-bg); }
+.case-next-step > div, .customer-next-step > div { min-width: 0; }
+.case-next-step strong { display: block; font-size: 16px; color: var(--heading); margin-block: 4px; }
+.case-next-step p, .customer-next-step p { font-size: 13px; margin: 4px 0 0; color: var(--text); max-width: 85ch; }
+.case-next-step > .button, .customer-next-step > .button { flex-shrink: 0; }
+.case-journey { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); list-style: none; margin: 0; padding: 18px 22px 8px; gap: 12px; }
+.case-journey li { display: flex; gap: 8px; align-items: flex-start; min-width: 0; }
+.case-journey li > span { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 50%; font-size: 12px; flex-shrink: 0; }
+.case-journey .done > span { background: var(--success-bg); color: var(--success-text); }
+.case-journey strong { display: block; font-size: 12px; color: var(--heading); }
+.case-journey small { display: block; font-size: 11px; line-height: 1.5; margin-top: 4px; }
+.journey-note { margin: 0; padding: 8px 22px 14px; color: var(--muted); font-size: 12px; }
+.policy-finding { margin-block: 14px; padding: 14px; border: 1px solid var(--border); border-left: 3px solid var(--blue); border-radius: 5px; background: var(--subtle); }
+.authority-label { font-size: 11px; font-weight: 700; letter-spacing: .5px; color: var(--blue); }
+.finding-facts, .customer-request-facts { margin: 10px 0 0; }
+.finding-facts > div, .customer-request-facts > div { margin-block: 12px; }
+.finding-facts dt, .customer-request-facts dt { color: var(--muted); font-size: 12px; font-weight: 600; }
+.finding-facts dd, .customer-request-facts dd { margin: 3px 0 0; color: var(--heading); font-size: 14px; overflow-wrap: anywhere; }
+.finding-facts small, .customer-request-facts small { display: block; font-size: 12px; margin-top: 5px; }
+.context-note { background: var(--subtle); color: var(--text); border-color: var(--border); font-size: 13px; line-height: 1.65; border-radius: 5px; }
+.source-evidence { padding: 12px 14px; margin-block: 10px; background: var(--subtle); border: 1px solid var(--border); border-radius: 6px; overflow-wrap: anywhere; }
+.source-evidence mark { background: var(--warning-bg); color: var(--warning-text); padding: 1px 3px; }
+.investigation-report { border-left: 3px solid var(--border); padding-left: 14px; }
+.investigation-report section { margin-top: 16px; }
+.investigation-report h4 { margin: 0 0 6px; font-weight: 700; }
+.investigation-report p { margin: 4px 0; font-size: 13px; overflow-wrap: anywhere; }
+.investigation-report ul { padding-left: 18px; margin-top: 6px; font-size: 13px; }
+.investigation-citations article { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.investigation-citations strong { font-size: 13px; overflow-wrap: anywhere; }
+.investigation-citations .text-link { display: block; margin-top: 6px; }
+.investigation-item { padding-block: 12px; border-bottom: 1px solid var(--border); }
+.review-layout { gap: 18px; }
+.document-toolbar { padding: 12px; gap: 8px; }
+.document-toolbar label { min-width: 0; }
+.document-toolbar select { font-size: 13px; text-overflow: ellipsis; }
+.preview-footer { flex-wrap: wrap; font-size: 12px; gap: 10px; }
+.customer-next-step { border: 1px solid var(--border); border-left: 4px solid var(--blue); border-radius: var(--radius); }
+.customer-next-step h2 { margin: 5px 0; font-size: 19px; }
+#customer-actions { scroll-margin-top: 100px; }
+.banking-shell .business-welcome h1 { font-size: 27px; }
+.banking-shell .business-welcome p:not(.eyebrow), .banking-shell .page-heading p, .banking-shell .sidebar nav a { font-size: 14px; }
+.banking-shell .metric small, .banking-shell .field-hint, .banking-shell .timeline small, .banking-shell .secondary-text, .banking-shell .support-card p { font-size: 12px; color: var(--muted); }
+.banking-shell .metric-top > span:first-child { font-size: 13px; }
+.banking-shell .application-summary small { font-size: 11px; }
+.banking-shell .correction-card h3 { font-size: 16px; }
+.banking-shell .correction-card p { font-size: 14px; color: var(--text); }
+.banking-shell .detail-grid { gap: 20px; }
+@media(min-width:1101px) {
+ .review-layout { grid-template-columns: minmax(0,1.2fr) minmax(370px,1fr); }
+ .preview-column { position: sticky; top: 18px; align-self: start; }
+ .document-preview { height: clamp(440px,70svh,820px); }
+ .review-sidebar { position: static; max-height: none; }
+}
+@media(max-width:1100px) {
+ .case-journey { grid-template-columns: repeat(3,minmax(0,1fr)); row-gap: 16px; }
+ .case-facts { grid-template-columns: repeat(2,minmax(0,1fr)); }
+ .case-facts > div:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+ .review-layout { grid-template-columns: minmax(0,1fr); }
+ .preview-column { position: static; }
+ .document-preview { height: 55svh; min-height: 320px; }
+ .mobile-issue-summary { position: static; }
+}
+@media(max-width:640px) {
+ .main-content { padding: 16px; }
+ .case-brief-top { flex-wrap: wrap; padding: 16px; }
+ .case-facts > div { padding: 12px 16px; }
+ .case-facts strong { font-size: 18px; }
+ .case-next-step, .customer-next-step { flex-direction: column; align-items: stretch; padding: 16px; gap: 12px; }
+ .case-next-step .button, .customer-next-step .button { width: 100%; justify-content: center; white-space: normal; }
+ .case-journey { padding: 16px; grid-template-columns: repeat(2,minmax(0,1fr)); }
+ .journey-note { padding: 0 16px 14px; }
+ .panel-header, .panel-body { padding: 16px; }
+ .document-toolbar > label { min-width: 100%; }
+ .business-welcome { flex-direction: column; align-items: stretch; }
+ .table-toolbar { gap: 10px; }
+ .table-toolbar select { max-width: 100%; }
+}
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+.content-columns { align-items: start; }
+.banking-shell .no-requests.unconfirmed, .banking-shell .no-requests.unconfirmed strong, .banking-shell .no-requests.unconfirmed p { color: var(--text); }
+.banking-shell .panel-heading h2 { font-size: 17px; }
+.banking-shell .panel-heading p { font-size: 13px; }
+.banking-shell .document-records strong { font-size: 14px; }
+.banking-shell .document-records p, .banking-shell .document-records small { font-size: 12px; }
+.banking-shell .text-button, .banking-shell .text-link { font-size: 13px; min-height: 32px; }
+
+.mobile-pdf-controls { display: none; }
+@media(max-width:640px) {
+ .mobile-pdf-controls { display: block; padding: 16px; background: var(--subtle); }
+ .mobile-pdf-controls p { margin: 0 0 12px; font-size: 13px; color: var(--text); }
+ .document-preview { display: none; }
+ .document-preview.mobile-pdf-open { display: block; height: 55svh; }
+}
+
+/* Address verification: building lookup, separate unit entry and review evidence. */
+.address-postal-search { display:flex; align-items:flex-end; gap:12px; flex-wrap:wrap; }
+.address-postal-search > label { flex:1; min-width:190px; }
+.address-postal-search > button { flex-shrink:0; }
+.address-record, .address-search-result { padding:14px 16px; border:1px solid var(--border); border-radius:6px; background:var(--subtle); margin-block:12px; }
+.address-record strong, .address-record small { display:block; }
+.address-record small { margin-top:5px; }
+.address-search-result strong { color:var(--heading); }
+.address-candidates { border:0; padding:0; margin:16px 0; min-width:0; }
+.address-candidates legend { font-size:14px; font-weight:600; margin-bottom:10px; color:var(--heading); }
+label.address-candidate { display:flex; flex-direction:row; align-items:flex-start; gap:12px; padding:14px; border:1px solid var(--border); border-radius:6px; margin-bottom:10px; cursor:pointer; }
+.address-candidate.selected { border-color:var(--blue); background:var(--active-bg); }
+.address-candidate input[type=radio] { width:18px; min-width:18px; height:18px; min-height:18px; flex:0 0 18px; margin:3px 0 0; padding:0; accent-color:var(--blue); }
+.address-candidate strong, .address-candidate small { display:block; overflow-wrap:anywhere; }
+.address-candidate small { margin-top:5px; font-weight:400; }
+.address-request-list > article, .address-verification-record { padding:16px 20px; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
+.address-verification-record { padding:16px 0; }
+.address-request-list p, .address-verification-record p { margin-top:8px; }
+.address-comparison { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin:18px 0; }
+.address-comparison section { padding:16px; border:1px solid var(--border); border-radius:6px; background:var(--subtle); overflow-wrap:anywhere; }
+.address-comparison h3 { margin-bottom:8px; }
+.badge-unavailable, .badge-inconclusive, .badge-manual_review, .badge-pending_approval { color:var(--warning-text); background:var(--warning-bg); }
+.badge-mismatch { color:var(--danger-text); background:var(--danger-bg); }
+.badge-approved { color:var(--success-text); background:var(--success-bg); }
+.badge-synthetic_demo { color:var(--text); background:var(--subtle); }
+@media(max-width:640px) { .address-comparison { grid-template-columns:1fr; } .address-postal-search > button { width:100%; justify-content:center; } }

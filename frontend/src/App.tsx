@@ -80,6 +80,7 @@ import {
   DocumentDemo,
 } from "./pages/Documents";
 import type { Submission } from "./document-types";
+import { AddressRequests } from "./pages/AddressRequests";
 import { SettingsWorkspace } from "./pages/Settings";
 import { Dialog } from "./ui";
 const navigationGroups = [
@@ -87,8 +88,9 @@ const navigationGroups = [
     title: "",
     items: [
       { to: "/", label: "Overview", icon: LayoutDashboard },
-      { to: "/submissions", label: "Submissions", icon: Boxes },
-      { to: "/exceptions", label: "Exceptions", icon: ListFilter },
+      { to: "/submissions", label: "Customer cases", icon: Boxes },
+      { to: "/exceptions", label: "Issues & corrections", icon: ListFilter },
+      { to: "/address-requests", label: "Address changes", icon: ClipboardCheck },
       { to: "/operations", label: "Operations", icon: ClipboardCheck },
       { to: "/reports", label: "Reports", icon: FileBarChart2 },
       { to: "/settings", label: "Settings", icon: Settings2 },
@@ -660,6 +662,7 @@ export default function App() {
           >
             <Suspense fallback={<Loading text="Opening workspace page..." />}>
               <Routes>
+        <Route path="/address-requests" element={<AddressRequests />} />
                 <Route path="/" element={<DocumentOverview />} />
                 <Route path="/submissions" element={<DocumentQueue />} />
                 <Route path="/new" element={<NewDocumentSubmission />} />

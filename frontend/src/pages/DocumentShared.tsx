@@ -5,6 +5,7 @@ import { dateTime, detailText, label, privatePdf } from "../api";
 import type { Audit } from "../api";
 import type { Detail, Metrics, Preflight, Submission } from "../document-types";
 import { Badge, Empty, ErrorBox, Loading } from "../components";
+import { nextCaseAction } from "./case-facts";
 import { Disclosure } from "../ui";
 
 export const BASE = "/api/documents";
@@ -16,7 +17,7 @@ export const submissionNav = [
   { to: "/submissions", label: "All submissions" },
   { to: "/investigations", label: "Investigations" },
   { to: "/corrections", label: "Corrections" },
-  { to: "/preflight", label: "Preflight" },
+  { to: "/preflight", label: "Handover readiness" },
 ];
 export const reportNav = [
   { to: "/reports", label: "Analytics" },
@@ -63,7 +64,8 @@ export function SubmissionTable({
             <th scope="col">Reference</th>
             <th scope="col">Source</th>
             <th scope="col">Status</th>
-            <th scope="col">Resolution</th>
+            <th scope="col">Checks / severity</th>
+            <th scope="col">Next action</th>
             <th scope="col">Created</th>
             <th scope="col">
               <span className="sr-only">Open submission</span>
@@ -89,13 +91,15 @@ export function SubmissionTable({
               <td>
                 <Badge value={item.status} />
               </td>
+              <td><strong>{item.validated_revision === item.revision && item.checks_total ? `${item.checks_passed ?? 0}/${item.checks_total} passed` : "Not confirmed"}</strong><small className="secondary-line">{item.open_severities?.length ? item.open_severities.map(label).join(", ") : "No open severity recorded"}</small></td>
               <td>
-                <span>
+                <strong>{nextCaseAction(item, item.open_exceptions ?? 0)}</strong>
+                <span className="secondary-line">
                   {item.open_exceptions
                     ? `${item.open_exceptions} open ${item.open_exceptions === 1 ? "issue" : "issues"}`
                     : item.status === "OPERATIONS"
                       ? "Intake complete"
-                      : "No open findings"}
+                      : item.validated_revision !== item.revision ? "Awaiting current checks" : "No open findings"}
                 </span>
                 <small className="secondary-line">
                   {item.verified_automations
@@ -160,11 +164,13 @@ export function PdfPreview({
 }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
+  const [mobilePreview, setMobilePreview] = useState(false);
   useEffect(() => {
     let active = true;
     let objectUrl = "";
     setUrl("");
     setError("");
+    setMobilePreview(false);
     privatePdf(`${BASE}/submissions/${caseId}/versions/${versionId}/pdf`)
       .then((blob) => {
         objectUrl = URL.createObjectURL(blob);
@@ -183,13 +189,16 @@ export function PdfPreview({
     <ErrorBox message={error} />
   ) : url ? (
     <>
+      <div className="mobile-pdf-controls"><p>Requested source: page {page}. Open the full PDF for a larger view, or preview it here.</p><button className="button secondary" aria-expanded={mobilePreview} onClick={() => setMobilePreview(value => !value)}>{mobilePreview ? "Hide PDF preview" : "Preview PDF here"}</button></div>
       <iframe
-        className="document-preview"
-        title="Original PDF document"
+        className={`document-preview ${mobilePreview ? "mobile-pdf-open" : ""}`}
+        key={`${versionId}:${page}`}
+        title={`Original PDF document, page ${page}`}
         src={`${url}#page=${page}&view=FitH`}
       />
       <div className="preview-footer">
-        <span>Original document</span>
+        <span>Original document | Requested page {page}</span>
+        <a className="text-link" href={`${url}#page=${page}`} target="_blank" rel="noreferrer">Open full PDF</a>
         <a className="text-link" href={url} download="synthetic-document.pdf">
           <Download size={15} />
           Download PDF

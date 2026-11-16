@@ -3,11 +3,10 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
-  CheckCircle2,
   RefreshCw,
   UploadCloud,
 } from "lucide-react";
-import { dateTime, label, post, uploadPdfs, useResource } from "../api";
+import { label, post, uploadPdfs, useResource } from "../api";
 import type { Detail, Field } from "../document-types";
 import {
   Badge,
@@ -28,7 +27,9 @@ import {
   PreflightView,
 } from "./DocumentResolution";
 
-import { DocumentIssueReview, issueAction } from "./DocumentIssueReview";
+import { AddressVerificationPanel } from "./AddressVerificationPanel";
+import { CaseSummary } from "./CaseSummary";
+import { DocumentIssueReview, PolicyFindingSummary, issueAction } from "./DocumentIssueReview";
 import { groupFindings, issueCategory, issueGuidance, issueTitle } from "./DocumentFindings";
 
 export function DocumentWorkspace() {
@@ -215,41 +216,8 @@ export function DocumentWorkspace() {
           )}
         </div>
       )}
-      <div className={`case-summary ${locked ? "case-complete" : ""}`}>
-        <CheckCircle2 size={20} />
-        <div>
-          <strong>
-            {locked
-              ? "Package received by Operations"
-              : open.length
-                ? `${open.length} ${open.length === 1 ? "issue needs" : "issues need"} attention`
-                : "Document review"}
-          </strong>
-          <p>
-            {locked
-              ? `Sent ${dateTime(data.submission.routed_at)} SGT. Documents and resolution history are available below.`
-              : open.length
-                ? "Review the issues, then replace any documents that need correction. Eligible administrative issues are handled automatically."
-                : "Add the related PDFs. Validation and eligible automatic actions start after upload."}
-          </p>
-        </div>
-        <Disclosure title="Case details">
-          <dl className="metadata">
-            <div>
-              <dt>Submission</dt>
-              <dd>{data.submission.id}</dd>
-            </div>
-            <div>
-              <dt>Owner</dt>
-              <dd>{data.submission.owner_name}</dd>
-            </div>
-            <div>
-              <dt>Package revision</dt>
-              <dd>{data.submission.revision}</dd>
-            </div>
-          </dl>
-        </Disclosure>
-      </div>
+      <CaseSummary detail={data} onReview={() => setParams({ tab: open.length ? "exceptions" : "review" })} onReadiness={() => setParams({ tab: "preflight" })} />
+      <Disclosure title="Case reference and ownership"><dl className="metadata"><div><dt>Case reference</dt><dd>{data.submission.id}</dd></div><div><dt>Assigned case owner</dt><dd>{data.submission.owner_name}</dd></div><div><dt>Package revision</dt><dd>{data.submission.revision}</dd></div></dl></Disclosure>
       {data.submission.validated_revision !== data.submission.revision &&
         data.exceptions.length > 0 && (
           <Notice>
@@ -257,6 +225,7 @@ export function DocumentWorkspace() {
             until the current package is rechecked.
           </Notice>
         )}
+      <AddressVerificationPanel detail={data} onInspect={inspect} />
       <Tabs
         id="submission-workspace"
         className="section-nav workspace-tabs"
@@ -269,7 +238,7 @@ export function DocumentWorkspace() {
             label: `Issues & corrections${open.length ? ` (${open.length})` : ""}`,
           },
           { value: "automation", label: "Automation" },
-          { value: "preflight", label: "Preflight" },
+          { value: "preflight", label: "Handover readiness" },
           { value: "history", label: "History" },
         ]}
         onChange={(key) => {
@@ -360,7 +329,7 @@ export function DocumentWorkspace() {
                       >
                         {data.documents.map((item) => (
                           <option key={item.id} value={item.id}>
-                            {label(item.document_type)}
+                            {label(item.document_type)} | {item.filename}
                           </option>
                         ))}
                       </select>
@@ -387,6 +356,7 @@ export function DocumentWorkspace() {
                       </button>
                     )}
                   </div>
+                  {version && version !== doc.version_id && <Notice>You are viewing an earlier document version. Findings and current values may refer to a different version; check each citation before acting.</Notice>}
                   <PdfPreview
                     caseId={id}
                     versionId={version || doc.version_id}
@@ -415,6 +385,7 @@ export function DocumentWorkspace() {
                         detail={data}
                         doc={doc}
                         issue={chosen}
+                        busy={!!busy}
                         onChoose={(key) => {
                           setFinding(key);
                           const issue = data.exceptions.find(
@@ -457,7 +428,7 @@ export function DocumentWorkspace() {
                             {doc.fields.map((field) => (
                               <div key={field.field_name}>
                                 <dt>{label(field.field_name)}</dt>
-                                <dd>{field.field_value}</dd>
+                                <dd>{field.field_value}<button className="text-link" onClick={() => inspect({ ...field, document_id: doc.id, version_id: doc.version_id, filename: doc.filename })}>View source{field.page_number ? ` | page ${field.page_number}` : " | page unconfirmed"}</button></dd>
                               </div>
                             ))}
                           </dl>
@@ -566,6 +537,7 @@ export function DocumentWorkspace() {
                       {chosen ? (
                         <div className="panel-body">
                           <Badge value={chosen.status} />
+                          <PolicyFindingSummary detail={data} issue={chosen} />
                           <p className="content-label">{issueCategory(chosen)}</p>
                           <h3 className="content-label">
                             {chosen.status === "RESOLVED"
@@ -628,8 +600,7 @@ export function DocumentWorkspace() {
                             </>
                           ) : (
                             <p className="muted">
-                              No submitted document satisfied this package
-                              requirement when the finding was recorded.
+                              No source evidence was recorded for this finding. Review the applied rule and required action before requesting a document.
                             </p>
                           )}
                           {relatedIssues.map((item) => (
@@ -637,6 +608,8 @@ export function DocumentWorkspace() {
                               key={item.id}
                               investigation={data.investigations?.[0]}
                               finding={item}
+                              detail={data}
+                              onInspect={inspect}
                             />
                           ))}
                           <Disclosure title="Rule details">
@@ -706,7 +679,7 @@ export function DocumentWorkspace() {
             </TabPanel>
           </>
         )}
-        {tab === "automation" && <AutonomyEvidence detail={data} />}
+        {tab === "automation" && <AutonomyEvidence detail={data} onInspect={inspect} />}
         {tab === "preflight" && (
           <PreflightView
             detail={data}

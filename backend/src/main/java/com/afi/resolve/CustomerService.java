@@ -214,7 +214,7 @@ public class CustomerService {
     return s
         .db
         .queryForList(
-            "SELECT t.id,t.status,r.document_type,r.corrective_action,e.evidence_json FROM"
+            "SELECT t.id,t.status,t.assigned_role,r.name AS rule_name,r.condition_type,r.document_type,r.corrective_action,e.description AS finding_reason,e.evidence_json FROM"
                 + " correction_tasks t JOIN document_exceptions e ON e.id=t.exception_id JOIN"
                 + " validation_rules r ON r.id=e.rule_id WHERE t.submission_id=? AND"
                 + " t.status<>'RESOLVED' AND e.status='OPEN' ORDER BY t.created_at,t.id",
@@ -240,7 +240,11 @@ public class CustomerService {
                   "documentIds",
                   ids,
                   "instruction",
-                  t.get("corrective_action"));
+                  t.get("corrective_action"),
+                  "reason", t.get("finding_reason"),
+                  "ruleName", t.get("rule_name"),
+                  "assignedRole", t.get("assigned_role"),
+                  "requiredDocumentType", "ATTACHMENT".equals(t.get("condition_type")) ? t.get("document_type") : null);
             })
         .toList();
   }

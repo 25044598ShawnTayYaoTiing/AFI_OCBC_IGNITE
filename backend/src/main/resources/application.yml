@@ -32,6 +32,8 @@ management:
     health:
       show-details: never
 afi:
+  onemap-email: ${ONEMAP_EMAIL:}
+  onemap-password: ${ONEMAP_PASSWORD:}
   demo-enabled: ${DEMO_ENABLED:true}
   operator-password: ${OPERATOR_PASSWORD:operator-demo}
   reviewer-password: ${REVIEWER_PASSWORD:reviewer-demo}
@@ -52,3 +54,5 @@ afi:
 logging:
   level:
     org.hibernate: WARN
+    org.springframework.web.client: WARN
+    org.springframework.http.converter.json: WARN

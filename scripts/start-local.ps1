@@ -41,10 +41,10 @@ $envLoader = @'
 import json, sys
 from pathlib import Path
 from dotenv import dotenv_values
-allowed = {"DB_URL","DB_USERNAME","DB_PASSWORD","OPERATOR_PASSWORD","REVIEWER_PASSWORD","RULES_ADMIN_PASSWORD","AI_SERVICE_KEY","GEMINI_API_KEY","GEMINI_MODEL","GEMINI_TIMEOUT_MS","DOCUMENT_AUTOMATION_ENABLED","DOCUMENT_AUTOMATION_MAX_ATTEMPTS","CUSTOMER_PORTAL_ORIGINS","CUSTOMER_SESSION_SECONDS","FRONTEND_ORIGIN"}
+allowed = {"DB_URL","DB_USERNAME","DB_PASSWORD","OPERATOR_PASSWORD","REVIEWER_PASSWORD","RULES_ADMIN_PASSWORD","AI_SERVICE_KEY","GEMINI_API_KEY","GEMINI_MODEL","GEMINI_TIMEOUT_MS","DOCUMENT_AUTOMATION_ENABLED","DOCUMENT_AUTOMATION_MAX_ATTEMPTS","CUSTOMER_PORTAL_ORIGINS","CUSTOMER_SESSION_SECONDS","FRONTEND_ORIGIN","ONEMAP_EMAIL","ONEMAP_PASSWORD"}
 values={}
 root=Path(sys.argv[1])
-for path in [root / ".env", root / "ai-service" / ".env"]:
+for path in [root / ".env", root / "ai-service" / ".env", root / ".local" / "onemap.env"]:
     if path.exists():
         values.update({k:v for k,v in dotenv_values(path,encoding="utf-8-sig").items() if k in allowed and v is not None and v != ""})
 print(json.dumps(values))

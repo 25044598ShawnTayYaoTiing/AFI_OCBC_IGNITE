@@ -51,18 +51,10 @@ public class DocumentIntelligence {
     var c = workflow.access(id, actor, false);
     int revision = ((Number) c.get("revision")).intValue();
     String rules = workflow.ruleSet();
-    if (s.db.queryForObject(
-            "SELECT COUNT(*) FROM document_investigations WHERE submission_id=? AND revision=? AND"
-                + " rule_set=? AND method='GEMINI'",
-            Integer.class,
-            id,
-            revision,
-            rules)
-        > 0) return;
     var findings = new ArrayList<Map<String, Object>>();
     for (var exception :
         s.db.queryForList(
-            "SELECT * FROM document_exceptions WHERE submission_id=? AND status='OPEN' ORDER BY id",
+            "SELECT e.*,r.description AS policy_description,r.corrective_action,r.document_type,r.condition_type FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id WHERE e.submission_id=? AND e.status='OPEN' ORDER BY e.id",
             id)) {
       String ex = (String) exception.get("id"), action = (String) exception.get("action_type");
       var citations = new ArrayList<Map<String, Object>>();
@@ -86,6 +78,21 @@ public class DocumentIntelligence {
                 Objects.toString(field.get("field_value"), "UNCONFIRMED"),
                 "supporting_text",
                 Objects.toString(field.get("supporting_text"), "Uncertain source evidence")));
+        if (field.get("postalEvidence") instanceof Map<?, ?> postal) {
+          citations.add(map("evidence_id", ex + ":" + index + ":postal", "document_id", field.get("document_id"),
+              "version_id", field.get("version_id"), "page", postal.get("page_number"), "field", postal.get("field_name"),
+              "value", postal.get("field_value"), "supporting_text", postal.get("supporting_text")));
+        }
+        if (field.get("addressVerification") instanceof Map<?, ?> verification) {
+          var external = "OneMap lookup outcome: " + verification.get("message");
+          if (verification.get("candidates") instanceof List<?> candidates) {
+            external += " Returned building addresses: " + candidates.stream().filter(Map.class::isInstance)
+                .map(candidate -> Objects.toString(((Map<?, ?>) candidate).get("address"), "")).limit(5).toList();
+          }
+          citations.add(map("evidence_id", ex + ":" + index + ":onemap", "document_id", null,
+              "version_id", null, "page", null, "field", "onemap_building_address_verification",
+              "value", verification.get("status"), "supporting_text", external.substring(0, Math.min(2500, external.length()))));
+        }
       }
       if (action.equals("ATTACH_VERIFIED_DOCUMENT")) {
         for (var document : workflow.documents(id, true))
@@ -118,6 +125,14 @@ public class DocumentIntelligence {
               exception.get("rule_id"),
               "name",
               exception.get("description"),
+              "policy_description",
+              exception.get("policy_description"),
+              "corrective_action",
+              exception.get("corrective_action"),
+              "document_type",
+              exception.get("document_type"),
+              "condition_type",
+              exception.get("condition_type"),
               "permitted_action",
               action,
               "requires_human",
@@ -126,6 +141,9 @@ public class DocumentIntelligence {
               citations));
     }
     if (findings.isEmpty()) return;
+    String fingerprint = CustomerSessions.hash(s.json(findings));
+    var prior = s.db.queryForList("SELECT result_json FROM document_investigations WHERE submission_id=? AND revision=? AND rule_set=? AND method='GEMINI' ORDER BY completed_at DESC LIMIT 1", id, revision, rules);
+    if (!prior.isEmpty() && fingerprint.equals(s.readMap((String) prior.getFirst().get("result_json")).get("evidence_fingerprint"))) return;
     Map<String, Object> result;
     try {
       result =
@@ -197,6 +215,8 @@ public class DocumentIntelligence {
               recommendations);
     }
     result.put("source_findings", findings);
+    result.put("evidence_fingerprint", fingerprint);
+    result.put("rule_set", rules);
     s.db.update(
         "INSERT INTO"
             + " document_investigations(id,submission_id,revision,rule_set,method,result_json,completed_at)"

@@ -24,6 +24,7 @@ public class DocumentService {
   final DocumentStorage storage;
   final DemoService demoAccess;
   final CustomerNotifications customerNotifications;
+  final DocumentAddressVerifier addressVerifier;
   static final Set<String> TYPES =
       Set.of(
           "CUSTOMER_INFORMATION",
@@ -37,6 +38,8 @@ public class DocumentService {
           "customer_reference",
           "mailing_address",
           "residential_address",
+          "new_mailing_address", "new_residential_address", "existing_mailing_address", "existing_residential_address",
+          "postal_code", "mailing_postal_code", "residential_postal_code", "new_mailing_postal_code", "new_residential_postal_code",
           "contact_information",
           "declaration_date",
           "tax_residency",
@@ -52,15 +55,22 @@ public class DocumentService {
     this(s, ai, orchestrator, storage, demoAccess, null);
   }
 
-  @org.springframework.beans.factory.annotation.Autowired
   public DocumentService(Store s, AiClient ai, DocumentOrchestrator orchestrator,
       DocumentStorage storage, DemoService demoAccess, CustomerNotifications customerNotifications) {
+    this(s, ai, orchestrator, storage, demoAccess, customerNotifications, null);
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  public DocumentService(Store s, AiClient ai, DocumentOrchestrator orchestrator,
+      DocumentStorage storage, DemoService demoAccess, CustomerNotifications customerNotifications,
+      DocumentAddressVerifier addressVerifier) {
     this.s = s;
     this.ai = ai;
     this.orchestrator = orchestrator;
     this.storage = storage;
     this.demoAccess = demoAccess;
     this.customerNotifications = customerNotifications;
+    this.addressVerifier = addressVerifier;
   }
 
   @PostConstruct
@@ -233,6 +243,22 @@ public class DocumentService {
                   + " completed_at DESC LIMIT 1",
               c.get("id"));
       c.put("ai_method", methods.isEmpty() ? null : methods.getFirst().get("method"));
+      var currentChecks = new LinkedHashMap<String, Boolean>();
+      for (var check : s.db.queryForList(
+          "SELECT check_key,passed FROM validation_results WHERE submission_id=? AND revision=? ORDER BY created_at DESC",
+          c.get("id"), c.get("revision"))) {
+        currentChecks.putIfAbsent((String) check.get("check_key"), Boolean.TRUE.equals(check.get("passed")));
+      }
+      c.put("checks_total", currentChecks.size());
+      c.put("checks_passed", currentChecks.values().stream().filter(Boolean::booleanValue).count());
+      c.put("open_severities", s.db.queryForList(
+          "SELECT DISTINCT r.severity FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id WHERE e.submission_id=? AND e.status='OPEN'",
+          String.class, c.get("id")));
+      var nextActions = s.db.queryForList(
+          "SELECT r.corrective_action,e.description FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id WHERE e.submission_id=? AND e.status='OPEN' ORDER BY e.created_at,e.id LIMIT 1",
+          c.get("id"));
+      c.put("next_action", nextActions.isEmpty() ? null : nextActions.getFirst().get("corrective_action"));
+      c.put("primary_finding", nextActions.isEmpty() ? null : nextActions.getFirst().get("description"));
       c.put(
           "open_exceptions",
           s.db.queryForObject(
@@ -436,7 +462,7 @@ public class DocumentService {
     }
     var exceptions =
         s.db.queryForList(
-            "SELECT e.*,r.name,r.field_name,r.document_type,r.severity,r.corrective_action FROM"
+            "SELECT e.*,r.name,r.field_name,r.document_type,r.condition_type,r.description AS rule_description,r.version AS rule_version,r.severity,r.corrective_action FROM"
                 + " document_exceptions e JOIN validation_rules r ON r.id=e.rule_id WHERE"
                 + " e.submission_id=? ORDER BY e.created_at",
             id);
@@ -453,6 +479,10 @@ public class DocumentService {
         exceptions,
         "ruleSet",
         ruleSet(),
+        "addressVerifications",
+        addressVerifier == null ? List.of() : addressVerifier.detail(id),
+        "addressValidationRulesActive",
+        s.db.queryForList("SELECT rule_key FROM validation_rules WHERE condition_type='ONEMAP_ADDRESS' AND status='ACTIVE'", String.class),
         "tasks",
         s.db.queryForList(
             "SELECT t.*,e.description,e.evidence_json,e.status AS"
@@ -769,6 +799,10 @@ public class DocumentService {
           docs.stream()
               .filter(d -> "PACKAGE".equals(type) || type.equals(d.get("document_type")))
               .toList();
+      if (condition.equals("ONEMAP_ADDRESS")) {
+        if (addressVerifier != null) checks.addAll(addressVerifier.checks(this, rule, relevant));
+        continue;
+      }
       if (condition.equals("ATTACHMENT")) {
         checks.add(check(rule, (String) rule.get("rule_key"), !relevant.isEmpty(), List.of()));
         continue;
@@ -887,6 +921,7 @@ public class DocumentService {
 
   void validateInternal(String id, Authentication a) {
     var c = access(id, a, true);
+    if (addressVerifier != null) addressVerifier.refresh(documents(id, false));
     var checks = evaluate(id);
     var failed = new HashSet<String>();
     s.db.update(
@@ -913,7 +948,8 @@ public class DocumentService {
           check.get("condition_type").equals("ATTACHMENT")
                   && check.get("document_type").equals("SUPPORTING_DOCUMENT")
               ? "ATTACH_VERIFIED_DOCUMENT"
-              : check.get("condition_type").equals("CLASSIFICATION")
+              : (check.get("condition_type").equals("CLASSIFICATION")
+                  || (check.get("condition_type").equals("ONEMAP_ADDRESS") && !"MISMATCH".equals(check.get("verification_status"))))
                   ? "ESCALATE_UNCERTAIN_INFORMATION"
                   : "REQUEST_CORRECTION";
       var existing =
@@ -977,6 +1013,7 @@ public class DocumentService {
             action.equals("ESCALATE_UNCERTAIN_INFORMATION") ? "ESCALATED" : "AWAITING_CORRECTION",
             ex);
     }
+    s.db.update("UPDATE correction_tasks SET assigned_role='REVIEWER' WHERE submission_id=? AND status='ESCALATED' AND exception_id IN (SELECT e.id FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id WHERE r.condition_type='ONEMAP_ADDRESS')", id);
     for (var ex :
         s.db.queryForList(
             "SELECT * FROM document_exceptions WHERE submission_id=? AND status='OPEN'", id)) {
@@ -1010,7 +1047,8 @@ public class DocumentService {
         checks.stream()
             .anyMatch(
                 ch ->
-                    ch.get("condition_type").equals("CLASSIFICATION")
+                    (ch.get("condition_type").equals("CLASSIFICATION")
+                        || (ch.get("condition_type").equals("ONEMAP_ADDRESS") && !"MISMATCH".equals(ch.get("verification_status"))))
                         && !Boolean.TRUE.equals(ch.get("passed")));
     boolean blocked = checks.stream().anyMatch(PolicyService::blockingDocumentCheck);
     long unresolved = unresolvedBlocking(id);

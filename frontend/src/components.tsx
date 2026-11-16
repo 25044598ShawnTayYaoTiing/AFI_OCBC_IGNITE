@@ -18,10 +18,19 @@ import { dateTime, detailText, label } from "./api";
 import type { Audit, Case } from "./api";
 export function Badge({ value, text }: { value: string; text?: string }) {
   const names: Record<string, string> = {
+    VERIFIED: "Verified",
+    MISMATCH: "Address conflict",
+    INCONCLUSIVE: "Needs manual review",
+    UNAVAILABLE: "Lookup unavailable",
+    SYNTHETIC_DEMO: "Demo only",
+    PENDING_APPROVAL: "Awaiting approval",
+    MANUAL_REVIEW: "Needs manual review",
+    APPROVED: "Approved",
     OPERATIONS: "With Operations",
     CORRECTION_REQUIRED: "Needs correction",
     HUMAN_REVIEW: "Needs review",
-    PENDING_VALIDATION: "Awaiting validation",
+    PENDING_VALIDATION: "Awaiting checks",
+    READY: "Checks passed",
     GEMINI: "Live Gemini",
     DETERMINISTIC_FALLBACK: "Rule-based fallback",
     SYNTHETIC_TEMPLATE: "Template extraction",

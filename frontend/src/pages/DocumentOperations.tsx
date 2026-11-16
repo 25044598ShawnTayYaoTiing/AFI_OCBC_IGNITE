@@ -1,3 +1,4 @@
+import { nextCaseAction } from "./case-facts";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -47,8 +48,8 @@ export function DocumentOverview() {
   return (
     <div className="page-stack">
       <PageHeader
-        title="Operations overview"
-        description="Your submissions, exceptions and completed handovers."
+        title="Resolution management"
+        description="Prioritise cases, resolve document issues and confirm Operations handover."
       >
         <Link className="button primary" to="/new">
           <Plus size={16} />
@@ -82,25 +83,9 @@ export function DocumentOverview() {
           { label: "With Operations", value: value(m?.successfullyRouted) },
         ]}
       />
-      <Panel
-        title="Recent submissions"
-        action={
-          <Link className="text-link" to="/submissions">
-            View all <ArrowRight size={14} />
-          </Link>
-        }
-      >
-        <ResourceState
-          error={submissions.error}
-          loading={submissions.loading}
-          retry={() => void submissions.refresh()}
-        >
-          <SubmissionTable items={items.slice(0, 4)} />
-        </ResourceState>
-      </Panel>
       <div className="content-columns">
         <Panel
-          title="Needs attention"
+          title="Priority cases | action required"
           action={
             <Link className="text-link" to="/exceptions">
               Open queue
@@ -122,7 +107,8 @@ export function DocumentOverview() {
                   >
                     <div>
                       <strong>{item.customer_name}</strong>
-                      <small>{item.customer_reference}</small>
+                      <small>{item.customer_reference} | {item.open_exceptions ?? 0} open issues</small>
+                      <p className="queue-next-action">{nextCaseAction(item, item.open_exceptions ?? 0)}</p>
                     </div>
                     <Badge value={item.status} />
                     <ArrowRight size={16} />
@@ -154,7 +140,7 @@ export function DocumentOverview() {
               </div>
             </dl>
             {!metrics.error && m && m.totalSubmissions > 0 && (
-              <StatusChart metrics={m} />
+              <Disclosure title="Status distribution"><StatusChart metrics={m} /></Disclosure>
             )}
             <Link className="text-link" to="/reports">
               View reports <ArrowRight size={14} />
@@ -162,6 +148,22 @@ export function DocumentOverview() {
           </div>
         </Panel>
       </div>
+      <Panel
+        title="Recent submissions"
+        action={
+          <Link className="text-link" to="/submissions">
+            View all <ArrowRight size={14} />
+          </Link>
+        }
+      >
+        <ResourceState
+          error={submissions.error}
+          loading={submissions.loading}
+          retry={() => void submissions.refresh()}
+        >
+          <SubmissionTable items={items.slice(0, 4)} />
+        </ResourceState>
+      </Panel>
       <Panel
         title="Recent activity"
         action={
@@ -191,15 +193,16 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [source, setSource] = useState("all");
+  const [sort, setSort] = useState("attention");
   const [page, setPage] = useState(0);
   const pageSize = readUiPreferences().pageSize;
   const titles: Record<string, string> = {
-    submissions: "Submissions",
+    submissions: "Customer cases",
     investigations: "Investigations",
-    exceptions: "Exceptions",
+    exceptions: "Issues & corrections",
     corrections: "Corrections",
     operations: "Operations",
-    preflight: "Preflight",
+    preflight: "Handover readiness",
   };
   const descriptions: Record<string, string> = {
     submissions: "Create, review and track customer document packages.",
@@ -224,7 +227,11 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
         `${item.customer_name} ${item.customer_reference} ${item.id}`
           .toLowerCase()
           .includes(search.toLowerCase()),
-    );
+    ).sort((a, b) => {
+      if (sort === "newest") return b.created_at.localeCompare(a.created_at);
+      const priority = (item: Submission) => ["HUMAN_REVIEW", "CORRECTION_REQUIRED"].includes(item.status) ? 3 : ["DRAFT", "PENDING_VALIDATION"].includes(item.status) ? 2 : item.status === "OPERATIONS" ? 0 : 1;
+      return priority(b) - priority(a) || (b.open_exceptions ?? 0) - (a.open_exceptions ?? 0) || b.created_at.localeCompare(a.created_at);
+    });
   const pages = Math.max(1, Math.ceil(items.length / pageSize));
   const current = Math.min(page, pages - 1);
   const tab =
@@ -293,6 +300,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
               "PENDING_VALIDATION",
               "CORRECTION_REQUIRED",
               "HUMAN_REVIEW",
+              "READY",
               "OPERATIONS",
             ].map((value) => (
               <option key={value} value={value}>
@@ -305,6 +313,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
             <option value="CUSTOMER_PORTAL">Customer Portal</option>
             <option value="RM">RM upload</option>
           </select>
+          <select aria-label="Sort cases" value={sort} onChange={event => { setSort(event.target.value); setPage(0); }}><option value="attention">Action required first</option><option value="newest">Newest first</option></select>
           <span className="result-count">
             {result.error
               ? "Unavailable"
