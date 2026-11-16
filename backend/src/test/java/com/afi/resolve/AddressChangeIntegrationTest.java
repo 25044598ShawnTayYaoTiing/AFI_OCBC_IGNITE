@@ -38,6 +38,7 @@ class AddressChangeIntegrationTest {
 
   @BeforeEach void setup() {
     customer = s.db.queryForObject("SELECT id FROM customers WHERE username='alex'", String.class);
+    if (s.db.queryForObject("SELECT COUNT(*) FROM customer_profiles WHERE customer_id=?", Integer.class, customer) == 0) new CustomerProfiles(s).create(customer, "SYN-ALEX-001");
     actor = UsernamePasswordAuthenticationToken.authenticated(new CustomerSessions.Identity(customer, "alex"), null, List.of(new SimpleGrantedAuthority("ROLE_CUSTOMER")));
     s.db.update("INSERT INTO customer_registered_addresses(customer_id,address_type,address_json,source,updated_by,updated_at) VALUES(?,'MAILING',?,'REGISTERED_RECORD','test',?)", customer,
         s.json(Domain.map("address", "Existing registered address 123456", "postalCode", "123456", "unit", "#01-01", "source", "REGISTERED_RECORD")), Store.now());
@@ -118,4 +119,10 @@ class AddressChangeIntegrationTest {
     mvc.perform(get("/api/customer/addresses").with(authentication(other))).andExpect(status().isOk()).andExpect(jsonPath("$.addresses").isEmpty());
     mvc.perform(get("/api/addresses/requests").with(authentication(actor))).andExpect(status().isForbidden());
   }
+  @Test void customerSearchReturnsProviderResultThroughController() throws Exception {
+    when(oneMap.search("200640")).thenReturn(new OneMapClient.Search("UNAVAILABLE", "Retry or request manual review", "200640", List.of(), false, Instant.now()));
+    mvc.perform(get("/api/customer/addresses/search").param("postalCode", "200640").with(authentication(actor)))
+        .andExpect(status().isOk()).andExpect(jsonPath("$.status").value("UNAVAILABLE"));
+  }
+
 }

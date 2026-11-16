@@ -7,6 +7,7 @@ export function CaseSummary({ detail, onReview, onReadiness }: {
 }) {
   const facts = caseFacts(detail);
   const action = nextCaseAction(detail.submission, facts.open.length);
+  const blockers = facts.current ? detail.checks.filter(check => !check.passed && check.severity === "BLOCKING").length : 0;
   const priorityIssue = facts.current && !facts.routed ? facts.open[0] : undefined;
   const stages = [
     { name: "Submission", state: "Recorded", done: true },
@@ -18,6 +19,7 @@ export function CaseSummary({ detail, onReview, onReadiness }: {
   ];
   return <section className="case-brief" aria-label="Case at a glance">
     <div className="case-brief-top"><div><span className="eyebrow">CUSTOMER REQUEST</span><h2>{label(detail.submission.category)}</h2><p>Case owner: <strong>{detail.submission.owner_name}</strong> · {detail.documents.length} documents · Revision {detail.submission.revision}</p></div><span className={`brief-state ${facts.open.length ? "attention" : ""}`}>{facts.routed ? "With Operations" : facts.open.length ? "Action required" : facts.current ? "Checks recorded" : "Awaiting checks"}</span></div>
+    {blockers > 0 && !facts.routed && <p className="context-note"><strong>Cannot approve: {blockers} blocking {blockers === 1 ? "check" : "checks"}.</strong> Review the evidence and required actions below.</p>}
     <div className="case-facts">
       <div><span>Policy checks</span><strong>{facts.current && detail.checks.length ? `${facts.passed} / ${detail.checks.length} passed` : "Not confirmed"}</strong><progress aria-label="Current policy checks passed" max={Math.max(1, detail.checks.length)} value={facts.current ? facts.passed : 0} /></div>
       <div><span>Outstanding issues</span><strong>{facts.open.length}</strong><small>{facts.current ? "Recorded validation findings" : "Earlier findings; recheck required"}</small></div>

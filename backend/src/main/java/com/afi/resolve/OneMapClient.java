@@ -22,6 +22,7 @@ public class OneMapClient {
       boolean complete, Instant checkedAt) {}
   public record Verification(String status, String source, String message, String requestedAddress,
       String postalCode, Candidate selected, List<Candidate> candidates, Instant checkedAt) {}
+  private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(OneMapClient.class);
   final RestClient http;
   final String email;
   final String password;
@@ -130,6 +131,7 @@ public class OneMapClient {
           : "Select the correct building address. OneMap does not confirm your unit or occupancy.",
           postal, List.copyOf(candidates.values()), complete, clock.instant());
     } catch (Exception failure) {
+      log.warn("OneMap address search unavailable (category={})", failure.getClass().getSimpleName());
       return new Search("UNAVAILABLE", "OneMap is temporarily unavailable. Retry or submit for manual review; your address has not been rejected.",
           postal, List.of(), false, clock.instant());
     }

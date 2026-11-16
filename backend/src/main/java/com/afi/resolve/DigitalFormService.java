@@ -2,6 +2,8 @@ package com.afi.resolve;
 
 import static com.afi.resolve.Domain.*;
 
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
@@ -44,7 +46,14 @@ public class DigitalFormService {
       boolean taxDeclaration,
       boolean authorisation,
       Integer expectedRevision,
-      String sourceOfFunds) {}
+      String sourceOfFunds) {
+    Form declaredAt(OffsetDateTime timestamp) {
+      return new Form(requestType, accountType, currency, mailingAddress, email, mobile,
+          occupation, taxResidency, foreignTaxCountry, taxIdentifier,
+          timestamp.atZoneSameInstant(ZoneId.of("Asia/Singapore")).toLocalDate().toString(),
+          taxDeclaration, authorisation, expectedRevision, sourceOfFunds);
+    }
+  }
 
   public Object get(String id, Authentication a) {
     customers.owned(id, a);
@@ -85,6 +94,8 @@ public class DigitalFormService {
     }
     var existing = id == null ? null : customers.owned(id, a);
     boolean legacy = existing != null && "ACCOUNT_OPENING".equals(existing.get("category"));
+    var declaredAt = Store.now();
+    form = form.declaredAt(declaredAt);
     validateInput(form, legacy);
     if (existing != null && !form.requestType().equals(existing.get("category")))
       throw new ApiException(
@@ -119,20 +130,23 @@ public class DigitalFormService {
             "SELECT COALESCE(MAX(version),0)+1 FROM customer_eforms WHERE submission_id=?",
             Integer.class,
             id);
+    var payload = s.readMap(s.json(form));
+    payload.put("declaredAt", declaredAt.toString());
     s.db.update(
         "INSERT INTO customer_eforms VALUES(?,?,?,?,?,?,?)",
         s.id("EFORM"),
         id,
         version,
-        s.json(form),
+        s.json(payload),
         s.json(profile),
         a.getName(),
-        Store.now());
+        declaredAt);
     var common = new LinkedHashMap<String, String>();
     common.put("customer_name", (String) customer.get("customer_name"));
     common.put("customer_reference", (String) customer.get("customer_reference"));
     common.put("identity_number", (String) profile.get("identity_number"));
     common.put("request_type", form.requestType());
+    common.put("declaration_timestamp", declaredAt.toString());
     if (!legacy) {
       if (Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(form.requestType()))
         common.put("mailing_address", trim(form.mailingAddress()));
@@ -202,7 +216,9 @@ public class DigitalFormService {
             "profileSource",
             "SYNTHETIC_DEMO_NOT_SINGPASS",
             "authorisation",
-            true));
+            true,
+            "declaredAt",
+            declaredAt.toString()));
     documents.validate(id, a);
     notifications.publish(
         id,

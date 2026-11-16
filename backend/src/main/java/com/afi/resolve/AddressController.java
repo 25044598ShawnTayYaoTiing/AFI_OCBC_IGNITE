@@ -11,7 +11,8 @@ import org.springframework.web.bind.annotation.*;
 public class AddressController {
   final AddressChangeService changes;
   final OneMapClient oneMap;
-  public AddressController(AddressChangeService changes, OneMapClient oneMap) { this.changes = changes; this.oneMap = oneMap; }
+  final CustomerService customers;
+  public AddressController(AddressChangeService changes, OneMapClient oneMap, CustomerService customers) { this.changes = changes; this.oneMap = oneMap; this.customers = customers; }
 
   @GetMapping("/customer/addresses")
   @PreAuthorize("hasRole('CUSTOMER')")
@@ -21,7 +22,7 @@ public class AddressController {
   @GetMapping("/customer/addresses/search")
   @PreAuthorize("hasRole('CUSTOMER')")
   public ResponseEntity<Object> search(@RequestParam String postalCode, Authentication actor) {
-    changes.customers.customer(actor, false);
+    customers.customer(actor, false);
     return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(oneMap.search(postalCode));
   }
   @PostMapping("/customer/address-changes")

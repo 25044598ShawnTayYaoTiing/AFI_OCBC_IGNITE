@@ -655,6 +655,7 @@ public class DocumentService {
             || f.path("page").asInt() > 30) throw new IllegalArgumentException();
       return node;
     } catch (RestClientResponseException e) {
+      org.slf4j.LoggerFactory.getLogger(DocumentService.class).warn("Document extraction service returned HTTP {}", e.getStatusCode().value());
       String code = "";
       try {
         code = s.json.readTree(e.getResponseBodyAsString()).path("code").asText();
@@ -701,6 +702,7 @@ public class DocumentService {
                     + " authentication and provider status, then retry. No document was accepted.");
       };
     } catch (RestClientException e) {
+      org.slf4j.LoggerFactory.getLogger(DocumentService.class).warn("Document extraction service unavailable (category={})", e.getClass().getSimpleName());
       throw new ApiException(
           503,
           "AI_SERVICE_ERROR",
