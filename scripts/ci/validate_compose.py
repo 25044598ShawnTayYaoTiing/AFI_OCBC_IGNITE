@@ -30,6 +30,9 @@ assert all(not services[name].get('ports') for name in ('backend', 'ai-service',
 assert {str(p['published']) for p in services['https']['ports']} == {'80', '443'}
 assert services['backend']['environment']['DOCUMENT_STORAGE_PROVIDER'] == 's3'
 assert services['backend']['environment']['REVIEWER_PASSWORD'] == env['AWS_REVIEWER_PASSWORD']
+assert {'SMTP_ENABLED', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_USERNAME', 'SMTP_PASSWORD',
+        'SMTP_FROM', 'SMTP_TEST_RECIPIENTS', 'SMTP_STARTTLS', 'CUSTOMER_PORTAL_URL'} <= set(
+            services['backend']['environment'])
 assert 'sslmode=verify-full' in services['backend']['environment']['DB_URL']
 assert 'postgres' not in services  # Disabled local-only profile is excluded from this AWS render.
 assert 'postgres' not in services['backend'].get('depends_on', {})
