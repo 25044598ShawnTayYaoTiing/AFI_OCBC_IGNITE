@@ -44,6 +44,8 @@ management:
 afi:
   onemap-email: ${ONEMAP_EMAIL:}
   onemap-password: ${ONEMAP_PASSWORD:}
+  onemap-api-email: ${ONEMAP_API_EMAIL:}
+  onemap-api-password: ${ONEMAP_API_PASSWORD:}
   synthetic-customers-enabled: ${SYNTHETIC_CUSTOMERS_ENABLED:false}
   synthetic-customers-password: ${SYNTHETIC_CUSTOMERS_PASSWORD:}
   mail-enabled: ${SMTP_ENABLED:false}

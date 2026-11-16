@@ -33,6 +33,9 @@ services:
   backend:
     build: ./backend
     env_file:
+      # Load either OneMap naming convention; private local overrides remain supported.
+      - path: .env
+        required: false
       - path: .local/onemap.env
         required: false
     environment:

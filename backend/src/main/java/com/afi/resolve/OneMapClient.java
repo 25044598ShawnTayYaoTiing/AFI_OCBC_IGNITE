@@ -37,8 +37,18 @@ public class OneMapClient {
 
   @org.springframework.beans.factory.annotation.Autowired
   public OneMapClient(@Value("${afi.onemap-email:}") String email,
-      @Value("${afi.onemap-password:}") String password) {
+      @Value("${afi.onemap-password:}") String password,
+      @Value("${afi.onemap-api-email:}") String apiEmail,
+      @Value("${afi.onemap-api-password:}") String apiPassword) {
+    this(client(), configuredValue(email, apiEmail), configuredValue(password, apiPassword), Clock.systemUTC());
+  }
+
+  public OneMapClient(String email, String password) {
     this(client(), email, password, Clock.systemUTC());
+  }
+
+  static String configuredValue(String primary, String alias) {
+    return primary != null && !primary.isBlank() ? primary : Objects.toString(alias, "");
   }
 
   OneMapClient(RestClient http, String email, String password, Clock clock) {

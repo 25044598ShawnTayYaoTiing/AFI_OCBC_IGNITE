@@ -40,3 +40,19 @@ if demo.returncode:
     raise SystemExit('Demo Compose validation failed; rendered environment was not printed.')
 assert json.loads(demo.stdout)['services']['backend']['environment']['CUSTOMER_DEMO_RETRY_ENABLED'] == 'true'
 print('PASS: Compose merge, private application ports, HTTPS edge, RDS TLS and S3 configuration.')
+
+# Use public placeholders only; never print rendered backend environment values.
+for primary, alias, expected in (("", "alias-test", "alias-test"),
+                                  ("primary-test", "alias-test", "primary-test"),
+                                  ("primary-test", "", "primary-test")):
+    variant = env.copy()
+    variant.update(ONEMAP_EMAIL=primary, ONEMAP_PASSWORD=primary,
+                   ONEMAP_API_EMAIL=alias, ONEMAP_API_PASSWORD=alias)
+    rendered = subprocess.run(command + ['config', '--format', 'json'], cwd=root,
+                              env=variant, capture_output=True, text=True)
+    if rendered.returncode:
+        raise SystemExit('OneMap Compose compatibility validation failed; values not printed.')
+    settings = json.loads(rendered.stdout)['services']['backend']['environment']
+    assert settings['ONEMAP_EMAIL'] == expected
+    assert settings['ONEMAP_PASSWORD'] == expected
+print('PASS: OneMap canonical values, API aliases, and empty-value precedence.')

@@ -69,3 +69,18 @@ The backend compiles under Java 21. Twenty-four focused Java tests pass, includi
 Both frontend production builds and browser checks use synthetic API fixtures. The browser checks cover new postal-code search, selection, separate unit entry, unchanged registered records before approval, manual review, staff approval gating and mobile layout. The opt-in `OneMapLiveSmokeTest` uses only OneMap's public sample postal code; it remains an external activation check and currently reports the authentication limitation above.
 
 Nothing was pushed to main or deployed to AWS.
+
+
+## Environment variable compatibility
+
+The backend accepts `ONEMAP_EMAIL` / `ONEMAP_PASSWORD` and the aliases
+`ONEMAP_API_EMAIL` / `ONEMAP_API_PASSWORD`. For each field, a non-empty canonical
+value takes precedence; an empty canonical value falls back to the API alias.
+Spring Boot applies the same non-blank selection for direct launches. Password
+contents are preserved, not trimmed. AWS Compose uses nested `:-` interpolation
+so existing empty canonical entries do not hide a configured alias.
+Local Compose reads the private `.env` and optional `.local/onemap.env`; the local
+launcher allowlists both conventions. Never commit either credential file.
+A backend container recreation is required after changing host configuration.
+Recognising credentials does not establish validity: token issuance and a real
+search must still succeed before claiming live verification.
