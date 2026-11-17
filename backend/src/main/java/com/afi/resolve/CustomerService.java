@@ -161,12 +161,40 @@ public class CustomerService {
     return value == null ? null : CustomerSessions.instant(value);
   }
 
+  static boolean cancellable(Map<String, Object> c) {
+    return c.get("customer_id") != null && c.get("routed_at") == null
+        && Set.of("DRAFT", "PENDING_VALIDATION", "CORRECTION_REQUIRED", "HUMAN_REVIEW",
+            "RESOLUTION_MANAGEMENT", "ON_HOLD", "READY").contains(c.get("status"));
+  }
+
+  @Transactional
+  public Object cancel(String id, Integer revision, Authentication actor) {
+    customer(actor, true);
+    var c = documents.access(id, actor, true);
+    // Ownership is checked independently; staff credentials cannot cancel a customer's request.
+    owned(id, actor);
+    if ("CANCELLED".equals(c.get("status"))) return detail(id, actor);
+    if (!cancellable(c)) throw new ApiException(409, "NOT_CANCELLABLE",
+        "This request has already been sent for processing and cannot be cancelled here.");
+    if (revision == null || !Objects.equals(c.get("revision"), revision))
+      throw new ApiException(409, "STALE_REQUEST", "The request changed. Refresh it before confirming cancellation.");
+    s.db.update("UPDATE document_submissions SET status='CANCELLED',revision=revision+1,approved_revision=NULL WHERE id=?", id);
+    s.db.update("UPDATE correction_tasks SET status='CANCELLED',resolved_at=? WHERE submission_id=? AND status NOT IN ('RESOLVED','CANCELLED')", Store.now(), id);
+    s.db.update("UPDATE document_exceptions SET status='CANCELLED',resolved_at=?,resolution_method='REQUEST_CANCELLED' WHERE submission_id=? AND status='OPEN'", Store.now(), id);
+    s.db.update("UPDATE customer_email_outbox SET status='SUPERSEDED',updated_at=? WHERE status='PENDING' AND notification_id IN (SELECT id FROM customer_notifications WHERE submission_id=?)", Store.now(), id);
+    documents.event(id, actor, "CUSTOMER_CANCELLED", map("previousStatus", c.get("status"), "revision", revision));
+    notifications.publish(id, "REQUEST_CANCELLED", "customer-cancelled", "Your request has been cancelled. Its documents and history are retained; no further processing will take place for this request.");
+    return detail(id, actor);
+  }
+
   Map<String, Object> summary(Map<String, Object> c) {
     return map(
         "id",
         c.get("id"),
         "caseReference",
         c.get("id"),
+        "canCancel", cancellable(c),
+        "cancellationReason", "CANCELLED".equals(c.get("status")) ? "This request is already cancelled." : cancellable(c) ? "You can cancel until the request is sent to Operations for processing." : "This request has been sent for processing and can no longer be cancelled here.",
         "status",
         "ON_HOLD".equals(c.get("status")) ? "RESOLUTION_MANAGEMENT" : c.get("status"),
         "requestType",
@@ -263,7 +291,8 @@ public class CustomerService {
 
   @SuppressWarnings("unchecked")
   public Object corrections(String id, Authentication a) {
-    owned(id, a);
+    var ownedCase = owned(id, a);
+    if ("CANCELLED".equals(ownedCase.get("status"))) return List.of();
     var available = new HashSet<Object>();
     documents.documents(id, false).forEach(d -> available.add(d.get("id")));
     return s

@@ -86,6 +86,28 @@ public class CustomerController {
     return customers.detail(id, a);
   }
 
+  public record Cancellation(Integer expectedRevision) {}
+
+  @PostMapping("/submissions/{id}/cancel")
+  @PreAuthorize("hasRole('CUSTOMER')")
+  public Object cancel(@PathVariable String id, @RequestBody Cancellation request, Authentication a) {
+    return customers.cancel(id, request.expectedRevision(), a);
+  }
+
+  @PostMapping(value = "/eforms/with-documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+  public Object createFormWithDocuments(@RequestHeader("Idempotency-Key") String key,
+      @RequestPart("form") DigitalFormService.Form form,
+      @RequestParam("files") List<MultipartFile> files, Authentication a) throws Exception {
+    return forms.submitWithDocuments(null, key, form, files, a);
+  }
+
+  @PostMapping(value = "/submissions/{id}/eform/with-documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+  public Object updateFormWithDocuments(@PathVariable String id, @RequestHeader("Idempotency-Key") String key,
+      @RequestPart("form") DigitalFormService.Form form,
+      @RequestParam("files") List<MultipartFile> files, Authentication a) throws Exception {
+    return forms.submitWithDocuments(id, key, form, files, a);
+  }
+
   @GetMapping("/submissions/{id}/corrections")
   public Object corrections(@PathVariable String id, Authentication a) {
     return customers.corrections(id, a);

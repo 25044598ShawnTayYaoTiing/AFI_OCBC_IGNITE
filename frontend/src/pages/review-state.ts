@@ -18,55 +18,64 @@ export function reviewState(detail: Detail) {
       )
     : null;
   const routed = c.status === "OPERATIONS";
+  const cancelled = c.status === "CANCELLED";
   const held = !!c.risk_hold || c.status === "ON_HOLD";
   const eligible =
     !routed &&
+    !cancelled &&
     !held &&
     current &&
     failed.length === 0 &&
     open.length === 0 &&
     ["READY", "RESOLUTION_MANAGEMENT"].includes(c.status);
-  const waiting = detail.tasks.filter((task) => task.status !== "RESOLVED");
+  const waiting = detail.tasks.filter(
+    (task) => !["RESOLVED", "CANCELLED"].includes(task.status),
+  );
   const customerTasks = waiting.filter(
     (task) => task.assigned_role === "CUSTOMER",
   );
   const authorisation = waiting.some(
     (task) => task.status === "AWAITING_RESOLVER_AUTHORIZATION",
   );
-  const title = routed
-    ? "Handed over to Operations"
-    : held
-      ? "On hold — reviewer investigation required"
-      : !current
-        ? "Recheck this revision before deciding"
-        : blocking
-          ? `Cannot approve — ${blocking} ${blocking === 1 ? "issue requires" : "issues require"} attention`
-          : open.length
-            ? "Review outstanding findings before deciding"
-            : eligible
-              ? "Ready for reviewer approval"
-              : "Review the recorded validation outcome";
-  const next = routed
-    ? "The handover is recorded. Banking fulfilment takes place outside this workspace."
-    : held
-      ? "Review the evidence, resolve critical findings, then record an explicit hold-clearance decision."
-      : !current
-        ? "Run Recheck package to obtain current policy results. Earlier findings may be out of date."
-        : authorisation
-          ? "Review the findings and authorise customer correction when appropriate."
-          : customerTasks.length
-            ? "The customer has outstanding correction tasks. Review the requirements and supporting evidence."
+  const title = cancelled
+    ? "Request cancelled by the customer"
+    : routed
+      ? "Handed over to Operations"
+      : held
+        ? "On hold — reviewer investigation required"
+        : !current
+          ? "Recheck this revision before deciding"
+          : blocking
+            ? `Cannot approve — ${blocking} ${blocking === 1 ? "issue requires" : "issues require"} attention`
             : open.length
-              ? open[0].corrective_action
+              ? "Review outstanding findings before deciding"
               : eligible
-                ? "Review the evidence, then confirm approval and handover for this revision."
-                : "Inspect readiness for the latest backend decision.";
+                ? "Ready for reviewer approval"
+                : "Review the recorded validation outcome";
+  const next = cancelled
+    ? "This request is closed. Documents and decision history are retained; no further action is required."
+    : routed
+      ? "The handover is recorded. Banking fulfilment takes place outside this workspace."
+      : held
+        ? "Review the evidence, resolve critical findings, then record an explicit hold-clearance decision."
+        : !current
+          ? "Run Recheck package to obtain current policy results. Earlier findings may be out of date."
+          : authorisation
+            ? "Review the findings and authorise customer correction when appropriate."
+            : customerTasks.length
+              ? "The customer has outstanding correction tasks. Review the requirements and supporting evidence."
+              : open.length
+                ? open[0].corrective_action
+                : eligible
+                  ? "Review the evidence, then confirm approval and handover for this revision."
+                  : "Inspect readiness for the latest backend decision.";
   return {
     current,
     open,
     failed,
     blocking,
     routed,
+    cancelled,
     held,
     eligible,
     customerTasks,

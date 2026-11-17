@@ -7,6 +7,8 @@ import { Disclosure } from "../ui";
 import { issueCategory, issueGuidance, issueTitle } from "./DocumentFindings";
 
 export function issueAction(issue: Finding) {
+  if (issue.status === "CANCELLED")
+    return "The customer cancelled this request. Original evidence and findings are retained in history.";
   if (issue.status !== "RESOLVED") return issue.corrective_action;
   return issue.resolution_method === "AUTOMATIC_VERIFIED_ATTACHMENT"
     ? "The authorised supporting document was attached and verified."
@@ -99,7 +101,7 @@ export function DocumentIssueReview({
       !item.evidence.length ||
       item.evidence.some((field) => field.document_id === doc.id),
   );
-  const locked = detail.submission.status === "OPERATIONS";
+  const locked = ["OPERATIONS", "CANCELLED"].includes(detail.submission.status);
   if (!issue)
     return (
       <Empty

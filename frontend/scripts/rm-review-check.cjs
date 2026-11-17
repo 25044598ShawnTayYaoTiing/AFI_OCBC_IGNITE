@@ -19,6 +19,11 @@ fs.mkdirSync(out, { recursive: true });
   let rejectApproval = false;
   let roles = ["REVIEWER", "OPERATOR"];
   const data = structuredClone(fixtures);
+  data.cancelled = structuredClone(data.missing);
+  data.cancelled.submission.id = "DOC-CANCELLED-FIXTURE";
+  data.cancelled.submission.status = "CANCELLED";
+  data.cancelled.exceptions.forEach(issue => { issue.status = "CANCELLED"; });
+  data.cancelled.tasks.forEach(task => { task.status = "CANCELLED"; });
   data.medium = structuredClone(data.missing);
   data.medium.submission.id = "DOC-MEDIUM-BROWSER-FIXTURE";
   data.medium.submission.status = "RESOLUTION_MANAGEMENT";
@@ -302,6 +307,10 @@ fs.mkdirSync(out, { recursive: true });
       .getByText("Sent to Operations", { exact: true })
       .first()
       .waitFor();
+    await open("cancelled");
+    await page.getByRole("heading", { name: "Request cancelled by the customer", exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Recheck package", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Approve for Operations", exact: true }).count(), 0);
     await open("ready");
     const approve = page.getByRole("button", {
       name: "Approve for Operations",

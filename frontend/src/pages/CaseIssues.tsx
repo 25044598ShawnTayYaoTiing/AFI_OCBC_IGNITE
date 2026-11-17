@@ -61,11 +61,13 @@ export function CaseIssues({
     (field) => field.method !== "SYNTHETIC_CUSTOMER_PROFILE",
   );
   const owner =
-    issue?.status === "RESOLVED"
-      ? "Completed"
-      : task
-        ? label(task.assigned_role)
-        : "Case owner to coordinate";
+    issue?.status === "CANCELLED"
+      ? "Request cancelled"
+      : issue?.status === "RESOLVED"
+        ? "Completed"
+        : task
+          ? label(task.assigned_role)
+          : "Case owner to coordinate";
   return (
     <section className="case-issues" aria-label="Issues requiring attention">
       <div className="workspace-section-heading">
@@ -83,7 +85,7 @@ export function CaseIssues({
             checked={showResolved}
             onChange={(event) => setShowResolved(event.target.checked)}
           />
-          Include resolved
+          Include closed
         </label>
       </div>
       {!issue ? (
@@ -129,11 +131,13 @@ export function CaseIssues({
                   <span>
                     <strong>{issueTitle(first)}</strong>
                     <small>
-                      {first.status === "RESOLVED"
-                        ? "Resolved and verified"
-                        : assigned
-                          ? label(assigned.assigned_role)
-                          : "Case owner"}
+                      {first.status === "CANCELLED"
+                        ? "Cancelled with request"
+                        : first.status === "RESOLVED"
+                          ? "Resolved and verified"
+                          : assigned
+                            ? label(assigned.assigned_role)
+                            : "Case owner"}
                       {item.items.length > 1
                         ? ` · ${item.items.length} checks`
                         : ""}
@@ -148,9 +152,11 @@ export function CaseIssues({
               <span
                 className={`issue-state ${issue.status === "RESOLVED" ? "resolved" : ""}`}
               >
-                {issue.status === "RESOLVED"
-                  ? "Resolved and verified"
-                  : "Unresolved"}
+                {issue.status === "CANCELLED"
+                  ? "Cancelled with request"
+                  : issue.status === "RESOLVED"
+                    ? "Resolved and verified"
+                    : "Unresolved"}
               </span>
               <span className="issue-owner">Next: {owner}</span>
             </div>
@@ -159,9 +165,11 @@ export function CaseIssues({
             <div className="issue-requirement">
               <h4>Required next action</h4>
               <p>
-                {issue.status === "RESOLVED"
-                  ? "The recorded issue has been resolved. Review its history for the completed action."
-                  : issue.corrective_action}
+                {issue.status === "CANCELLED"
+                  ? "No further action: the customer cancelled this request. Original findings are retained for history."
+                  : issue.status === "RESOLVED"
+                    ? "The recorded issue has been resolved. Review its history for the completed action."
+                    : issue.corrective_action}
               </p>
             </div>
             <div className="issue-value-comparison">

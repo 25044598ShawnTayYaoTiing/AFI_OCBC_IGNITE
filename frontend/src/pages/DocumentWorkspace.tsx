@@ -103,7 +103,9 @@ export function DocumentWorkspace() {
   );
   const relatedIssues = chosenGroup?.items || (chosen ? [chosen] : []);
   const selectedEvidence = relatedIssues.flatMap((item) => item.evidence);
-  const locked = data?.submission.status === "OPERATIONS";
+  const locked = ["OPERATIONS", "CANCELLED"].includes(
+    data?.submission.status || "",
+  );
   async function run(action: string, note?: string): Promise<boolean> {
     if (mutation.current) return false;
     mutation.current = true;

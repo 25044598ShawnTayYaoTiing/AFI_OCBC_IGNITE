@@ -262,6 +262,8 @@ public class DocumentService {
   }
 
   void editable(Map<String, Object> c) {
+    if ("CANCELLED".equals(c.get("status")))
+      throw new ApiException(409, "REQUEST_CANCELLED", "This request is cancelled. Create a new request for further changes.");
     if ("OPERATIONS".equals(c.get("status")))
       throw new ApiException(
           409,
@@ -1494,6 +1496,7 @@ public class DocumentService {
 
   void validateInternal(String id, Authentication a) {
     var c = access(id, a, true);
+    if ("CANCELLED".equals(c.get("status"))) editable(c);
     if (addressVerifier != null) addressVerifier.refresh(documents(id, false));
     var checks = evaluate(id);
     var failed = new HashSet<String>();
@@ -2027,6 +2030,7 @@ public class DocumentService {
       throw new ApiException(409, "NOT_READY", "Blocking intake checks remain");
     var c = access(id, a, true);
     if ("OPERATIONS".equals(c.get("status"))) return;
+    editable(c);
     if (!Objects.equals(c.get("revision"), c.get("validated_revision"))
         || unresolvedBlocking(id) > 0)
       throw new ApiException(
@@ -2183,7 +2187,7 @@ public class DocumentService {
         "UPDATE validation_rules SET status='ACTIVE',approved_by=? WHERE id=?", a.getName(), id);
     s.db.update(
         "UPDATE document_submissions SET validated_revision=NULL,status='PENDING_VALIDATION' WHERE"
-            + " status<>'OPERATIONS'");
+            + " status NOT IN ('OPERATIONS','CANCELLED')");
     event(null, a, "RULE_APPROVED", map("ruleId", id, "ruleVersion", rule.get("version")));
     return rules();
   }

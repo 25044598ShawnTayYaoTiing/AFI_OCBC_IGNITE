@@ -49,6 +49,7 @@ export function CaseDecisionPanel({
     reviewer &&
     state.current &&
     !state.routed &&
+    !state.cancelled &&
     (action === "approve"
       ? state.eligible
       : action === "clear-hold"
@@ -79,26 +80,36 @@ export function CaseDecisionPanel({
         className={`decision-status ${state.routed || state.eligible ? "positive" : "attention"}`}
       >
         <strong>
-          {state.routed
-            ? "Handover recorded"
-            : state.held
-              ? "Investigation hold"
-              : state.eligible
-                ? "Eligible for approval"
-                : "Approval blocked"}
+          {state.cancelled
+            ? "Request cancelled"
+            : state.routed
+              ? "Handover recorded"
+              : state.held
+                ? "Investigation hold"
+                : state.eligible
+                  ? "Eligible for approval"
+                  : "Approval blocked"}
         </strong>
         <p>
-          {state.routed
-            ? "This revision is closed to changes."
-            : state.eligible
-              ? "Confirm your review before handover."
-              : "Resolve the requirements shown in the case outcome."}
+          {state.cancelled
+            ? "The customer cancelled this request."
+            : state.routed
+              ? "This revision is closed to changes."
+              : state.eligible
+                ? "Confirm your review before handover."
+                : "Resolve the requirements shown in the case outcome."}
         </p>
       </div>
       <dl className="decision-facts">
         <div>
           <dt>Policy blockers</dt>
-          <dd>{state.blocking === null ? "Recheck needed" : state.blocking}</dd>
+          <dd>
+            {state.cancelled
+              ? "Request closed"
+              : state.blocking === null
+                ? "Recheck needed"
+                : state.blocking}
+          </dd>
         </div>
         <div>
           <dt>Customer corrections</dt>
@@ -112,7 +123,7 @@ export function CaseDecisionPanel({
           </dd>
         </div>
       </dl>
-      {!state.routed && (
+      {!state.routed && !state.cancelled && (
         <div className="decision-actions">
           {(state.held || state.authorisation) && reviewer && (
             <label className="review-note">

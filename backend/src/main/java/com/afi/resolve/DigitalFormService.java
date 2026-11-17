@@ -8,6 +8,7 @@ import java.util.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 /** Structured declarations are customer evidence, not Gemini extraction or verified bank facts. */
 @Service
@@ -70,16 +71,37 @@ public class DigitalFormService {
 
   @Transactional(rollbackFor = Exception.class)
   public Object submit(String id, String key, Form form, Authentication a) throws Exception {
+    return submitInternal(id, key, form, List.of(), a);
+  }
+
+  @Transactional(rollbackFor = Exception.class)
+  public Object submitWithDocuments(String id, String key, Form form, List<MultipartFile> files, Authentication a) throws Exception {
+    if (files == null || files.isEmpty() || files.size() > 10)
+      throw new ApiException(400, "FILE_LIMIT", "Choose 1–10 supporting PDFs.");
+    return submitInternal(id, key, form, files, a);
+  }
+
+  Object submitInternal(String id, String key, Form form, List<MultipartFile> files, Authentication a) throws Exception {
     var customer = customers.customer(a, true);
     if (key == null || !key.matches("[A-Za-z0-9_-]{8,100}"))
       throw new ApiException(
           400,
           "INVALID_KEY",
           "Supply a unique Idempotency-Key of 8–100 letters, digits, hyphens or underscores");
-    String operation = id == null ? "/eforms" : "/submissions/" + id + "/eform";
+    String operation = (id == null ? "/eforms" : "/submissions/" + id + "/eform") + (files.isEmpty() ? "" : "/with-documents");
     if (operation.length() > 220)
       throw new ApiException(400, "INVALID_REQUEST", "Invalid submission identifier");
-    String fingerprint = CustomerSessions.hash(s.json(form));
+    var fileHashes = new ArrayList<Object>();
+    long total = 0;
+    for (var file : files) {
+      String name = file.getOriginalFilename();
+      total += file.getSize();
+      if (file.isEmpty() || file.getSize() > 10 * 1024 * 1024 || total > 100L * 1024 * 1024
+          || name == null || name.length() > 200 || !name.toLowerCase(Locale.ROOT).endsWith(".pdf"))
+        throw new ApiException(400, "INVALID_PDF", "Choose nonempty PDFs up to 10 MB each and 100 MB combined.");
+      fileHashes.add(map("name", name, "sha256", HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(file.getBytes()))));
+    }
+    String fingerprint = CustomerSessions.hash(files.isEmpty() ? s.json(form) : s.json(map("form", form, "files", fileHashes)));
     var previous =
         s.db.queryForList(
             "SELECT * FROM customer_upload_requests WHERE customer_id=? AND request_key=?",
@@ -219,7 +241,8 @@ public class DigitalFormService {
             true,
             "declaredAt",
             declaredAt.toString()));
-    documents.validate(id, a);
+    if (files.isEmpty()) documents.validate(id, a);
+    else documents.upload(id, files, null, a);
     notifications.publish(
         id,
         initial ? "SUBMISSION_RECEIVED" : "CORRECTION_RECEIVED",

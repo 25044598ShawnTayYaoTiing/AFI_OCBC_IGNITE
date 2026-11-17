@@ -979,4 +979,62 @@ class DigitalFormIntegrationTest {
                             "A model recommendation cannot clear the integrity mismatch"))))
         .andExpect(status().isConflict());
   }
+
+  @Test
+  void cancellationIsOwnedAuditedIdempotentAndTerminal() throws Exception {
+    var request = form(); request.put("requestType", "ADDITIONAL_ACCOUNT");
+    var initial = json(submit("/api/customer/eforms", UUID.randomUUID().toString(), request).andExpect(status().isOk()).andReturn());
+    String caseId = id(initial); int revision = initial.path("submission").path("revision").asInt();
+    assertThat(initial.path("submission").path("canCancel").asBoolean()).isTrue();
+    submit("/api/customer/submissions/" + caseId + "/cancel", "unused-cancel-key", map("expectedRevision", revision - 1)).andExpect(status().isConflict());
+    var cancelled = json(submit("/api/customer/submissions/" + caseId + "/cancel", "unused-cancel-key", map("expectedRevision", revision)).andExpect(status().isOk()).andReturn());
+    assertThat(cancelled.path("submission").path("status").asText()).isEqualTo("CANCELLED");
+    assertThat(cancelled.path("submission").path("canCancel").asBoolean()).isFalse();
+    assertThat(cancelled.path("documents").size()).isEqualTo(initial.path("documents").size());
+    assertThat(cancelled.path("corrections").size()).isZero();
+    var replay = json(submit("/api/customer/submissions/" + caseId + "/cancel", "unused-cancel-key", map("expectedRevision", revision)).andExpect(status().isOk()).andReturn());
+    assertThat(replay.path("submission").path("revision").asInt()).isEqualTo(revision + 1);
+    for (String action : List.of("approve", "validate", "route", "escalate"))
+      mvc.perform(post("/api/documents/submissions/" + caseId + "/" + action).with(httpBasic("reviewer", "reviewer-demo")).contentType("application/json").content(s.json(map("revision", revision + 1)))).andExpect(status().isConflict());
+    request.put("expectedRevision", revision + 1);
+    submit("/api/customer/submissions/" + caseId + "/eform", UUID.randomUUID().toString(), request).andExpect(status().isConflict());
+    mvc.perform(multipart("/api/customer/submissions/" + caseId + "/documents").file(new MockMultipartFile("files", "support.pdf", "application/pdf", "%PDF-cancelled".getBytes(StandardCharsets.US_ASCII))).header("Authorization", "Bearer " + token).header("Idempotency-Key", UUID.randomUUID().toString())).andExpect(status().isConflict());
+    var staff = json(mvc.perform(get("/api/documents/submissions/" + caseId).with(httpBasic("reviewer", "reviewer-demo"))).andExpect(status().isOk()).andReturn());
+    assertThat(staff.path("audit").toString()).contains("CUSTOMER_CANCELLED");
+    assertThat(staff.path("routing").size()).isZero();
+    customer();
+    submit("/api/customer/submissions/" + caseId + "/cancel", "foreign-cancel-key", map("expectedRevision", revision + 1)).andExpect(status().isNotFound());
+  }
+
+  @Test
+  void customerCannotCancelAnOperationsHandover() throws Exception {
+    var request = form(); request.put("requestType", "ADDITIONAL_ACCOUNT");
+    var initial = json(submit("/api/customer/eforms", UUID.randomUUID().toString(), request).andExpect(status().isOk()).andReturn());
+    int revision = initial.path("submission").path("revision").asInt();
+    approve(id(initial), revision);
+    submit("/api/customer/submissions/" + id(initial) + "/cancel", "operations-cancel-key", map("expectedRevision", revision)).andExpect(status().isConflict());
+    mvc.perform(post("/api/customer/submissions/" + id(initial) + "/cancel").with(httpBasic("reviewer", "reviewer-demo")).contentType("application/json").content(s.json(map("expectedRevision", revision)))).andExpect(status().isUnauthorized());
+  }
+
+  @Test
+  void supportingDocumentsSubmitWithDeclarationAndReplayWithoutDuplicates() throws Exception {
+    doAnswer(call -> {
+      var node = s.json.createObjectNode(); node.put("document_id", (String) call.getArgument(1));
+      node.put("document_type", "SUPPORTING_DOCUMENT"); node.put("method", "DETERMINISTIC_FALLBACK"); node.put("requires_review", false);
+      var fields = node.putArray("fields");
+      Map.of("customer_reference", reference, "mailing_address", "2 Fictional Road").forEach((key,value) -> {var field=fields.addObject();field.put("field",key);field.put("value",value);field.put("page",1);field.put("supporting_text",key+": "+value);});
+      return node;
+    }).when(documents).extraction(any(byte[].class), anyString());
+    var request = form(); request.put("requestType", "ADDRESS_CHANGE"); request.put("mailingAddress", "2 Fictional Road");
+    String key=UUID.randomUUID().toString();
+    java.util.function.Supplier<org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder> multipartRequest = () -> multipart("/api/customer/eforms/with-documents").file(new MockMultipartFile("form", "form.json", "application/json", s.json(request).getBytes(StandardCharsets.UTF_8))).file(new MockMultipartFile("files", "utility-bill.pdf", "application/pdf", "%PDF-address-evidence".getBytes(StandardCharsets.US_ASCII)));
+    var initial=json(mvc.perform(multipartRequest.get().header("Authorization","Bearer "+token).header("Idempotency-Key",key)).andExpect(status().isOk()).andReturn());
+    assertThat(initial.path("documents").size()).isEqualTo(2);
+    assertThat(initial.path("corrections").size()).isZero();
+    assertThat(initial.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
+    var replay=json(mvc.perform(multipartRequest.get().header("Authorization","Bearer "+token).header("Idempotency-Key",key)).andExpect(status().isOk()).andReturn());
+    assertThat(id(replay)).isEqualTo(id(initial));
+    assertThat(replay.path("documents").size()).isEqualTo(2);
+    mvc.perform(multipart("/api/customer/eforms/with-documents").file(new MockMultipartFile("form","form.json","application/json",s.json(request).getBytes(StandardCharsets.UTF_8))).file(new MockMultipartFile("files","utility-bill.pdf","application/pdf","%PDF-different".getBytes(StandardCharsets.US_ASCII))).header("Authorization","Bearer "+token).header("Idempotency-Key",key)).andExpect(status().isConflict());
+  }
 }

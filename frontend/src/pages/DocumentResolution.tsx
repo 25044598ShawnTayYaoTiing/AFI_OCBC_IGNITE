@@ -24,7 +24,7 @@ export function CorrectionTasks({
     <Panel
       title="Correction tasks"
       action={
-        detail.submission.status !== "OPERATIONS" && (
+        !["OPERATIONS", "CANCELLED"].includes(detail.submission.status) && (
           <button className="button secondary" onClick={onUpload}>
             Replace a document
           </button>
@@ -39,8 +39,16 @@ export function CorrectionTasks({
                 <h3>{task.description}</h3>
                 <Badge value={task.status} />
               </div>
-              {detail.exceptions.find((item) => item.id === task.exception_id) && (
-                <p className="content-label">{issueCategory(detail.exceptions.find((item) => item.id === task.exception_id)!)}</p>
+              {detail.exceptions.find(
+                (item) => item.id === task.exception_id,
+              ) && (
+                <p className="content-label">
+                  {issueCategory(
+                    detail.exceptions.find(
+                      (item) => item.id === task.exception_id,
+                    )!,
+                  )}
+                </p>
               )}
               <p>{task.corrective_action}</p>
               <div className="task-meta">
@@ -76,33 +84,190 @@ export function CorrectionTasks({
   );
 }
 
-export function InvestigationExplanation({ investigation, finding, detail, onInspect }: {
-  investigation?: Investigation; finding: Finding; detail?: Detail; onInspect?: (field: Field) => void;
+export function InvestigationExplanation({
+  investigation,
+  finding,
+  detail,
+  onInspect,
+}: {
+  investigation?: Investigation;
+  finding: Finding;
+  detail?: Detail;
+  onInspect?: (field: Field) => void;
 }) {
-  const recommendation = investigation?.recommendations.find(item => item.exception_id === finding.id);
-  const source = investigation?.source_findings?.find(item => item.exception_id === finding.id);
-  if (!investigation || !recommendation) return <p className="context-note">No investigation is recorded for this finding. The policy result above remains authoritative.</p>;
-  const stale = !!detail && (investigation.revision !== detail.submission.revision || (investigation.rule_set != null && investigation.rule_set !== detail.ruleSet));
+  const recommendation = investigation?.recommendations.find(
+    (item) => item.exception_id === finding.id,
+  );
+  const source = investigation?.source_findings?.find(
+    (item) => item.exception_id === finding.id,
+  );
+  if (!investigation || !recommendation)
+    return (
+      <p className="context-note">
+        No investigation is recorded for this finding. The policy result above
+        remains authoritative.
+      </p>
+    );
+  const stale =
+    !!detail &&
+    (investigation.revision !== detail.submission.revision ||
+      (investigation.rule_set != null &&
+        investigation.rule_set !== detail.ruleSet));
   const historical = stale || finding.status === "RESOLVED";
   const live = investigation.method === "GEMINI";
-  const cited = (source?.evidence || []).filter(e => recommendation.evidence_ids.includes(e.evidence_id));
-  const fields = [...new Set(cited.map(e => e.field))];
-  const comparisons = fields.map(field => ({ field, rows: cited.filter(e => e.field === field) })).filter(group => new Set(group.rows.map(row => row.document_id).filter(Boolean)).size > 1);
-  return <Disclosure title={live ? "Gemini investigation | advisory" : "Rule-based explanation | AI unavailable"}>
-    <div className="investigation-report">
-      <div className="provenance-line"><Badge value={investigation.method} /><span>{live ? investigation.model || "Gemini" : "No model-generated analysis"} | Revision {investigation.revision}</span></div>
-      {historical && <p className="context-note"><strong>Historical investigation.</strong> {stale ? "The package or rules changed. This explanation must not be used as current approval." : "This issue has since been resolved; the recommendation describes its earlier state."}</p>}
-      {detail && !investigation.rule_set && <p className="context-note">The rule-set snapshot was not recorded for this older investigation. Verify against the current policy checks.</p>}
-      <section><h4>Investigation result</h4><p>{recommendation.explanation}</p></section>
-      <section><h4>Evidence supplied to the investigation</h4>{cited.length ? <div className="investigation-citations">{cited.map((e, index) => {
-        const doc = detail?.documents.find(doc => doc.id === e.document_id && doc.versions.some(v => v.id === e.version_id));
-        return <article key={e.evidence_id}><strong>{label(e.field)}: {e.value || "Not confirmed"}</strong><p>{e.supporting_text || "No supporting text recorded."}</p><small>{doc?.filename || "Source record"} | {e.page ? 'page ' + e.page : "Page not recorded"}</small>{doc && onInspect && <button className="text-link" onClick={() => onInspect({ document_id: doc.id, version_id: e.version_id || doc.version_id, filename: doc.filename, field_name: e.field, field_value: e.value, page_number: e.page, supporting_text: e.supporting_text })}>View cited source {index + 1}</button>}</article>;
-      })}</div> : <p>No source citations were supplied. This does not establish that a document is missing.</p>}</section>
-      <section><h4>Cross-document comparison</h4>{comparisons.length ? comparisons.map(group => <div key={group.field}><strong>{label(group.field)}</strong><p>Recorded source values, without selecting a correct value:</p><ul>{group.rows.map(row => <li key={row.evidence_id}>{detail?.documents.find(doc => doc.id === row.document_id)?.filename || "Source document"}: <strong>{row.value || "Not confirmed"}</strong>{row.page ? ' (page ' + row.page + ')' : ''}</li>)}</ul></div>) : <p>No comparable field is cited across multiple documents for this finding. No cross-document conclusion is available.</p>}</section>
-      <section><h4>Required next step | policy</h4><p>{finding.status === "RESOLVED" ? "No further correction for this resolved finding. Check the current case status." : finding.corrective_action}</p><small>{recommendation.human_review_required ? "Human review was required by the recorded policy input." : "Any attachment still requires backend authorisation and independent verification."}</small></section>
-      <section className="context-note"><h4>Limitations</h4><p>{live ? "Gemini explains the supplied findings and citations. It does not independently approve the application or establish facts beyond those sources." : "A deterministic explanation was used; no live AI investigation was completed."} Spring Boot rules control validation, allowed actions and handover.</p>{investigation.fallback_reason && <small>Availability: {label(investigation.fallback_reason)}</small>}</section>
-    </div>
-  </Disclosure>;
+  const cited = (source?.evidence || []).filter((e) =>
+    recommendation.evidence_ids.includes(e.evidence_id),
+  );
+  const fields = [...new Set(cited.map((e) => e.field))];
+  const comparisons = fields
+    .map((field) => ({ field, rows: cited.filter((e) => e.field === field) }))
+    .filter(
+      (group) =>
+        new Set(group.rows.map((row) => row.document_id).filter(Boolean)).size >
+        1,
+    );
+  return (
+    <Disclosure
+      title={
+        live
+          ? "Gemini investigation | advisory"
+          : "Rule-based explanation | AI unavailable"
+      }
+    >
+      <div className="investigation-report">
+        <div className="provenance-line">
+          <Badge value={investigation.method} />
+          <span>
+            {live
+              ? investigation.model || "Gemini"
+              : "No model-generated analysis"}{" "}
+            | Revision {investigation.revision}
+          </span>
+        </div>
+        {historical && (
+          <p className="context-note">
+            <strong>Historical investigation.</strong>{" "}
+            {stale
+              ? "The package or rules changed. This explanation must not be used as current approval."
+              : "This issue has since been resolved; the recommendation describes its earlier state."}
+          </p>
+        )}
+        {detail && !investigation.rule_set && (
+          <p className="context-note">
+            The rule-set snapshot was not recorded for this older investigation.
+            Verify against the current policy checks.
+          </p>
+        )}
+        <section>
+          <h4>Investigation result</h4>
+          <p>{recommendation.explanation}</p>
+        </section>
+        <section>
+          <h4>Evidence supplied to the investigation</h4>
+          {cited.length ? (
+            <div className="investigation-citations">
+              {cited.map((e, index) => {
+                const doc = detail?.documents.find(
+                  (doc) =>
+                    doc.id === e.document_id &&
+                    doc.versions.some((v) => v.id === e.version_id),
+                );
+                return (
+                  <article key={e.evidence_id}>
+                    <strong>
+                      {label(e.field)}: {e.value || "Not confirmed"}
+                    </strong>
+                    <p>{e.supporting_text || "No supporting text recorded."}</p>
+                    <small>
+                      {doc?.filename || "Source record"} |{" "}
+                      {e.page ? "page " + e.page : "Page not recorded"}
+                    </small>
+                    {doc && onInspect && (
+                      <button
+                        className="text-link"
+                        onClick={() =>
+                          onInspect({
+                            document_id: doc.id,
+                            version_id: e.version_id || doc.version_id,
+                            filename: doc.filename,
+                            field_name: e.field,
+                            field_value: e.value,
+                            page_number: e.page,
+                            supporting_text: e.supporting_text,
+                          })
+                        }
+                      >
+                        View cited source {index + 1}
+                      </button>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <p>
+              No source citations were supplied. This does not establish that a
+              document is missing.
+            </p>
+          )}
+        </section>
+        <section>
+          <h4>Cross-document comparison</h4>
+          {comparisons.length ? (
+            comparisons.map((group) => (
+              <div key={group.field}>
+                <strong>{label(group.field)}</strong>
+                <p>
+                  Recorded source values, without selecting a correct value:
+                </p>
+                <ul>
+                  {group.rows.map((row) => (
+                    <li key={row.evidence_id}>
+                      {detail?.documents.find(
+                        (doc) => doc.id === row.document_id,
+                      )?.filename || "Source document"}
+                      : <strong>{row.value || "Not confirmed"}</strong>
+                      {row.page ? " (page " + row.page + ")" : ""}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))
+          ) : (
+            <p>
+              No comparable field is cited across multiple documents for this
+              finding. No cross-document conclusion is available.
+            </p>
+          )}
+        </section>
+        <section>
+          <h4>Required next step | policy</h4>
+          <p>
+            {finding.status === "RESOLVED"
+              ? "No further correction for this resolved finding. Check the current case status."
+              : finding.corrective_action}
+          </p>
+          <small>
+            {recommendation.human_review_required
+              ? "Human review was required by the recorded policy input."
+              : "Any attachment still requires backend authorisation and independent verification."}
+          </small>
+        </section>
+        <section className="context-note">
+          <h4>Limitations</h4>
+          <p>
+            {live
+              ? "Gemini explains the supplied findings and citations. It does not independently approve the application or establish facts beyond those sources."
+              : "A deterministic explanation was used; no live AI investigation was completed."}{" "}
+            Spring Boot rules control validation, allowed actions and handover.
+          </p>
+          {investigation.fallback_reason && (
+            <small>Availability: {label(investigation.fallback_reason)}</small>
+          )}
+        </section>
+      </div>
+    </Disclosure>
+  );
 }
 
 export function PreflightView({
@@ -276,7 +441,13 @@ export function PreflightView({
   );
 }
 
-export function AutonomyEvidence({ detail, onInspect }: { detail: Detail; onInspect?: (field: Field) => void }) {
+export function AutonomyEvidence({
+  detail,
+  onInspect,
+}: {
+  detail: Detail;
+  onInspect?: (field: Field) => void;
+}) {
   const investigation = detail.investigations?.[0];
   const open = detail.exceptions.filter((item) => item.status === "OPEN");
   const attempts = detail.automation || [];
@@ -429,11 +600,38 @@ function AutomationResult({
   );
 }
 
-function RecommendationView({ recommendation, investigation, detail, onInspect }: {
-  recommendation: Recommendation; investigation: Investigation; detail: Detail; onInspect?: (field: Field) => void;
+function RecommendationView({
+  recommendation,
+  investigation,
+  detail,
+  onInspect,
+}: {
+  recommendation: Recommendation;
+  investigation: Investigation;
+  detail: Detail;
+  onInspect?: (field: Field) => void;
 }) {
-  const finding = detail.exceptions.find(item => item.id === recommendation.exception_id);
-  return <article className="investigation-item"><h3>{finding?.name || label(recommendation.recommended_action)}</h3>{finding ? <InvestigationExplanation investigation={investigation} finding={finding} detail={detail} onInspect={onInspect} /> : <p className="context-note">This investigation refers to an earlier finding. Its current outcome is not available in this view.</p>}</article>;
+  const finding = detail.exceptions.find(
+    (item) => item.id === recommendation.exception_id,
+  );
+  return (
+    <article className="investigation-item">
+      <h3>{finding?.name || label(recommendation.recommended_action)}</h3>
+      {finding ? (
+        <InvestigationExplanation
+          investigation={investigation}
+          finding={finding}
+          detail={detail}
+          onInspect={onInspect}
+        />
+      ) : (
+        <p className="context-note">
+          This investigation refers to an earlier finding. Its current outcome
+          is not available in this view.
+        </p>
+      )}
+    </article>
+  );
 }
 
 export function HandoverHistory({ detail }: { detail: Detail }) {

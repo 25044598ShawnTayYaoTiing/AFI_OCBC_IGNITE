@@ -36,7 +36,7 @@ public class DocumentOrchestrator {
 
   public void run(DocumentService workflow, String id, Authentication actor) {
     var c = workflow.access(id, actor, true);
-    if ("OPERATIONS".equals(c.get("status"))) return;
+    if (Set.of("OPERATIONS", "CANCELLED").contains(c.get("status"))) return;
     if ("CONTACT_UPDATE".equals(c.get("category"))) {
       workflow.event(
           id,
@@ -97,7 +97,7 @@ public class DocumentOrchestrator {
             ex);
         s.db.update(
             "UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=? AND"
-                + " status<>'OPERATIONS'",
+                + " status NOT IN ('OPERATIONS','CANCELLED')",
             id);
         continue;
       }
@@ -213,7 +213,7 @@ public class DocumentOrchestrator {
             ex);
         s.db.update(
             "UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=? AND"
-                + " status<>'OPERATIONS'",
+                + " status NOT IN ('OPERATIONS','CANCELLED')",
             id);
       } finally {
         DataSourceUtils.releaseConnection(connection, s.db.getDataSource());
