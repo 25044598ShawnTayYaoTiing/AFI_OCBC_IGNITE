@@ -19,14 +19,23 @@ public class AiClient {
   public AiClient(
       ObjectMapper json, @Value("${afi.ai-url}") String url, @Value("${afi.ai-key}") String key) {
     this.json = json;
-    var factory =
-        new JdkClientHttpRequestFactory(
-            HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build());
-    factory.setReadTimeout(Duration.ofSeconds(35));
+    org.springframework.http.client.ClientHttpRequestFactory requestFactory;
+    try {
+      var factory =
+          new JdkClientHttpRequestFactory(
+              HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build());
+      factory.setReadTimeout(Duration.ofSeconds(35));
+      requestFactory = factory;
+    } catch (java.io.UncheckedIOException fallback) {
+      var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+      factory.setConnectTimeout(Duration.ofSeconds(4));
+      factory.setReadTimeout(Duration.ofSeconds(35));
+      requestFactory = factory;
+    }
     client =
         RestClient.builder()
             .baseUrl(url)
-            .requestFactory(factory)
+            .requestFactory(requestFactory)
             .defaultHeader("X-Service-Key", key)
             .build();
   }

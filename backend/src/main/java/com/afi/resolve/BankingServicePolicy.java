@@ -189,6 +189,7 @@ final class BankingServicePolicy {
             "customer_reference",
             "mailing_address",
             "residential_address",
+            "postal_code",
             "email",
             "mobile",
             "tax_residency",
@@ -214,6 +215,8 @@ final class BankingServicePolicy {
               List.of(
                       "identity_number",
                       "mailing_address",
+                      "residential_address",
+                      "postal_code",
                       "email",
                       "mobile",
                       "tax_residency",
@@ -232,49 +235,74 @@ final class BankingServicePolicy {
               requestDocs(docs).size() == 1
                   && same(
                       value(docs, "request_type").replace('_', ' '), category.replace('_', ' '));
-      case "SERVICE_DETAILS" ->
-          pass =
-              switch (category) {
-                case "ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE" ->
-                    !value(
-                                docs,
-                                category.equals("RESIDENTIAL_ADDRESS_CHANGE")
-                                    ? "residential_address"
-                                    : "mailing_address")
-                            .isBlank()
-                        && !same(
-                            value(
-                                docs,
-                                category.equals("RESIDENTIAL_ADDRESS_CHANGE")
-                                    ? "residential_address"
-                                    : "mailing_address"),
-                            profile.get(
-                                category.equals("RESIDENTIAL_ADDRESS_CHANGE")
-                                    ? "residential_address"
-                                    : "mailing_address"));
-                case "CONTACT_UPDATE" -> {
-                  String email = value(docs, "email"), mobile = value(docs, "mobile");
-                  boolean emailValid =
-                      email.isBlank()
-                          || email.length() <= 254
-                              && email.matches("[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+");
-                  boolean phoneValid = mobile.isBlank() || mobile.matches("[+0-9 ()-]{7,40}");
-                  yield emailValid
-                      && phoneValid
-                      && ((!email.isBlank() && !same(email, profile.get("email")))
-                          || phoneChanged(c, docs, profile));
-                }
-                case "ADDITIONAL_ACCOUNT" ->
-                    Set.of("SAVINGS", "CURRENT").contains(value(docs, "account_type"))
-                        && Set.of("SGD", "USD").contains(value(docs, "currency"));
-                case "TAX_RESIDENCY_UPDATE" ->
-                    !value(docs, "tax_residency").isBlank()
-                        && same(value(docs, "tax_declaration"), "Confirmed")
-                        && (!foreign(value(docs, "tax_residency"))
-                            || !value(docs, "foreign_tax_country").isBlank()
-                                && !value(docs, "tax_identifier").isBlank());
-                default -> false;
-              };
+      case "SERVICE_DETAILS" -> {
+        var baselineFields =
+            switch (category) {
+              case "ADDRESS_CHANGE" -> List.of("mailing_address", "postal_code");
+              case "RESIDENTIAL_ADDRESS_CHANGE" -> List.of("residential_address", "postal_code");
+              case "CONTACT_UPDATE" -> List.of("email", "mobile");
+              case "TAX_RESIDENCY_UPDATE" -> List.of("tax_residency");
+              case "ADDITIONAL_ACCOUNT" ->
+                  List.of("account_type", "currency", "existing_account_reference");
+              default -> List.<String>of();
+            };
+        for (String bf : baselineFields) {
+          String existingVal = Objects.toString(profile.get(bf), "").trim();
+          if (!existingVal.isBlank())
+            evidence.add(
+                map(
+                    "field_name",
+                    bf,
+                    "field_value",
+                    existingVal,
+                    "method",
+                    "SYNTHETIC_CUSTOMER_PROFILE",
+                    "supporting_text",
+                    "Authorised synthetic core-banking profile (not Singpass): " + existingVal));
+        }
+        pass =
+            switch (category) {
+              case "ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE" ->
+                  !value(
+                              docs,
+                              category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                                  ? "residential_address"
+                                  : "mailing_address")
+                          .isBlank()
+                      && !same(
+                          value(
+                              docs,
+                              category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                                  ? "residential_address"
+                                  : "mailing_address"),
+                          profile.get(
+                              category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                                  ? "residential_address"
+                                  : "mailing_address"));
+              case "CONTACT_UPDATE" -> {
+                String email = value(docs, "email"), mobile = value(docs, "mobile");
+                boolean emailValid =
+                    email.isBlank()
+                        || email.length() <= 254
+                            && email.matches("[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+");
+                boolean phoneValid = mobile.isBlank() || mobile.matches("[+0-9 ()-]{7,40}");
+                yield emailValid
+                    && phoneValid
+                    && ((!email.isBlank() && !same(email, profile.get("email")))
+                        || phoneChanged(c, docs, profile));
+              }
+              case "ADDITIONAL_ACCOUNT" ->
+                  Set.of("SAVINGS", "CURRENT").contains(value(docs, "account_type"))
+                      && Set.of("SGD", "USD").contains(value(docs, "currency"));
+              case "TAX_RESIDENCY_UPDATE" ->
+                  !value(docs, "tax_residency").isBlank()
+                      && same(value(docs, "tax_declaration"), "Confirmed")
+                      && (!foreign(value(docs, "tax_residency"))
+                          || !value(docs, "foreign_tax_country").isBlank()
+                              && !value(docs, "tax_identifier").isBlank());
+              default -> false;
+            };
+      }
       case "SERVICE_SUPPORT" -> {
         pass = true;
         if (supportRequired(c, docs)) {
@@ -298,21 +326,34 @@ final class BankingServicePolicy {
                     && actual.stream()
                         .allMatch(f -> same(f.get("field_value"), value(docs, field)));
           }
+          if (Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(category)
+              && !value(docs, "postal_code").isBlank()) {
+            var supportPostal = workflow.fields(support, "postal_code");
+            if (!supportPostal.isEmpty()) {
+              evidence.addAll(supportPostal);
+              pass &=
+                  supportPostal.stream()
+                      .allMatch(f -> same(f.get("field_value"), value(docs, "postal_code")));
+            }
+          }
+          String baselineKey =
+              category.equals("TAX_RESIDENCY_UPDATE")
+                  ? "tax_residency"
+                  : category.equals("RESIDENTIAL_ADDRESS_CHANGE")
+                      ? "residential_address"
+                      : "mailing_address";
           evidence.add(
               map(
                   "field_name",
                   "profile_baseline",
                   "field_value",
-                  Objects.toString(
-                      profile.get(
-                          category.equals("RESIDENTIAL_ADDRESS_CHANGE")
-                              ? "residential_address"
-                              : "mailing_address")),
+                  Objects.toString(profile.get(baselineKey)),
                   "method",
                   "SYNTHETIC_CUSTOMER_PROFILE",
                   "supporting_text",
-                  "Current synthetic mailing address; it must not be overwritten based on majority"
-                      + " agreement."));
+                  "Current synthetic "
+                      + baselineKey.replace('_', ' ')
+                      + "; it must not be overwritten based on majority agreement."));
         }
       }
       case "SERVICE_CONTACT_VERIFIED" ->

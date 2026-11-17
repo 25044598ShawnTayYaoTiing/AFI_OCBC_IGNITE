@@ -39,44 +39,123 @@ export function DocumentOverview() {
   const activity = useResource<Audit[]>(`${BASE}/audit`, 15000);
   const items = submissions.data || [];
   const m = metrics.data;
-  const attention = items.filter((item) =>
-    [
-      "CORRECTION_REQUIRED",
-      "HUMAN_REVIEW",
-      "RESOLUTION_MANAGEMENT",
-      "ON_HOLD",
-    ].includes(item.status),
+  const attention = items
+    .filter((item) =>
+      [
+        "CORRECTION_REQUIRED",
+        "HUMAN_REVIEW",
+        "RESOLUTION_MANAGEMENT",
+        "ON_HOLD",
+      ].includes(item.status),
+    )
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(!!b.risk_hold) - Number(!!a.risk_hold) ||
+        (b.risk_score ?? -1) - (a.risk_score ?? -1),
+    );
+  const readyForApproval = attention.filter(
+    (item) =>
+      item.status === "RESOLUTION_MANAGEMENT" &&
+      !item.risk_hold &&
+      (item.open_exceptions ?? 0) === 0 &&
+      item.validated_revision === item.revision,
   );
   const value = (number: number | undefined) =>
     metrics.loading || metrics.error ? "--" : (number ?? "--");
   return (
     <div className="page-stack command-home">
       <section className="command-masthead">
-        <div>
+        <div className="command-masthead-copy">
           <span className="eyebrow">
             Resolution Management · Service Operations
           </span>
           <h1>Every case. A clear way forward.</h1>
           <p>
-            Investigate cross-source evidence, resolve exceptions, and approve
-            verified Operations handovers.
+            Investigate cross-source evidence, reconcile customer declarations
+            against core-banking records, and approve verified Operations
+            handovers.
           </p>
+          <div className="vrrp-strip" aria-label="Operating principles">
+            <div className="vrrp-step">
+              <strong>01 · Validate</strong>
+              <span>Deterministic policy &amp; SHA-256 integrity checks</span>
+            </div>
+            <div className="vrrp-step">
+              <strong>02 · Reconcile</strong>
+              <span>3-way comparison across bank profile, eForm &amp; PDFs</span>
+            </div>
+            <div className="vrrp-step">
+              <strong>03 · Resolve</strong>
+              <span>Autonomous verified attachment or guided correction</span>
+            </div>
+            <div className="vrrp-step">
+              <strong>04 · Prevent</strong>
+              <span>Risk-scored holds &amp; Separation-of-Duties rules</span>
+            </div>
+          </div>
         </div>
         <Link className="command-focus" to="/exceptions">
-          <span>Focus queue</span>
+          <span>Intervention queue</span>
           <strong>
             {submissions.loading || submissions.error ? "—" : attention.length}
           </strong>
+          <small className="command-focus-sub">
+            {readyForApproval.length
+              ? `${readyForApproval.length} ready for Operations approval`
+              : "Review open findings & corrections"}
+          </small>
           <span>
-            cases need attention
+            Open priority cases
             <ArrowRight size={18} />
           </span>
         </Link>
       </section>
-      <div className="risk-counts">
-        {["LOW", "MEDIUM", "HIGH", "UNASSESSED"].map((level) => (
-          <span key={level}>
-            {level} risk{" "}
+
+      {metrics.error && (
+        <ErrorBox
+          message={metrics.error}
+          retry={() => void metrics.refresh()}
+        />
+      )}
+
+      <MetricStrip
+        items={[
+          {
+            label: "Need attention",
+            value:
+              submissions.loading || submissions.error
+                ? "--"
+                : attention.length,
+            note: `${readyForApproval.length} ready to approve · ${m?.onHold ?? 0} on hold`,
+          },
+          {
+            label: "Automatically resolved",
+            value: value(m?.automaticallyResolved),
+            note: "Verified autonomous attachments",
+          },
+          {
+            label: "With Operations",
+            value: value(m?.successfullyRouted),
+            note: "Validated & approved handovers",
+          },
+          {
+            label: "Total submissions",
+            value: value(m?.totalSubmissions),
+            note: `${m ? m.statuses.PENDING_VALIDATION || 0 : 0} pending validation`,
+          },
+        ]}
+      />
+
+      <div className="risk-counts" aria-label="Case risk distribution">
+        <span className="risk-counts-title">Risk &amp; hold posture</span>
+        {(["HIGH", "MEDIUM", "LOW", "UNASSESSED"] as const).map((level) => (
+          <Link
+            key={level}
+            to="/submissions"
+            className={`risk-pill risk-pill-${level.toLowerCase()}`}
+          >
+            <span>{level} risk</span>
             <strong>
               {metrics.loading || metrics.error
                 ? "--"
@@ -84,48 +163,23 @@ export function DocumentOverview() {
                   ? (m.riskCounts[level] ?? 0)
                   : "--"}
             </strong>
-          </span>
+          </Link>
         ))}
-        <span>
-          On hold{" "}
+        <Link to="/exceptions" className="risk-pill risk-pill-hold">
+          <span>On hold</span>
           <strong>
-            {metrics.loading || metrics.error ? "--" : (m?.onHold ?? "--")}
+            {metrics.loading || metrics.error ? "--" : (m?.onHold ?? 0)}
           </strong>
-        </span>
+        </Link>
       </div>
-      {metrics.error && (
-        <ErrorBox
-          message={metrics.error}
-          retry={() => void metrics.refresh()}
-        />
-      )}
-      <MetricStrip
-        items={[
-          { label: "Total submissions", value: value(m?.totalSubmissions) },
-          {
-            label: "Pending validation",
-            value: value(m ? m.statuses.PENDING_VALIDATION || 0 : undefined),
-          },
-          {
-            label: "Need attention",
-            value:
-              submissions.loading || submissions.error
-                ? "--"
-                : attention.length,
-          },
-          {
-            label: "Automatically resolved",
-            value: value(m?.automaticallyResolved),
-          },
-          { label: "With Operations", value: value(m?.successfullyRouted) },
-        ]}
-      />
-      <div className="content-columns">
+
+      <div className="content-columns command-primary-grid">
         <Panel
-          title="Priority cases | action required"
+          title="Priority cases · immediate action required"
+          subtitle="Sorted by hold status and exception risk score."
           action={
             <Link className="text-link" to="/exceptions">
-              Open queue
+              View all ({attention.length}) <ArrowRight size={14} />
             </Link>
           }
         >
@@ -136,23 +190,44 @@ export function DocumentOverview() {
           >
             {attention.length ? (
               <div className="record-list">
-                {attention.slice(0, 4).map((item) => (
+                {attention.slice(0, 5).map((item) => (
                   <Link
                     key={item.id}
-                    className="record-row"
-                    to={`/submissions/${item.id}?tab=exceptions`}
+                    className="record-row priority-case-row"
+                    to={`/submissions/${item.id}?tab=${(item.open_exceptions ?? 0) > 0 ? "exceptions" : "overview"}`}
                   >
-                    <div>
-                      <strong>{item.customer_name}</strong>
-                      <small>
-                        {item.customer_reference} | {item.open_exceptions ?? 0}{" "}
-                        open issues
-                      </small>
+                    <div className="priority-case-main">
+                      <div className="priority-case-header">
+                        <strong>{item.customer_name}</strong>
+                        <span className="reference">
+                          {item.customer_reference}
+                        </span>
+                        <span className="priority-service-tag">
+                          {label(item.category)}
+                        </span>
+                      </div>
                       <p className="queue-next-action">
                         {nextCaseAction(item, item.open_exceptions ?? 0)}
                       </p>
+                      <small className="priority-case-meta">
+                        {item.open_exceptions
+                          ? `${item.open_exceptions} open ${item.open_exceptions === 1 ? "finding" : "findings"}`
+                          : "0 open findings — ready for RM approval"}{" "}
+                        · Revision {item.revision}
+                      </small>
                     </div>
-                    <Badge value={item.status} />
+                    <div className="priority-case-badges">
+                      {item.risk_hold && (
+                        <Badge value="ON_HOLD" text="On hold" />
+                      )}
+                      {item.risk_level && (
+                        <Badge
+                          value={item.risk_level}
+                          text={`${item.risk_level} · ${item.risk_score ?? 0}`}
+                        />
+                      )}
+                      <Badge value={item.status} />
+                    </div>
                     <ArrowRight size={16} />
                   </Link>
                 ))}
@@ -165,30 +240,36 @@ export function DocumentOverview() {
             )}
           </ResourceState>
         </Panel>
-        <Panel title="Automation summary">
-          <div className="panel-body">
-            <dl className="summary-list">
-              <div>
-                <dt>Exceptions resolved automatically</dt>
-                <dd>{value(m?.automaticallyResolved)}</dd>
-              </div>
-              <div>
-                <dt>Human intervention required</dt>
-                <dd>{value(m?.humanInterventionRequired)}</dd>
-              </div>
-              <div>
-                <dt>Blocked or failed attempts</dt>
-                <dd>{value(m?.failedOrBlockedAutomation)}</dd>
-              </div>
-            </dl>
-            {!metrics.error && m && m.totalSubmissions > 0 && (
-              <Disclosure title="Status distribution">
-                <StatusChart metrics={m} />
-              </Disclosure>
-            )}
+        <Panel
+          title="Automation &amp; pipeline outcomes"
+          subtitle="Real-time telemetry from backend policy checks and autonomous actions."
+          action={
             <Link className="text-link" to="/reports">
               View reports <ArrowRight size={14} />
             </Link>
+          }
+        >
+          <div className="panel-body">
+            <div className="automation-kpi-grid">
+              <div className="automation-kpi-card tone-success">
+                <span>Autonomous resolutions</span>
+                <strong>{value(m?.automaticallyResolved)}</strong>
+                <small>Verified repository attachments</small>
+              </div>
+              <div className="automation-kpi-card tone-warning">
+                <span>Human review required</span>
+                <strong>{value(m?.humanInterventionRequired)}</strong>
+                <small>Customer corrections &amp; RM decisions</small>
+              </div>
+              <div className="automation-kpi-card tone-danger">
+                <span>Blocked by policy</span>
+                <strong>{value(m?.failedOrBlockedAutomation)}</strong>
+                <small>Prevented unsafe automation</small>
+              </div>
+            </div>
+            {!metrics.error && m && m.totalSubmissions > 0 && (
+              <StatusChart metrics={m} />
+            )}
           </div>
         </Panel>
       </div>
@@ -205,7 +286,7 @@ export function DocumentOverview() {
           loading={submissions.loading}
           retry={() => void submissions.refresh()}
         >
-          <SubmissionTable items={items.slice(0, 4)} />
+          <SubmissionTable items={items.slice(0, 5)} />
         </ResourceState>
       </Panel>
       <Panel
@@ -221,7 +302,7 @@ export function DocumentOverview() {
         ) : activity.loading ? (
           <Loading />
         ) : (
-          <AuditList items={(activity.data || []).slice(0, 4)} compact />
+          <AuditList items={(activity.data || []).slice(0, 5)} compact />
         )}
       </Panel>
       <p className="page-note">

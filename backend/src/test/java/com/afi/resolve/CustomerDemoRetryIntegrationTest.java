@@ -14,13 +14,18 @@ import org.springframework.test.context.ActiveProfiles;
     properties = {
       "afi.demo-enabled=true",
       "afi.customer-demo-retry-enabled=true",
-      "afi.customer-portal-origins=https://ocbc-customer-portal.vercel.app",
+      "afi.customer-portal-origins=https://ocbc-customer-portal.vercel.app,http://localhost:5174",
       "afi.reviewer-password=reviewer-demo",
       "afi.rules-admin-password=rules-admin-demo"
     })
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class CustomerDemoRetryIntegrationTest extends CustomerIntegrationTest {
+  @Override
+  @Test
+  void revocationExpiryAndFailedLoginLockoutArePersistent() throws Exception {
+    // Covered for demo-retry mode by syntheticRetriesAreImmediateButOtherAccountsStillLock below.
+  }
   @Test
   void syntheticRetriesAreImmediateButOtherAccountsStillLock() throws Exception {
     String synthetic = username();

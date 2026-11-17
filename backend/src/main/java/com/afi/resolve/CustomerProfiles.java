@@ -18,10 +18,13 @@ public class CustomerProfiles {
     boolean alex = reference.equals("SYN-ALEX-001");
     s.db.update(
         "INSERT INTO"
-            + " customer_profiles(customer_id,identity_number,residential_address,mailing_address,email,mobile,nationality,occupation,account_type,currency,tax_residency,risk_rating,provenance,updated_at)"
-            + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            + " customer_profiles(customer_id,identity_number,date_of_birth,postal_code,existing_account_reference,residential_address,mailing_address,email,mobile,nationality,occupation,account_type,currency,tax_residency,risk_rating,provenance,updated_at)"
+            + " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         id,
         "DEMO-ID-" + reference,
+        java.sql.Date.valueOf(alex ? "1988-05-14" : "1990-08-21"),
+        alex ? "048616" : "018983",
+        "SYN-ACCT-" + reference,
         alex ? "8 Fictional Avenue" : "1 Fictional Road",
         alex ? "123 Example Road" : "1 Fictional Road",
         "customer." + id.substring(9, 21).toLowerCase(Locale.ROOT) + "@example.invalid",
@@ -54,7 +57,7 @@ public class CustomerProfiles {
     var p = get(id);
     return map(
         "dateOfBirth",
-        p.get("date_of_birth"),
+        p.get("date_of_birth") == null ? null : p.get("date_of_birth").toString(),
         "postalCode",
         p.get("postal_code"),
         "existingAccountReference",
@@ -79,6 +82,8 @@ public class CustomerProfiles {
         p.get("currency"),
         "taxResidency",
         p.get("tax_residency"),
+        "riskRating",
+        p.get("risk_rating"),
         "provenance",
         p.get("provenance"));
   }

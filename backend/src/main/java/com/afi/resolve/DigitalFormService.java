@@ -37,6 +37,8 @@ public class DigitalFormService {
       String accountType,
       String currency,
       String mailingAddress,
+      String residentialAddress,
+      String postalCode,
       String email,
       String mobile,
       String occupation,
@@ -48,11 +50,61 @@ public class DigitalFormService {
       boolean authorisation,
       Integer expectedRevision,
       String sourceOfFunds) {
+    public Form(
+        String requestType,
+        String accountType,
+        String currency,
+        String mailingAddress,
+        String email,
+        String mobile,
+        String occupation,
+        String taxResidency,
+        String foreignTaxCountry,
+        String taxIdentifier,
+        String declarationDate,
+        boolean taxDeclaration,
+        boolean authorisation,
+        Integer expectedRevision,
+        String sourceOfFunds) {
+      this(
+          requestType,
+          accountType,
+          currency,
+          mailingAddress,
+          null,
+          null,
+          email,
+          mobile,
+          occupation,
+          taxResidency,
+          foreignTaxCountry,
+          taxIdentifier,
+          declarationDate,
+          taxDeclaration,
+          authorisation,
+          expectedRevision,
+          sourceOfFunds);
+    }
+
     Form declaredAt(OffsetDateTime timestamp) {
-      return new Form(requestType, accountType, currency, mailingAddress, email, mobile,
-          occupation, taxResidency, foreignTaxCountry, taxIdentifier,
+      return new Form(
+          requestType,
+          accountType,
+          currency,
+          mailingAddress,
+          residentialAddress,
+          postalCode,
+          email,
+          mobile,
+          occupation,
+          taxResidency,
+          foreignTaxCountry,
+          taxIdentifier,
           timestamp.atZoneSameInstant(ZoneId.of("Asia/Singapore")).toLocalDate().toString(),
-          taxDeclaration, authorisation, expectedRevision, sourceOfFunds);
+          taxDeclaration,
+          authorisation,
+          expectedRevision,
+          sourceOfFunds);
     }
   }
 
@@ -181,10 +233,19 @@ public class DigitalFormService {
     common.put("request_type", form.requestType());
     common.put("declaration_timestamp", declaredAt.toString());
     if (!legacy) {
-      if (Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(form.requestType()))
+      if (form.requestType().equals("ADDRESS_CHANGE"))
         common.put("mailing_address", trim(form.mailingAddress()));
-      if (form.requestType().equals("RESIDENTIAL_ADDRESS_CHANGE"))
-        common.put("residential_address", trim(form.mailingAddress()));
+      if (form.requestType().equals("RESIDENTIAL_ADDRESS_CHANGE")) {
+        String residential =
+            !trim(form.residentialAddress()).isBlank()
+                ? trim(form.residentialAddress())
+                : trim(form.mailingAddress());
+        common.put("residential_address", residential);
+      }
+      if (Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(form.requestType())) {
+        String postal = trim(form.postalCode());
+        if (!postal.isBlank()) common.put("postal_code", postal);
+      }
       if (form.requestType().equals("ADDITIONAL_ACCOUNT")) {
         common.put("account_type", trim(form.accountType()));
         common.put("currency", trim(form.currency()));
@@ -293,6 +354,8 @@ public class DigitalFormService {
     for (var value :
         List.of(
             trim(f.mailingAddress()),
+            trim(f.residentialAddress()),
+            trim(f.postalCode()),
             trim(f.email()),
             trim(f.mobile()),
             trim(f.occupation()),

@@ -46,7 +46,12 @@ public class ApiController {
         "username",
         a.getName(),
         "roles",
-        a.getAuthorities().stream().map(r -> r.getAuthority().replace("ROLE_", "")).toList(),
+        a.getAuthorities().stream()
+            .map(r -> r.getAuthority().replace("ROLE_", ""))
+            .sorted(
+                java.util.Comparator.comparing((String r) -> !"REVIEWER".equals(r))
+                    .thenComparing(java.util.Comparator.naturalOrder()))
+            .toList(),
         "demoMode",
         demo.isEnabled());
   }

@@ -56,10 +56,17 @@ public class OneMapClient {
   }
 
   static RestClient client() {
-    var factory = new JdkClientHttpRequestFactory(HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(4)).followRedirects(HttpClient.Redirect.NEVER).build());
-    factory.setReadTimeout(Duration.ofSeconds(8));
-    return RestClient.builder().baseUrl("https://www.onemap.gov.sg").requestFactory(factory).build();
+    try {
+      var factory = new JdkClientHttpRequestFactory(HttpClient.newBuilder()
+          .connectTimeout(Duration.ofSeconds(4)).followRedirects(HttpClient.Redirect.NEVER).build());
+      factory.setReadTimeout(Duration.ofSeconds(8));
+      return RestClient.builder().baseUrl("https://www.onemap.gov.sg").requestFactory(factory).build();
+    } catch (java.io.UncheckedIOException fallback) {
+      var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
+      factory.setConnectTimeout(Duration.ofSeconds(4));
+      factory.setReadTimeout(Duration.ofSeconds(8));
+      return RestClient.builder().baseUrl("https://www.onemap.gov.sg").requestFactory(factory).build();
+    }
   }
 
   private synchronized String accessToken() {
