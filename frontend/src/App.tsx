@@ -7,7 +7,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { Navigate, NavLink, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
+import {
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useNavigationType,
+} from "react-router-dom";
 import {
   Activity,
   Bell,
@@ -83,14 +90,38 @@ import { SettingsWorkspace } from "./pages/Settings";
 import { Dialog } from "./ui";
 const navigationGroups = [
   {
-    title: "",
+    title: "REVIEW WORKSPACE",
     items: [
       { to: "/", label: "Command centre", icon: LayoutDashboard },
-      { to: "/submissions", label: "Case queue", icon: Boxes },
-      { to: "/exceptions", label: "Needs attention", icon: ListFilter },
+      { to: "/submissions", label: "Review queue", icon: Boxes },
+      {
+        to: "/submissions?view=assigned",
+        label: "Assigned cases",
+        icon: ClipboardCheck,
+      },
+      {
+        to: "/submissions?view=corrections",
+        label: "Customer corrections",
+        icon: ListFilter,
+      },
+      {
+        to: "/submissions?view=ready",
+        label: "Ready for approval",
+        icon: ShieldCheck,
+      },
       { to: "/operations", label: "Completed handovers", icon: ClipboardCheck },
+    ],
+  },
+  {
+    title: "OVERSIGHT",
+    items: [
+      { to: "/exceptions", label: "Needs attention", icon: ListFilter },
+      {
+        to: "/address-requests",
+        label: "Address changes",
+        icon: ClipboardCheck,
+      },
       { to: "/reports", label: "Reports & audit", icon: FileBarChart2 },
-      { to: "/address-requests", label: "Address changes", icon: ClipboardCheck },
       { to: "/settings", label: "Settings", icon: Settings2 },
     ],
   },
@@ -242,7 +273,8 @@ function NotificationCenter() {
       .filter(
         (c) =>
           (c.status === "CORRECTION_REQUIRED" && preferences.critical) ||
-          (["HUMAN_REVIEW", "RESOLUTION_MANAGEMENT"].includes(c.status) && preferences.approvals),
+          (["HUMAN_REVIEW", "RESOLUTION_MANAGEMENT"].includes(c.status) &&
+            preferences.approvals),
       )
       .map((c) => ({
         id: c.id,
@@ -392,13 +424,23 @@ export default function App() {
   }, []);
   const location = useLocation();
   const navigationType = useNavigationType();
-  const previousPage = useRef({ pathname: location.pathname, username: session?.username });
+  const previousPage = useRef({
+    pathname: location.pathname,
+    username: session?.username,
+  });
   useEffect(() => {
     const previous = previousPage.current;
     const userChanged = previous.username !== session?.username;
     const pageChanged = previous.pathname !== location.pathname;
-    previousPage.current = { pathname: location.pathname, username: session?.username };
-    if (!session || (!userChanged && (!pageChanged || navigationType === "POP"))) return;
+    previousPage.current = {
+      pathname: location.pathname,
+      username: session?.username,
+    };
+    if (
+      !session ||
+      (!userChanged && (!pageChanged || navigationType === "POP"))
+    )
+      return;
     window.scrollTo({ top: 0, left: 0, behavior: "instant" });
     document.getElementById("main-content")?.focus({ preventScroll: true });
   }, [location.pathname, session?.username, navigationType]);
@@ -452,7 +494,7 @@ export default function App() {
                 title={item.label}
                 onClick={() => setSidebar(false)}
                 className={({ isActive }) =>
-                  `nav-item ${isActive || aliases[location.pathname] === item.to ? "active" : ""}`
+                  `nav-item ${(item.to.startsWith("/submissions") ? location.pathname === "/submissions" && new URLSearchParams(location.search).get("view") === (item.to.split("?view=")[1] || null) : isActive || aliases[location.pathname] === item.to) ? "active" : ""}`
                 }
               >
                 <item.icon size={18} />
@@ -573,14 +615,10 @@ export default function App() {
                   onClick={() => setUserMenu(!userMenu)}
                   aria-expanded={userMenu}
                 >
-                  <span className="avatar">
-                    RM
-                  </span>
+                  <span className="avatar">RM</span>
                   <span className="user-info">
                     <strong>Resolution Management</strong>
-                    <small>
-                      {"Service operations"}
-                    </small>
+                    <small>{"Service operations"}</small>
                   </span>
                   <ChevronDown size={14} />
                 </button>
@@ -650,10 +688,13 @@ export default function App() {
           >
             <Suspense fallback={<Loading text="Opening workspace page..." />}>
               <Routes>
-        <Route path="/address-requests" element={<AddressRequests />} />
+                <Route path="/address-requests" element={<AddressRequests />} />
                 <Route path="/" element={<DocumentOverview />} />
                 <Route path="/submissions" element={<DocumentQueue />} />
-                <Route path="/new" element={<Navigate to="/submissions" replace />} />
+                <Route
+                  path="/new"
+                  element={<Navigate to="/submissions" replace />}
+                />
                 <Route
                   path="/submissions/:id"
                   element={<DocumentWorkspace />}

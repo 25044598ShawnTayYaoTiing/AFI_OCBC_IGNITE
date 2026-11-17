@@ -6,9 +6,11 @@ import { ErrorBox, Panel } from "../components";
 export function RiskInvestigation({
   detail,
   onUpdate,
+  showActions = true,
 }: {
   detail: Detail;
   onUpdate: () => void;
+  showActions?: boolean;
 }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -145,9 +147,10 @@ export function RiskInvestigation({
                     <p className="context-note">
                       <strong>Earlier submission revision.</strong> This
                       investigation used revision {investigation.revision}; the
-                      current submission is revision {detail.submission.revision}.
-                      Its recommendations apply to the earlier package. Use the
-                      current validation results and case status for this review.
+                      current submission is revision{" "}
+                      {detail.submission.revision}. Its recommendations apply to
+                      the earlier package. Use the current validation results
+                      and case status for this review.
                     </p>
                   )}
                   <p>
@@ -157,7 +160,8 @@ export function RiskInvestigation({
                   </p>
                   {investigation.recommendations.map((item) => (
                     <p key={item.exception_id}>
-                      {item.explanation} Recommendation recorded at the time: {item.recommended_action}
+                      {item.explanation} Recommendation recorded at the time:{" "}
+                      {item.recommended_action}
                     </p>
                   ))}
                 </div>
@@ -183,40 +187,41 @@ export function RiskInvestigation({
             </p>
           </li>
         </ol>
-        {(detail.submission.risk_hold ||
-          detail.tasks.some(
-            (task) => task.status === "AWAITING_RESOLVER_AUTHORIZATION",
-          )) && (
-          <div className="risk-review">
-            <label>
-              Investigation / customer-contact authorisation note
-              <textarea
-                rows={3}
-                maxLength={1000}
-                value={note}
-                onChange={(event) => setNote(event.target.value)}
-              />
-            </label>
-            <button
-              className="button primary"
-              disabled={busy || note.trim().length < 12}
-              onClick={() =>
-                void review(
-                  detail.submission.risk_hold
-                    ? "clear-hold"
-                    : "authorize-correction",
-                )
-              }
-            >
-              {busy
-                ? "Recording decision..."
-                : detail.submission.risk_hold
-                  ? "Clear reviewed hold"
-                  : "Authorise customer correction"}
-            </button>
-            {error && <ErrorBox message={error} />}
-          </div>
-        )}
+        {showActions &&
+          (detail.submission.risk_hold ||
+            detail.tasks.some(
+              (task) => task.status === "AWAITING_RESOLVER_AUTHORIZATION",
+            )) && (
+            <div className="risk-review">
+              <label>
+                Investigation / customer-contact authorisation note
+                <textarea
+                  rows={3}
+                  maxLength={1000}
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                />
+              </label>
+              <button
+                className="button primary"
+                disabled={busy || note.trim().length < 12}
+                onClick={() =>
+                  void review(
+                    detail.submission.risk_hold
+                      ? "clear-hold"
+                      : "authorize-correction",
+                  )
+                }
+              >
+                {busy
+                  ? "Recording decision..."
+                  : detail.submission.risk_hold
+                    ? "Clear reviewed hold"
+                    : "Authorise customer correction"}
+              </button>
+              {error && <ErrorBox message={error} />}
+            </div>
+          )}
       </div>
     </Panel>
   );

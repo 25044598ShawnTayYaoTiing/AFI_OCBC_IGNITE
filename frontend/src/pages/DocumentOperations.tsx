@@ -1,6 +1,6 @@
 import { nextCaseAction } from "./case-facts";
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowRight,
   ChevronLeft,
@@ -144,8 +144,13 @@ export function DocumentOverview() {
                   >
                     <div>
                       <strong>{item.customer_name}</strong>
-                      <small>{item.customer_reference} | {item.open_exceptions ?? 0} open issues</small>
-                      <p className="queue-next-action">{nextCaseAction(item, item.open_exceptions ?? 0)}</p>
+                      <small>
+                        {item.customer_reference} | {item.open_exceptions ?? 0}{" "}
+                        open issues
+                      </small>
+                      <p className="queue-next-action">
+                        {nextCaseAction(item, item.open_exceptions ?? 0)}
+                      </p>
                     </div>
                     <Badge value={item.status} />
                     <ArrowRight size={16} />
@@ -177,7 +182,9 @@ export function DocumentOverview() {
               </div>
             </dl>
             {!metrics.error && m && m.totalSubmissions > 0 && (
-              <Disclosure title="Status distribution"><StatusChart metrics={m} /></Disclosure>
+              <Disclosure title="Status distribution">
+                <StatusChart metrics={m} />
+              </Disclosure>
             )}
             <Link className="text-link" to="/reports">
               View reports <ArrowRight size={14} />
@@ -226,6 +233,9 @@ export function DocumentOverview() {
 }
 
 export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
+  const [viewParams] = useSearchParams();
+  const view = mode === "submissions" ? viewParams.get("view") : null;
+  const { session } = useAuth();
   const result = useResource<Submission[]>(`${BASE}/submissions`, 15000);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
@@ -237,7 +247,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
   const [page, setPage] = useState(0);
   const pageSize = readUiPreferences().pageSize;
   const titles: Record<string, string> = {
-    submissions: "Customer cases",
+    submissions: "Review queue",
     investigations: "Investigations",
     exceptions: "Resolution Management",
     corrections: "Corrections",
@@ -253,6 +263,18 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
     preflight: "Check readiness before handing a package to Operations.",
   };
   const items = (result.data || [])
+    .filter((item) =>
+      view === "assigned"
+        ? item.owner_name === session.username
+        : view === "corrections"
+          ? item.status === "CORRECTION_REQUIRED"
+          : view === "ready"
+            ? ["RESOLUTION_MANAGEMENT", "READY"].includes(item.status) &&
+              item.validated_revision === item.revision &&
+              !item.open_exceptions &&
+              !item.risk_hold
+            : true,
+    )
     .filter((item) =>
       mode === "exceptions" || mode === "corrections"
         ? [
@@ -299,12 +321,28 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
           ? "corrections"
           : mode === "preflight"
             ? "preflight"
-            : "review";
+            : "overview";
   return (
     <div className="page-stack">
       <PageHeader
-        title={titles[mode]}
-        description={descriptions[mode]}
+        title={
+          view === "assigned"
+            ? "Assigned to you"
+            : view === "corrections"
+              ? "Awaiting customer corrections"
+              : view === "ready"
+                ? "Ready for approval"
+                : titles[mode]
+        }
+        description={
+          view === "assigned"
+            ? "Cases owned by your signed-in staff identity."
+            : view === "corrections"
+              ? "Customer action is required before these cases can proceed."
+              : view === "ready"
+                ? "Current, checked cases without open findings or risk holds. Review the evidence before deciding."
+                : descriptions[mode]
+        }
       ></PageHeader>
       {mode === "operations" ? (
         <SectionNav

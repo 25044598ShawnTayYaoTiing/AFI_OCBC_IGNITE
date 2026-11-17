@@ -1,7 +1,9 @@
 import type { Finding } from "../document-types";
 
 const referenceRules = new Set([
-  "REF_ACCOUNT_APPLICATION", "REF_CUSTOMER_INFORMATION", "REF_TAX_RESIDENCY",
+  "REF_ACCOUNT_APPLICATION",
+  "REF_CUSTOMER_INFORMATION",
+  "REF_TAX_RESIDENCY",
 ]);
 
 export function issueRuleKey(issue: Finding) {
@@ -19,6 +21,20 @@ export function issueCategory(issue: Finding) {
 }
 
 export function issueTitle(issue: Finding) {
+  const key = issueRuleKey(issue);
+  if (key === "ATTACH_SUPPORTING_DOCUMENT")
+    return issue.status === "RESOLVED"
+      ? "Supporting document verified"
+      : "Supporting document missing";
+  if (key === "SERVICE_SUPPORT")
+    return issue.status === "RESOLVED"
+      ? "Supporting evidence verified"
+      : "Supporting evidence needs review";
+  if (key === "PROFILE_IDENTITY")
+    return "Identity must match the stored profile";
+  if (key === "PROFILE_NAME")
+    return "Customer name must match the stored profile";
+  if (key === "CLASSIFICATION") return "Document extraction needs confirmation";
   return referenceRules.has(issueRuleKey(issue))
     ? "Customer reference must match submission"
     : issue.name;
@@ -28,7 +44,9 @@ export function groupFindings(findings: Finding[]) {
   const groups: { key: string; items: Finding[] }[] = [];
   const byKey = new Map<string, { key: string; items: Finding[] }>();
   for (const issue of findings) {
-    const groupedReference = referenceRules.has(issueRuleKey(issue)) && issue.field_name === "customer_reference";
+    const groupedReference =
+      referenceRules.has(issueRuleKey(issue)) &&
+      issue.field_name === "customer_reference";
     // Group only equivalent reference checks with the same status and severity.
     const key = groupedReference
       ? `customer-reference:${issue.status}:${issue.severity}:${issue.action_type}`
@@ -44,7 +62,10 @@ export function groupFindings(findings: Finding[]) {
   return groups;
 }
 
-export function issueGuidance(issue: Finding, caseReference: string): string | null {
+export function issueGuidance(
+  issue: Finding,
+  caseReference: string,
+): string | null {
   if (issue.status !== "OPEN") return null;
   const rule = issueRuleKey(issue);
   if (referenceRules.has(rule))

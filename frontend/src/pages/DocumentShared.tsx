@@ -14,7 +14,7 @@ export const message = (error: unknown) =>
     ? error.message
     : "Please try again. If the problem continues, check the service connection.";
 export const submissionNav = [
-  { to: "/submissions", label: "All submissions" },
+  { to: "/submissions", label: "All cases" },
   { to: "/investigations", label: "Investigations" },
   { to: "/corrections", label: "Corrections" },
   { to: "/preflight", label: "Handover readiness" },
@@ -24,15 +24,17 @@ export const reportNav = [
   { to: "/audit", label: "Audit history" },
 ];
 export function provenance(method?: string) {
-  return method === "DIGITAL_EFORM" ? "Customer digital declaration" : method === "GEMINI"
-    ? "Live Gemini"
-    : method === "HUMAN_REVIEW"
-      ? "Human review required"
-      : method === "DETERMINISTIC_FALLBACK"
-        ? "Rule-based fallback"
-        : method === "SYNTHETIC_TEMPLATE"
-          ? "Template extraction"
-          : label(method);
+  return method === "DIGITAL_EFORM"
+    ? "Customer digital declaration"
+    : method === "GEMINI"
+      ? "Live Gemini"
+      : method === "HUMAN_REVIEW"
+        ? "Human review required"
+        : method === "DETERMINISTIC_FALLBACK"
+          ? "Rule-based fallback"
+          : method === "SYNTHETIC_TEMPLATE"
+            ? "Template extraction"
+            : label(method);
 }
 
 export function SubmissionTable({
@@ -82,24 +84,56 @@ export function SubmissionTable({
                 >
                   {item.customer_name}
                 </Link>
-                <small className="secondary-line">{item.risk_level?`${item.risk_level} ${item.risk_score}/100 / `:""}{label(item.category)} / {["reviewer","operator"].includes(item.owner_name?.toLowerCase()) ? "Resolution Management" : item.owner_name}</small>
+                <small className="secondary-line">
+                  {item.risk_level
+                    ? `${item.risk_level} ${item.risk_score}/100 / `
+                    : ""}
+                  {label(item.category)} /{" "}
+                  {["reviewer", "operator"].includes(
+                    item.owner_name?.toLowerCase(),
+                  )
+                    ? "Resolution Management"
+                    : item.owner_name}
+                </small>
               </td>
               <td>
                 <span className="reference">{item.customer_reference}</span>
               </td>
-              <td>{item.submission_source === "CUSTOMER_PORTAL" ? item.capture_method === "DIGITAL_EFORM" ? "Digital eForm" : "Customer PDF" : "Staff PDF archive"}</td>
+              <td>
+                {item.submission_source === "CUSTOMER_PORTAL"
+                  ? item.capture_method === "DIGITAL_EFORM"
+                    ? "Digital eForm"
+                    : "Customer PDF"
+                  : "Staff PDF archive"}
+              </td>
               <td>
                 <Badge value={item.status} />
               </td>
-              <td><strong>{item.validated_revision === item.revision && item.checks_total ? `${item.checks_passed ?? 0}/${item.checks_total} passed` : "Not confirmed"}</strong><small className="secondary-line">{item.open_severities?.length ? item.open_severities.map(label).join(", ") : "No open severity recorded"}</small></td>
               <td>
-                <strong>{nextCaseAction(item, item.open_exceptions ?? 0)}</strong>
+                <strong>
+                  {item.validated_revision === item.revision &&
+                  item.checks_total
+                    ? `${item.checks_passed ?? 0}/${item.checks_total} passed`
+                    : "Not confirmed"}
+                </strong>
+                <small className="secondary-line">
+                  {item.open_severities?.length
+                    ? item.open_severities.map(label).join(", ")
+                    : "No open severity recorded"}
+                </small>
+              </td>
+              <td>
+                <strong>
+                  {nextCaseAction(item, item.open_exceptions ?? 0)}
+                </strong>
                 <span className="secondary-line">
                   {item.open_exceptions
                     ? `${item.open_exceptions} open ${item.open_exceptions === 1 ? "issue" : "issues"}`
                     : item.status === "OPERATIONS"
                       ? "Intake complete"
-                      : item.validated_revision !== item.revision ? "Awaiting current checks" : "No open findings"}
+                      : item.validated_revision !== item.revision
+                        ? "Awaiting current checks"
+                        : "No open findings"}
                 </span>
                 <small className="secondary-line">
                   {item.verified_automations
@@ -189,7 +223,19 @@ export function PdfPreview({
     <ErrorBox message={error} />
   ) : url ? (
     <>
-      <div className="mobile-pdf-controls"><p>Requested source: page {page}. Open the full PDF for a larger view, or preview it here.</p><button className="button secondary" aria-expanded={mobilePreview} onClick={() => setMobilePreview(value => !value)}>{mobilePreview ? "Hide PDF preview" : "Preview PDF here"}</button></div>
+      <div className="mobile-pdf-controls">
+        <p>
+          Requested source: page {page}. Open the full PDF for a larger view, or
+          preview it here.
+        </p>
+        <button
+          className="button secondary"
+          aria-expanded={mobilePreview}
+          onClick={() => setMobilePreview((value) => !value)}
+        >
+          {mobilePreview ? "Hide PDF preview" : "Preview PDF here"}
+        </button>
+      </div>
       <iframe
         className={`document-preview ${mobilePreview ? "mobile-pdf-open" : ""}`}
         key={`${versionId}:${page}`}
@@ -198,7 +244,14 @@ export function PdfPreview({
       />
       <div className="preview-footer">
         <span>Original document | Requested page {page}</span>
-        <a className="text-link" href={`${url}#page=${page}`} target="_blank" rel="noreferrer">Open full PDF</a>
+        <a
+          className="text-link"
+          href={`${url}#page=${page}`}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Open full PDF
+        </a>
         <a className="text-link" href={url} download="synthetic-document.pdf">
           <Download size={15} />
           Download PDF

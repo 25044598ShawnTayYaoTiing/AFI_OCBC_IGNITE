@@ -4,8 +4,10 @@ import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import "./styles.css";
 import "./enterprise.css";
+import "./rm-workspace.css";
 
-document.documentElement.dataset.release = import.meta.env.VITE_RELEASE_SHA || "local";
+document.documentElement.dataset.release =
+  import.meta.env.VITE_RELEASE_SHA || "local";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
