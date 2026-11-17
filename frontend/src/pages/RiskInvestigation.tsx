@@ -137,10 +137,19 @@ export function RiskInvestigation({
             </details>
           </li>
           <li>
-            <strong>Investigate</strong>
+            <strong>Investigation history</strong>
             {detail.investigations.length ? (
               detail.investigations.map((investigation, index) => (
                 <div key={index}>
+                  {investigation.revision !== detail.submission.revision && (
+                    <p className="context-note">
+                      <strong>Earlier submission revision.</strong> This
+                      investigation used revision {investigation.revision}; the
+                      current submission is revision {detail.submission.revision}.
+                      Its recommendations apply to the earlier package. Use the
+                      current validation results and case status for this review.
+                    </p>
+                  )}
                   <p>
                     {investigation.method} /{" "}
                     {investigation.model || "No model reported"} /{" "}
@@ -148,7 +157,7 @@ export function RiskInvestigation({
                   </p>
                   {investigation.recommendations.map((item) => (
                     <p key={item.exception_id}>
-                      {item.explanation} Next action: {item.recommended_action}
+                      {item.explanation} Recommendation recorded at the time: {item.recommended_action}
                     </p>
                   ))}
                 </div>
