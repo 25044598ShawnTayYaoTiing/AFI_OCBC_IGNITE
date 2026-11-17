@@ -149,12 +149,12 @@ export function DocumentWorkspace() {
       files.length > 10 ||
       files.some(
         (file) =>
-          !file.name.toLowerCase().endsWith(".pdf") ||
+          !/\.(pdf|jpe?g|png)$/i.test(file.name) ||
           file.size > 10 * 1024 * 1024 ||
           file.size === 0,
       )
     ) {
-      setError("Choose up to 10 nonempty PDFs, no larger than 10 MB each.");
+      setError("Choose up to 10 nonempty PDF, JPG or PNG files, no larger than 10 MB each.");
       return;
     }
     mutation.current = true;
@@ -296,7 +296,7 @@ export function DocumentWorkspace() {
             hidden
             type="file"
             aria-label="Upload replacement PDF"
-            accept="application/pdf,.pdf"
+            accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png"
             disabled={!!busy || locked}
             onChange={(event) => {
               void upload(Array.from(event.target.files || []), replacement);
@@ -405,7 +405,7 @@ export function DocumentWorkspace() {
                         className="sr-only"
                         type="file"
                         multiple
-                        accept="application/pdf,.pdf"
+                        accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png"
                         disabled={!!busy}
                         onChange={(event) => {
                           void upload(Array.from(event.target.files || []));
@@ -473,7 +473,7 @@ export function DocumentWorkspace() {
                                 disabled={!!busy}
                                 onClick={chooseReplacement}
                               >
-                                Replace PDF
+                                Replace document
                               </button>
                             )}
                         </div>
@@ -484,10 +484,12 @@ export function DocumentWorkspace() {
                             version; check each citation before acting.
                           </Notice>
                         )}
+                        {doc.extraction.requires_review && <Notice>Extraction requires human review. Compare the visible original with the extracted fields. A successful extraction does not verify document authenticity.</Notice>}
                         <PdfPreview
                           caseId={id}
                           versionId={version || doc.version_id}
                           page={previewPage}
+                          pageCount={doc.versions.find(item => item.id === (version || doc.version_id))?.source_page_count || 1}
                         />
                       </Panel>
                     </div>

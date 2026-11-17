@@ -522,9 +522,13 @@ public class DocumentService {
       d.put(
           "versions",
           s.db.queryForList(
-              "SELECT id,version,filename,size_bytes,created_at,uploaded_by FROM document_versions"
+              "SELECT id,version,filename,size_bytes,created_at,uploaded_by,extraction_json FROM document_versions"
                   + " WHERE document_id=? ORDER BY version DESC",
               d.get("id")));
+      for (var item : (List<Map<String, Object>>) d.get("versions")) {
+        var sources = s.readMap((String) item.remove("extraction_json")).get("source_images");
+        item.put("source_page_count", sources instanceof List<?> pages ? pages.size() : 1);
+      }
     }
     var checks =
         s.db.queryForList(
@@ -619,17 +623,20 @@ public class DocumentService {
   }
 
   JsonNode extraction(byte[] bytes, String documentId) {
+    return extractionPayload(bytes, documentId, null);
+  }
+
+  JsonNode extractionPayload(byte[] bytes, String documentId, List<byte[]> imagePages) {
     try {
       String body =
           ai.client
               .post()
               .uri("/documents/extract")
               .body(
-                  map(
-                      "document_id",
-                      documentId,
-                      "pdf_base64",
-                      Base64.getEncoder().encodeToString(bytes)))
+                  map("document_id", documentId,
+                      imagePages != null || DocumentContent.type(bytes).startsWith("image/") ? "images_base64" : "pdf_base64",
+                      imagePages != null ? imagePages.stream().map(b -> Base64.getEncoder().encodeToString(b)).toList() :
+                        DocumentContent.type(bytes).startsWith("image/") ? List.of(Base64.getEncoder().encodeToString(bytes)) : Base64.getEncoder().encodeToString(bytes)))
               .retrieve()
               .body(String.class);
       JsonNode node = s.json.readTree(body);
@@ -665,6 +672,8 @@ public class DocumentService {
         // Never expose upstream bodies or credentials in upload errors.
       }
       throw switch (code) {
+        case "INVALID_IMAGE", "INVALID_DOCUMENT", "IMAGE_QUALITY" ->
+            new ApiException(422, code, "Upload a clear, complete PDF, JPG or PNG. Include every page and edge; blurry, cropped or unreadable evidence cannot be accepted.");
         case "INVALID_PDF" ->
             new ApiException(
                 400,
@@ -675,8 +684,7 @@ public class DocumentService {
             new ApiException(
                 422,
                 code,
-                "Upload a text-readable PDF clearly labelled as synthetic demo data. Scans and"
-                    + " oversized page text are unsupported. No document was accepted.");
+                "Upload a complete readable document visibly labelled as synthetic demo data. No document was accepted.");
         case "UNSUPPORTED_DOCUMENT" ->
             new ApiException(
                 422,
@@ -725,13 +733,35 @@ public class DocumentService {
     return uploadInternal(id, files, replace, a, true);
   }
 
+  @Transactional(rollbackFor = Exception.class)
+  public Object upload(String id, List<MultipartFile> files, String replace, Authentication a, boolean combineImages) throws Exception {
+    return uploadInternal(id, files, replace, a, true, combineImages);
+  }
+
   Object uploadInternal(
       String id, List<MultipartFile> files, String replace, Authentication a, boolean process)
       throws Exception {
+    return uploadInternal(id, files, replace, a, process, false);
+  }
+
+  Object uploadInternal(String id, List<MultipartFile> files, String replace, Authentication a, boolean process, boolean combineImages) throws Exception {
     var c = access(id, a, true);
     editable(c);
-    if (files.isEmpty() || files.size() > 10 || (replace != null && files.size() != 1))
-      throw new ApiException(400, "FILE_LIMIT", "Choose 1 to 10 PDFs, or one replacement");
+    if (files.isEmpty() || files.size() > 10 || (replace != null && files.size() != 1 && !combineImages))
+      throw new ApiException(400, "FILE_LIMIT", "Choose 1 to 10 documents, or one replacement form");
+    if (files.stream().mapToLong(MultipartFile::getSize).sum() > (combineImages ? 12L : 100L) * 1024 * 1024)
+      throw new ApiException(400, "FILE_LIMIT", "Combined limit is 100 MB, or 12 MB for pages of one form");
+    List<byte[]> imagePages = new ArrayList<>();
+    if (combineImages) {
+      for (var page : files) {
+        var raw = page.getBytes();
+        DocumentContent.validate(page.getOriginalFilename(), raw);
+        if (!DocumentContent.type(raw).startsWith("image/")) throw new ApiException(400, "INVALID_IMAGE_GROUP", "Grouped pages must all be JPG or PNG images of one form");
+        imagePages.add(raw);
+      }
+    }
+    var originals = files;
+    if (combineImages) files = List.of(files.getFirst());
     if (documents(id, false).size()
             + documents(id, true).size()
             + (replace == null ? files.size() : 0)
@@ -743,27 +773,26 @@ public class DocumentService {
                       .replace('\\', '/'))
               .getFileName()
               .toString();
-      if (file.isEmpty()
-          || file.getSize() > 10 * 1024 * 1024
-          || filename.length() > 200
-          || !filename.toLowerCase().endsWith(".pdf"))
-        throw new ApiException(400, "INVALID_PDF", "Only nonempty PDFs up to 10 MB are accepted");
       byte[] bytes = file.getBytes();
-      if (bytes.length < 5
-          || !new String(bytes, 0, 5, java.nio.charset.StandardCharsets.US_ASCII).equals("%PDF-"))
-        throw new ApiException(400, "INVALID_PDF", "File is not a PDF");
+      DocumentContent.validate(filename, bytes);
       String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-      if (s.db.queryForObject(
+      String groupHash = combineImages ? CustomerSessions.hash(s.json(imagePages.stream().map(raw -> Base64.getEncoder().encodeToString(raw)).toList())) : null;
+      boolean duplicate = combineImages ? s.db.queryForList("SELECT v.extraction_json FROM document_versions v JOIN submission_documents d ON d.id=v.document_id WHERE d.submission_id=?", id).stream()
+          .anyMatch(row -> groupHash.equals(s.readMap((String) row.get("extraction_json")).get("image_group_sha256"))) : s.db.queryForObject(
               "SELECT COUNT(*) FROM document_versions v JOIN submission_documents d ON"
                   + " d.id=v.document_id WHERE d.submission_id=? AND v.sha256=?",
               Integer.class,
               id,
               hash)
-          > 0)
+          > 0;
+      if (duplicate)
         throw new ApiException(
-            409, "DUPLICATE_FILE", "This exact PDF already exists in the case's document history");
+            409, "DUPLICATE_FILE", "This exact document already exists in the case's document history");
       String docId = replace == null ? s.id("FILE") : replace;
-      var extracted = extraction(bytes, docId);
+      var extracted = combineImages ? extractionPayload(bytes, docId, imagePages) : extraction(bytes, docId);
+      // The backend also enforces visual review even if an upstream response claims certainty.
+      if (combineImages || DocumentContent.type(bytes).startsWith("image/"))
+        ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).put("requires_review", true);
       if ("DIGITAL_EFORM".equals(c.get("capture_method"))
           && !"SUPPORTING_DOCUMENT".equals(extracted.path("document_type").asText()))
         throw new ApiException(
@@ -792,7 +821,18 @@ public class DocumentService {
             docId,
             id,
             extracted.path("document_type").asText());
-      String key = UUID.randomUUID() + ".pdf", versionId = s.id("VER");
+      String key = UUID.randomUUID() + DocumentContent.extension(bytes), versionId = s.id("VER");
+      if (combineImages) {
+        ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).put("image_group_sha256", groupHash);
+        var sources = ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).putArray("source_images");
+        for (int index = 0; index < imagePages.size(); index++) {
+          byte[] raw = imagePages.get(index);
+          String pageKey = index == 0 ? key : UUID.randomUUID() + DocumentContent.extension(raw);
+          sources.addObject().put("storage_key", pageKey).put("filename", originals.get(index).getOriginalFilename())
+              .put("sha256", HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(raw))).put("size_bytes", raw.length);
+          if (index > 0) storeOriginal(pageKey, raw);
+        }
+      }
       // Register before writing: a failed write may still have created a partial object.
       // Remove newly created files on database rollback; accepted versions are immutable.
       if (org.springframework.transaction.support.TransactionSynchronizationManager
@@ -868,6 +908,18 @@ public class DocumentService {
       syncCustomer(id);
     }
     return detail(id, a);
+  }
+
+  void storeOriginal(String key, byte[] bytes) throws Exception {
+    if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive())
+      org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization() {
+        public void afterCompletion(int status) {
+          if (status != STATUS_COMMITTED) try { storage.delete(key); } catch (Exception error) {
+            org.slf4j.LoggerFactory.getLogger(DocumentService.class).warn("Private image rollback cleanup failed for key {}", key);
+          }
+        }
+      });
+    storage.put(key, bytes);
   }
 
   void captureDeclaration(
@@ -1214,16 +1266,32 @@ public class DocumentService {
   }
 
   public byte[] file(String id, String version, Authentication a) throws Exception {
+    return file(id, version, 1, a);
+  }
+
+  public byte[] file(String id, String version, int page, Authentication a) throws Exception {
     access(id, a, false);
     var rows =
         s.db.queryForList(
-            "SELECT v.storage_key FROM document_versions v JOIN submission_documents d ON"
+            "SELECT v.storage_key,v.extraction_json FROM document_versions v JOIN submission_documents d ON"
                 + " d.id=v.document_id WHERE v.id=? AND d.submission_id=? AND"
                 + " d.repository_only=FALSE",
             version,
             id);
     if (rows.isEmpty()) throw new ApiException(404, "NOT_FOUND", "Document version not found");
+    var sources = s.json.readTree((String) rows.getFirst().get("extraction_json")).path("source_images");
+    if (sources.isArray()) {
+      if (page < 1 || page > sources.size()) throw new ApiException(404, "NOT_FOUND", "Image page not found");
+      return verifiedSource(sources.get(page - 1));
+    }
     return storage.read((String) rows.getFirst().get("storage_key"));
+  }
+
+  byte[] verifiedSource(JsonNode source) throws Exception {
+    byte[] bytes = storage.read(source.path("storage_key").asText());
+    if (bytes.length != source.path("size_bytes").asLong() || !HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)).equals(source.path("sha256").asText()))
+      throw new ApiException(409, "DOCUMENT_INTEGRITY", "Stored image integrity check failed; staff review is required");
+    return bytes;
   }
 
   List<Map<String, Object>> fields(List<Map<String, Object>> docs, String field) {
@@ -1694,6 +1762,8 @@ public class DocumentService {
 
   String integrityStatus(Map<String, Object> document) {
     try {
+      var extraction = s.json.readTree(s.db.queryForObject("SELECT extraction_json FROM document_versions WHERE id=?", String.class, document.get("version_id")));
+      for (var source : extraction.path("source_images")) verifiedSource(source);
       String key =
           s.db.queryForObject(
               "SELECT storage_key FROM document_versions WHERE id=?",

@@ -21,7 +21,7 @@ public class ApiErrors {
                 "code",
                 "UPLOAD_TOO_LARGE",
                 "message",
-                "PDF limit is 10 MB per file and 105 MB per request"));
+                "Document limit is 10 MB per file and 100 MB combined (12 MB for grouped image pages)"));
   }
 
   final FailureAudit audit;

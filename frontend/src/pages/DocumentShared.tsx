@@ -4,7 +4,7 @@ import { ArrowRight, Download } from "lucide-react";
 import { dateTime, detailText, label, privatePdf } from "../api";
 import type { Audit } from "../api";
 import type { Detail, Metrics, Preflight, Submission } from "../document-types";
-import { Badge, Empty, ErrorBox, Loading } from "../components";
+import { Badge, Empty, ErrorBox, Loading, Notice } from "../components";
 import { nextCaseAction } from "./case-facts";
 import { Disclosure } from "../ui";
 
@@ -191,12 +191,17 @@ export function PdfPreview({
   caseId,
   versionId,
   page = 1,
+  pageCount = 1,
 }: {
   caseId: string;
   versionId: string;
   page?: number;
+  pageCount?: number;
 }) {
   const [url, setUrl] = useState("");
+  const [mime, setMime] = useState("application/pdf");
+  const [imagePage, setImagePage] = useState(page);
+  useEffect(() => { setImagePage(Math.max(1, Math.min(page, pageCount))); }, [page, pageCount, versionId]);
   const [error, setError] = useState("");
   const [mobilePreview, setMobilePreview] = useState(false);
   useEffect(() => {
@@ -205,8 +210,9 @@ export function PdfPreview({
     setUrl("");
     setError("");
     setMobilePreview(false);
-    privatePdf(`${BASE}/submissions/${caseId}/versions/${versionId}/pdf`)
+    privatePdf(`${BASE}/submissions/${caseId}/versions/${versionId}/pdf?page=${imagePage}`)
       .then((blob) => {
+        if (active) setMime(blob.type);
         objectUrl = URL.createObjectURL(blob);
         if (active) setUrl(objectUrl);
         else URL.revokeObjectURL(objectUrl);
@@ -218,14 +224,15 @@ export function PdfPreview({
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [caseId, versionId]);
+  }, [caseId, versionId, imagePage]);
   return error ? (
     <ErrorBox message={error} />
   ) : url ? (
     <>
+      {mime.startsWith('image/') && <><Notice>Unverified image evidence. Compare the original with extracted fields; AI extraction does not establish authenticity.</Notice>{pageCount > 1 && <label>Image page <select aria-label="Image page" value={imagePage} onChange={event => setImagePage(Number(event.target.value))}>{Array.from({ length: pageCount }, (_, index) => <option key={index} value={index + 1}>Page {index + 1}</option>)}</select></label>}</>}
       <div className="mobile-pdf-controls">
         <p>
-          Requested source: page {page}. Open the full PDF for a larger view, or
+          Requested source: page {page}. Open the full document for a larger view, or
           preview it here.
         </p>
         <button
@@ -233,15 +240,15 @@ export function PdfPreview({
           aria-expanded={mobilePreview}
           onClick={() => setMobilePreview((value) => !value)}
         >
-          {mobilePreview ? "Hide PDF preview" : "Preview PDF here"}
+          {mobilePreview ? "Hide preview" : "Preview here"}
         </button>
       </div>
-      <iframe
+      {mime.startsWith("image/") ? <img className="document-image-preview" src={url} alt={`Original uploaded image, page ${imagePage}`} /> : <iframe
         className={`document-preview ${mobilePreview ? "mobile-pdf-open" : ""}`}
         key={`${versionId}:${page}`}
         title={`Original PDF document, page ${page}`}
         src={`${url}#page=${page}&view=FitH`}
-      />
+      />}
       <div className="preview-footer">
         <span>Original document | Requested page {page}</span>
         <a
@@ -250,11 +257,11 @@ export function PdfPreview({
           target="_blank"
           rel="noreferrer"
         >
-          Open full PDF
+          Open original document
         </a>
-        <a className="text-link" href={url} download="synthetic-document.pdf">
+        <a className="text-link" href={url} download={`synthetic-document.${mime === "image/png" ? "png" : mime === "image/jpeg" ? "jpg" : "pdf"}`}>
           <Download size={15} />
-          Download PDF
+          Download original
         </a>
       </div>
     </>

@@ -46,7 +46,7 @@ def succeeded():
         _status['live_requests_succeeded'] += 1
         _status['last_live_success_at'] = datetime.now(timezone.utc).isoformat()
 
-def generate(schema, payload: dict, instruction: str, settings: Settings):
+def generate(schema, payload: dict, instruction: str, settings: Settings, media=None):
     # Never include credentials in the model input. Do not return SDK errors (they
     # may contain request details) to any caller or log handler.
     # Send the interoperable JSON Schema subset; keep all length/extra-field and
@@ -64,10 +64,10 @@ def generate(schema, payload: dict, instruction: str, settings: Settings):
     with genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(
             timeout=settings.gemini_timeout_ms, retry_options=types.HttpRetryOptions(attempts=1))) as client:
         response = client.models.generate_content(model=settings.gemini_model,
-            contents=json.dumps(payload, ensure_ascii=False),
+            contents=[json.dumps(payload, ensure_ascii=False), *(media or [])],
             config=types.GenerateContentConfig(system_instruction=instruction,
                 response_mime_type='application/json', response_json_schema=wire(full_schema),
-                temperature=0, max_output_tokens=4096,
+                temperature=0, max_output_tokens=16384 if media else 4096,
                 thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
                     if settings.gemini_model.removeprefix('models/').startswith('gemini-3') else None,
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))

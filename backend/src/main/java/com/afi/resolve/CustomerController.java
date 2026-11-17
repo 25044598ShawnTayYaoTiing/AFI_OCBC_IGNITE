@@ -97,15 +97,17 @@ public class CustomerController {
   @PostMapping(value = "/eforms/with-documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
   public Object createFormWithDocuments(@RequestHeader("Idempotency-Key") String key,
       @RequestPart("form") DigitalFormService.Form form,
+      @RequestParam(defaultValue = "false") boolean combineImages,
       @RequestParam("files") List<MultipartFile> files, Authentication a) throws Exception {
-    return forms.submitWithDocuments(null, key, form, files, a);
+    return forms.submitWithDocuments(null, key, form, files, a, combineImages);
   }
 
   @PostMapping(value = "/submissions/{id}/eform/with-documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
   public Object updateFormWithDocuments(@PathVariable String id, @RequestHeader("Idempotency-Key") String key,
       @RequestPart("form") DigitalFormService.Form form,
+      @RequestParam(defaultValue = "false") boolean combineImages,
       @RequestParam("files") List<MultipartFile> files, Authentication a) throws Exception {
-    return forms.submitWithDocuments(id, key, form, files, a);
+    return forms.submitWithDocuments(id, key, form, files, a, combineImages);
   }
 
   @GetMapping("/submissions/{id}/corrections")
@@ -121,11 +123,12 @@ public class CustomerController {
   @PostMapping(value = "/submissions", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
   public Object intake(
       @RequestParam(defaultValue = "ACCOUNT_OPENING") String requestType,
+      @RequestParam(defaultValue = "false") boolean combineImages,
       @RequestHeader("Idempotency-Key") String key,
       @RequestParam("files") List<MultipartFile> files,
       Authentication a)
       throws Exception {
-    return customers.uploadRequest(null, null, key, files, a, requestType);
+    return customers.uploadRequest(null, null, key, files, a, requestType, combineImages);
   }
 
   @PostMapping(
@@ -133,11 +136,12 @@ public class CustomerController {
       consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
   public Object add(
       @PathVariable String id,
+      @RequestParam(defaultValue = "false") boolean combineImages,
       @RequestHeader("Idempotency-Key") String key,
       @RequestParam("files") List<MultipartFile> files,
       Authentication a)
       throws Exception {
-    return customers.upload(id, null, key, files, a);
+    return customers.uploadRequest(id, null, key, files, a, "ACCOUNT_OPENING", combineImages);
   }
 
   @PostMapping(
@@ -146,10 +150,11 @@ public class CustomerController {
   public Object replace(
       @PathVariable String id,
       @PathVariable String document,
+      @RequestParam(defaultValue = "false") boolean combineImages,
       @RequestHeader("Idempotency-Key") String key,
       @RequestParam("files") List<MultipartFile> files,
       Authentication a)
       throws Exception {
-    return customers.upload(id, document, key, files, a);
+    return customers.uploadRequest(id, document, key, files, a, "ACCOUNT_OPENING", combineImages);
   }
 }

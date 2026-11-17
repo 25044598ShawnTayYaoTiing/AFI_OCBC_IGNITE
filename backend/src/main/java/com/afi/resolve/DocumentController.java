@@ -92,20 +92,22 @@ public class DocumentController {
       @PathVariable String id,
       @RequestParam("files") List<MultipartFile> files,
       @RequestParam(required = false) String replace,
+      @RequestParam(defaultValue = "false") boolean combineImages,
       Authentication a)
       throws Exception {
-    return service.upload(id, files, replace, a);
+    return service.upload(id, files, replace, a, combineImages);
   }
 
   @GetMapping("/submissions/{id}/versions/{version}/pdf")
   public ResponseEntity<byte[]> pdf(
-      @PathVariable String id, @PathVariable String version, Authentication a) throws Exception {
+      @PathVariable String id, @PathVariable String version, @RequestParam(defaultValue = "1") int page, Authentication a) throws Exception {
+    byte[] bytes = service.file(id, version, page, a);
     return ResponseEntity.ok()
-        .contentType(MediaType.APPLICATION_PDF)
+        .contentType(MediaType.parseMediaType(DocumentContent.type(bytes)))
         .cacheControl(CacheControl.noStore())
-        .header("Content-Disposition", "inline; filename=\"synthetic-document.pdf\"")
+        .header("Content-Disposition", "inline; filename=\"synthetic-document" + DocumentContent.extension(bytes) + "\"")
         .header("X-Content-Type-Options", "nosniff")
-        .body(service.file(id, version, a));
+        .body(bytes);
   }
 
   @PostMapping("/submissions/{id}/validate")

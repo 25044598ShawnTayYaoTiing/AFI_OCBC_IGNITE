@@ -67,6 +67,54 @@ class DocumentUploadTransactionTest {
         "files", name, "application/pdf", ("%PDF-" + suffix).getBytes(StandardCharsets.US_ASCII));
   }
 
+  MockMultipartFile image(String name, int colour) throws Exception {
+    var image = new java.awt.image.BufferedImage(300, 400, java.awt.image.BufferedImage.TYPE_INT_RGB);
+    image.setRGB(0, 0, colour);
+    var bytes = new java.io.ByteArrayOutputStream();
+    javax.imageio.ImageIO.write(image, "png", bytes);
+    return new MockMultipartFile("files", name, "image/png", bytes.toByteArray());
+  }
+
+  @Test
+  void groupedPagesKeepOriginalsAndAllowReplacingOnlyLaterPages() throws Exception {
+    String id = createCase("SYN-IMAGE-PAGES");
+    var objects = new HashMap<String, byte[]>();
+    doAnswer(call -> { objects.put(call.getArgument(0), call.getArgument(1)); return null; })
+        .when(storage).put(anyString(), any(byte[].class));
+    when(storage.read(anyString())).thenAnswer(call -> objects.get(call.getArgument(0)));
+    doAnswer(call -> {
+      var result = store.json.createObjectNode();
+      result.put("document_id", (String) call.getArgument(1));
+      result.put("document_type", "CUSTOMER_INFORMATION");
+      result.put("method", "GEMINI");
+      result.put("requires_review", false);
+      result.putArray("fields");
+      return result;
+    }).when(documents).extractionPayload(any(byte[].class), anyString(), anyList());
+    var first = image("page-one.png", 1);
+    var second = image("page-two.png", 2);
+    documents.upload(id, List.of(first, second), null, actor, true);
+    var doc = documents.documents(id, false).getFirst();
+    var extraction = store.readMap((String) doc.get("extraction_json"));
+    assertThat(extraction.get("requires_review")).isEqualTo(true);
+    assertThat((List<?>) extraction.get("source_images")).hasSize(2);
+    assertThat(documents.file(id, (String) doc.get("version_id"), 2, actor)).isEqualTo(second.getBytes());
+    assertThatThrownBy(() -> documents.upload(id, List.of(first, second), null, actor, true))
+        .isInstanceOf(ApiException.class).satisfies(error -> assertThat(((ApiException)error).code()).isEqualTo("DUPLICATE_FILE"));
+    documents.upload(id, List.of(first, image("page-two.png", 3)), (String) doc.get("id"), actor, true);
+    assertThat(documents.documents(id, false).getFirst().get("current_version")).isEqualTo(2);
+    assertThat(objects).hasSize(4);
+  }
+
+  @Test
+  void forgedImagesAreRejectedBeforeExtractionOrStorage() {
+    assertThatThrownBy(() -> DocumentContent.validate("screenshot.png", "<svg/>".getBytes(StandardCharsets.US_ASCII)))
+        .isInstanceOf(ApiException.class);
+    assertThatThrownBy(() -> DocumentContent.validate("photo.jpg", "%PDF-fake".getBytes(StandardCharsets.US_ASCII)))
+        .isInstanceOf(ApiException.class);
+    verifyNoInteractions(storage);
+  }
+
   @Test
   void checkedStorageFailureRollsBackAllFilesAndCleansEvenPartialObject() throws Exception {
     String id = createCase("SYN-CHECKED-ROLLBACK");

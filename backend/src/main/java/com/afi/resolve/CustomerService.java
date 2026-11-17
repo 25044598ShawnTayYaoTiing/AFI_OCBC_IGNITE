@@ -393,6 +393,11 @@ public class CustomerService {
       Authentication a,
       String requestType)
       throws Exception {
+    return uploadRequest(id, replace, key, files, a, requestType, false);
+  }
+
+  @Transactional(rollbackFor = Exception.class)
+  public Object uploadRequest(String id, String replace, String key, List<MultipartFile> files, Authentication a, String requestType, boolean combineImages) throws Exception {
     var c = customer(a, true);
     if (id != null) owned(id, a);
     if (id == null
@@ -405,10 +410,11 @@ public class CustomerService {
           400,
           "INVALID_KEY",
           "Supply an Idempotency-Key of 8–100 letters, digits, hyphens or underscores");
-    if (files == null || files.isEmpty() || files.size() > (replace == null ? 10 : 1))
-      throw new ApiException(400, "FILE_LIMIT", "Choose 1–10 PDFs, or one replacement");
+    if (files == null || files.isEmpty() || files.size() > (replace == null || combineImages ? 10 : 1))
+      throw new ApiException(400, "FILE_LIMIT", "Choose 1–10 documents, or one replacement form");
     long total = 0;
     var fingerprints = new ArrayList<Object>();
+    if (combineImages) fingerprints.add(map("combineImages", true));
     for (var f : files) {
       String name = f.getOriginalFilename();
       total += f.getSize();
@@ -416,10 +422,10 @@ public class CustomerService {
           || f.getSize() > 10 * 1024 * 1024
           || name == null
           || name.length() > 200
-          || !name.toLowerCase(Locale.ROOT).endsWith(".pdf")
           || total > 100L * 1024 * 1024)
         throw new ApiException(
-            400, "INVALID_PDF", "Choose nonempty PDFs up to 10 MB each and 100 MB combined");
+            400, "INVALID_DOCUMENT", "Choose nonempty PDF, JPG or PNG files up to 10 MB each and 100 MB combined");
+      DocumentContent.validate(name, f.getBytes());
       fingerprints.add(
           map(
               "name",
@@ -482,7 +488,8 @@ public class CustomerService {
                             .equals(s.readMap((String) d.get("extraction_json")).get("method"))))
       throw new ApiException(
           409, "EDIT_EFORM", "Edit the digital declaration instead of replacing its receipt");
-    documents.upload(id, files, replace, a);
+    if (combineImages) documents.upload(id, files, replace, a, true);
+    else documents.upload(id, files, replace, a);
     if (!initial)
       notifications.publish(
           id,
@@ -522,13 +529,14 @@ public class CustomerService {
       if (!Objects.equals(sourceCase.get("owner_name"), customer.get("relationship_manager"))
           || !documents.repositoryEligible(target, d)
           || !documents.storageVerified(d)) continue;
-      String doc = s.id("FILE"), version = s.id("VER"), key = UUID.randomUUID() + ".pdf";
+      String doc = s.id("FILE"), version = s.id("VER");
       String oldKey =
           s.db.queryForObject(
               "SELECT storage_key FROM document_versions WHERE id=?",
               String.class,
               d.get("version_id"));
       byte[] bytes = storage.read(oldKey);
+      String key = UUID.randomUUID() + DocumentContent.extension(bytes);
       TransactionSynchronizationManager.registerSynchronization(
           new TransactionSynchronization() {
             public void afterCompletion(int status) {

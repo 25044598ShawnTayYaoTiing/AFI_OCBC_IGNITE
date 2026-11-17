@@ -39,6 +39,7 @@ export interface Field {
   method?: string;
 }
 export interface Version {
+  source_page_count?: number;
   id: string;
   version: number;
   filename: string;
@@ -56,6 +57,7 @@ export interface Doc {
   extraction: {
     method: string;
     requires_review: boolean;
+    source_images?: { filename: string; size_bytes: number }[];
     notes: string;
     observations?: {
       field: string;

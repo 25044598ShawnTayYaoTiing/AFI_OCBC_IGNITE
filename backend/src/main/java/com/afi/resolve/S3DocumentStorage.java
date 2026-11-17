@@ -57,7 +57,7 @@ public class S3DocumentStorage implements DocumentStorage {
           PutObjectRequest.builder()
               .bucket(bucket)
               .key(objectKey)
-              .contentType("application/pdf")
+              .contentType(DocumentContent.type(bytes))
               .serverSideEncryption(ServerSideEncryption.AES256)
               .ifNoneMatch("*")
               .build(),

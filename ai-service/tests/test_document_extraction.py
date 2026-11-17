@@ -7,6 +7,14 @@ from pydantic import ValidationError
 from app import documents as d
 from app.config import Settings
 
+class TextPage(dict):
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+    def extract_text(self):
+        return self.text
+
+
 
 def test_aliases_and_contiguous_source_values():
     page = "Customer Full Name\nAlex Tan\nMailing Address\n12 Sample Lane\nPostal Code\n000000\nEmail Address\nalex@example.invalid\nContact Number\n6000 0000"
@@ -75,8 +83,8 @@ def test_duplicate_fields_require_rejection():
 
 def test_varied_synthetic_marker_layout_and_reference(monkeypatch):
     page = 'SYNTHETIC DEMO DATA - Not an OCBC form\nClient Details\nClient ID\nDEMO-CUST-1042'
-    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(is_encrypted=False,
-        pages=[SimpleNamespace(extract_text=lambda: page)]))
+    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(is_encrypted=False, trailer={'/Root': {}},
+        pages=[TextPage(page)]))
     monkeypatch.setattr(d, 'generate', lambda *a: d.ModelExtraction(document_type='CUSTOMER_INFORMATION',
         fields=[d.ModelEvidenceField(field='Client ID', value='DEMO-CUST-1042', page=1,
             supporting_text='Client ID\nDEMO-CUST-1042')], requires_review=False))
@@ -95,8 +103,8 @@ def test_invalid_pdf_is_distinct():
 
 
 def test_unsupported_document_does_not_call_gemini(monkeypatch):
-    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(is_encrypted=False,
-        pages=[SimpleNamespace(extract_text=lambda: 'Synthetic demonstration invoice\nAmount: 100')]))
+    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(is_encrypted=False, trailer={'/Root': {}},
+        pages=[TextPage('Synthetic demonstration invoice\nAmount: 100')]))
     monkeypatch.setattr(d, 'generate', lambda *a: pytest.fail('Unsupported document reached Gemini'))
     with pytest.raises(HTTPException) as error:
         d.extract(d.ExtractRequest(document_id='test', pdf_base64=base64.b64encode(b'%PDF-test').decode()),
@@ -138,8 +146,8 @@ def test_http_extraction_still_requires_service_authentication(client):
                                                (RuntimeError('unavailable'), 503, 'AI_SERVICE_ERROR')])
 def test_schema_failure_and_provider_failure_are_distinct(monkeypatch, failure, status, code):
     page = 'Synthetic demo data\nClient Details\nClient ID\nDEMO-1042'
-    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(is_encrypted=False,
-        pages=[SimpleNamespace(extract_text=lambda: page)]))
+    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(is_encrypted=False, trailer={'/Root': {}},
+        pages=[TextPage(page)]))
     def fail(*args):
         raise failure
     monkeypatch.setattr(d, 'generate', fail)
