@@ -330,16 +330,7 @@ class CustomerIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     assertThat(corrected.path("submission").path("status").asText())
-        .isEqualTo("RESOLUTION_MANAGEMENT");
-    mvc.perform(
-            post("/api/documents/submissions/" + id + "/approve")
-                .with(httpBasic("reviewer", "reviewer-demo"))
-                .contentType("application/json")
-                .content(
-                    s.json(
-                        Domain.map(
-                            "revision", corrected.path("submission").path("revision").asInt()))))
-        .andExpect(status().isOk());
+        .isEqualTo("OPERATIONS");
     assertThat(corrected.path("corrections").size()).isZero();
     upload(path, token, replaceKey, file("TAX-corrected")).andExpect(status().isOk());
     upload(path, token, UUID.randomUUID().toString(), file("TAX-again"))
