@@ -747,15 +747,110 @@ public class DocumentService {
     }
   }
 
-  @Transactional(rollbackFor = Exception.class)
   public Object upload(String id, List<MultipartFile> files, String replace, Authentication a)
       throws Exception {
     return uploadInternal(id, files, replace, a, true);
   }
 
-  @Transactional(rollbackFor = Exception.class)
   public Object upload(String id, List<MultipartFile> files, String replace, Authentication a, boolean combineImages) throws Exception {
     return uploadInternal(id, files, replace, a, true, combineImages);
+  }
+
+  private record PendingUpload(
+      String docId,
+      String versionId,
+      int version,
+      String filename,
+      String hash,
+      String key,
+      byte[] bytes,
+      boolean fromImages,
+      boolean combineImages,
+      String sourceHash,
+      String groupHash,
+      int sourcePageCount,
+      Object sourceImages,
+      boolean replacement,
+      String previousDocType,
+      Integer previousVersion) {}
+
+  void deleteInitialDraft(String id, String customerId, String key) {
+    List<String> storageKeys =
+        s.inTx(
+            () -> {
+              var keys =
+                  s.db.queryForList(
+                      "SELECT v.storage_key FROM document_versions v JOIN submission_documents d"
+                          + " ON d.id=v.document_id WHERE d.submission_id=?",
+                      String.class,
+                      id);
+              s.db.update(
+                  "DELETE FROM customer_upload_requests WHERE customer_id=? AND request_key=?",
+                  customerId,
+                  key);
+              s.db.update(
+                  "DELETE FROM customer_email_outbox WHERE notification_id IN (SELECT id FROM"
+                      + " customer_notifications WHERE submission_id=?)",
+                  id);
+              s.db.update("DELETE FROM customer_notifications WHERE submission_id=?", id);
+              s.db.update(
+                  "DELETE FROM extracted_fields WHERE version_id IN (SELECT v.id FROM"
+                      + " document_versions v JOIN submission_documents d ON d.id=v.document_id"
+                      + " WHERE d.submission_id=?)",
+                  id);
+              s.db.update(
+                  "DELETE FROM document_versions WHERE document_id IN (SELECT id FROM"
+                      + " submission_documents WHERE submission_id=?)",
+                  id);
+              s.db.update("DELETE FROM submission_documents WHERE submission_id=?", id);
+              s.db.update("DELETE FROM customer_eforms WHERE submission_id=?", id);
+              s.db.update("DELETE FROM audit_logs WHERE submission_id=?", id);
+              s.db.update("DELETE FROM document_submissions WHERE id=?", id);
+              return keys;
+            });
+    cleanupStorageKeys(storageKeys);
+  }
+
+  boolean hasPendingVerification(String id) {
+    return s.inTx(
+        () ->
+            documents(id, false).stream()
+                .anyMatch(
+                    d ->
+                        Boolean.TRUE.equals(
+                            s.readMap(Objects.toString(d.get("extraction_json"), "{}"))
+                                .get("pending_verification"))));
+  }
+
+  private void cleanupStorageKeys(List<String> keys) {
+    for (String key : keys) {
+      if (key == null || key.isBlank()) continue;
+      try {
+        storage.delete(key);
+      } catch (Exception cleanupFailure) {
+        org.slf4j.LoggerFactory.getLogger(DocumentService.class)
+            .warn("Private document cleanup failed for key {}; reconcile orphan objects", key);
+      }
+    }
+  }
+
+  private static boolean isTransientAiFailure(Throwable t) {
+    for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+      if (cur instanceof ApiException api && api.status() >= 500) return true;
+      if (cur instanceof RestClientResponseException resp && resp.getStatusCode().is5xxServerError())
+        return true;
+      if (cur instanceof RestClientException) return true;
+    }
+    return false;
+  }
+
+  private static String transientReasonCode(Throwable t) {
+    for (Throwable cur = t; cur != null; cur = cur.getCause()) {
+      if (cur instanceof ApiException api) return api.code();
+      if (cur instanceof java.net.SocketTimeoutException
+          || cur instanceof java.util.concurrent.TimeoutException) return "AI_TIMEOUT";
+    }
+    return "AI_SERVICE_ERROR";
   }
 
   Object uploadInternal(
@@ -764,28 +859,93 @@ public class DocumentService {
     return uploadInternal(id, files, replace, a, process, false);
   }
 
-  Object uploadInternal(String id, List<MultipartFile> files, String replace, Authentication a, boolean process, boolean combineImages) throws Exception {
-    var c = access(id, a, true);
-    editable(c);
+  Object uploadInternal(
+      String id,
+      List<MultipartFile> files,
+      String replace,
+      Authentication a,
+      boolean process,
+      boolean combineImages)
+      throws Exception {
     if (files.isEmpty() || files.size() > 10 || (replace != null && files.size() != 1 && !combineImages))
       throw new ApiException(400, "FILE_LIMIT", "Choose 1 to 10 documents, or one replacement form");
-    if (files.stream().mapToLong(MultipartFile::getSize).sum() > (combineImages ? 12L : 100L) * 1024 * 1024)
+    if (files.stream().mapToLong(MultipartFile::getSize).sum()
+        > (combineImages ? 12L : 100L) * 1024 * 1024)
       throw new ApiException(400, "FILE_LIMIT", "Combined limit is 100 MB, or 12 MB for pages of one form");
     List<byte[]> imagePages = new ArrayList<>();
     if (combineImages) {
       for (var page : files) {
         var raw = page.getBytes();
         DocumentContent.validate(page.getOriginalFilename(), raw);
-        if (!DocumentContent.type(raw).startsWith("image/")) throw new ApiException(400, "INVALID_IMAGE_GROUP", "Grouped pages must all be JPG or PNG images of one form");
+        if (!DocumentContent.type(raw).startsWith("image/"))
+          throw new ApiException(
+              400, "INVALID_IMAGE_GROUP", "Grouped pages must all be JPG or PNG images of one form");
         imagePages.add(raw);
       }
     }
     var originals = files;
     if (combineImages) files = List.of(files.getFirst());
-    if (documents(id, false).size()
-            + documents(id, true).size()
-            + (replace == null ? files.size() : 0)
-        > 30) throw new ApiException(400, "FILE_LIMIT", "At most 30 documents per case");
+
+    final var uploadFiles = files;
+    var prep =
+        s.inTx(
+            () -> {
+              var c = access(id, a, true);
+              editable(c);
+              if (documents(id, false).size()
+                      + documents(id, true).size()
+                      + (replace == null ? uploadFiles.size() : 0)
+                  > 30) throw new ApiException(400, "FILE_LIMIT", "At most 30 documents per case");
+              Map<String, Object> oldDoc = null;
+              if (replace != null) {
+                var old =
+                    s.db.queryForList(
+                        "SELECT * FROM submission_documents WHERE id=? AND submission_id=? AND"
+                            + " repository_only=FALSE",
+                        replace,
+                        id);
+                if (old.isEmpty())
+                  throw new ApiException(404, "NOT_FOUND", "Replacement document not found in this case");
+                oldDoc = old.getFirst();
+              }
+              return map(
+                  "captureMethod", Objects.toString(c.get("capture_method"), ""),
+                  "prevStatus", Objects.toString(c.get("status"), "DRAFT"),
+                  "prevRevision", ((Number) c.get("revision")).intValue(),
+                  "oldDoc", oldDoc,
+                  "existingHashes",
+                      s.db.queryForList(
+                          "SELECT v.sha256,v.extraction_json FROM document_versions v JOIN"
+                              + " submission_documents d ON d.id=v.document_id WHERE"
+                              + " d.submission_id=?",
+                          id));
+            });
+
+    String captureMethod = (String) prep.get("captureMethod");
+    @SuppressWarnings("unchecked")
+    var oldDoc = (Map<String, Object>) prep.get("oldDoc");
+    @SuppressWarnings("unchecked")
+    var existingRows = (List<Map<String, Object>>) prep.get("existingHashes");
+    String groupHash =
+        combineImages
+            ? CustomerSessions.hash(
+                s.json(
+                    imagePages.stream()
+                        .map(raw -> Base64.getEncoder().encodeToString(raw))
+                        .toList()))
+            : null;
+
+    record PreparedFile(
+        String docId,
+        String versionId,
+        int version,
+        String filename,
+        String hash,
+        byte[] bytes,
+        boolean fromImages,
+        String sourceHash,
+        ImagePdfService.Converted converted) {}
+    var prepared = new ArrayList<PreparedFile>();
     for (var file : files) {
       String filename =
           Path.of(
@@ -796,171 +956,458 @@ public class DocumentService {
       byte[] bytes = file.getBytes();
       DocumentContent.validate(filename, bytes);
       String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-      String groupHash = combineImages ? CustomerSessions.hash(s.json(imagePages.stream().map(raw -> Base64.getEncoder().encodeToString(raw)).toList())) : null;
       final String originalHash = hash;
       boolean singleImage = !combineImages && DocumentContent.type(bytes).startsWith("image/");
-      boolean duplicate = singleImage ? s.db.queryForList("SELECT v.sha256,v.extraction_json FROM document_versions v JOIN submission_documents d ON d.id=v.document_id WHERE d.submission_id=?", id).stream()
-          .anyMatch(row -> originalHash.equals(row.get("sha256")) || originalHash.equals(s.readMap((String) row.get("extraction_json")).get("image_source_sha256"))) : combineImages ? s.db.queryForList("SELECT v.extraction_json FROM document_versions v JOIN submission_documents d ON d.id=v.document_id WHERE d.submission_id=?", id).stream()
-          .anyMatch(row -> groupHash.equals(s.readMap((String) row.get("extraction_json")).get("image_group_sha256"))) : s.db.queryForObject(
-              "SELECT COUNT(*) FROM document_versions v JOIN submission_documents d ON"
-                  + " d.id=v.document_id WHERE d.submission_id=? AND v.sha256=?",
-              Integer.class,
-              id,
-              hash)
-          > 0;
+      boolean duplicate =
+          singleImage
+              ? existingRows.stream()
+                  .anyMatch(
+                      row ->
+                          originalHash.equals(row.get("sha256"))
+                              || originalHash.equals(
+                                  s.readMap((String) row.get("extraction_json"))
+                                      .get("image_source_sha256")))
+              : combineImages
+                  ? existingRows.stream()
+                      .anyMatch(
+                          row ->
+                              groupHash.equals(
+                                  s.readMap((String) row.get("extraction_json"))
+                                      .get("image_group_sha256")))
+                  : existingRows.stream().anyMatch(row -> originalHash.equals(row.get("sha256")));
       if (duplicate)
         throw new ApiException(
             409, "DUPLICATE_FILE", "This exact document already exists in the case's document history");
       String docId = replace == null ? s.id("FILE") : replace;
+      int version =
+          oldDoc == null ? 1 : ((Number) oldDoc.get("current_version")).intValue() + 1;
       boolean fromImages = DocumentContent.type(bytes).startsWith("image/");
       ImagePdfService.Converted converted = null;
-      String sourceHash = hash;
-      JsonNode extracted;
-      try {
-        if (fromImages) {
-          List<byte[]> pages = combineImages ? imagePages : List.of(bytes);
-          List<String> names = combineImages ? originals.stream().map(MultipartFile::getOriginalFilename).toList() : List.of(filename);
-          converted = imagePdfs.convert(id, pages, names, a.getName());
-          bytes = converted.pdf();
-          hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
-          filename = filename.replaceFirst("(?i)\\.(png|jpe?g)$", "") + ".pdf";
-          extracted = extractionRequest(bytes, docId, null, true);
-          var metadata = (com.fasterxml.jackson.databind.node.ObjectNode) extracted;
-          metadata.put("converted_from_images", true);
-          metadata.put("image_source_sha256", sourceHash);
-          metadata.set("source_images", converted.originals());
-          metadata.put("conversion_library", "img2pdf");
-          metadata.put("conversion_page_count", converted.originals().size());
-          if (combineImages) metadata.put("image_group_sha256", groupHash);
-          for (var field : extracted.path("fields"))
-            if (field.path("page").asInt() > converted.originals().size())
-              throw new ApiException(422, "EXTRACTION_FAILED", "Extracted page references exceed the converted PDF page count");
-        } else {
-          extracted = combineImages ? extractionPayload(bytes, docId, imagePages) : extraction(bytes, docId);
-        }
-      } catch (ApiException error) {
-        if (error.status() >= 500) throw error;
-        String attachment = combineImages ? "Combined image pages" : filename;
-        throw new ApiException(error.status(), error.code(), attachment + " — " + error.getMessage());
+      if (fromImages) {
+        List<byte[]> pages = combineImages ? imagePages : List.of(bytes);
+        List<String> names =
+            combineImages
+                ? originals.stream().map(MultipartFile::getOriginalFilename).toList()
+                : List.of(filename);
+        converted = imagePdfs.convert(id, pages, names, a.getName());
+        bytes = converted.pdf();
+        hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        filename = filename.replaceFirst("(?i)\\.(png|jpe?g)$", "") + ".pdf";
       }
-      // Visual approval requires a completed corroborating assessment.
-      if ((combineImages || fromImages)
-          && !"PASSED".equals(extracted.path("decision").path("outcome").asText()))
-        ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).put("requires_review", true);
-      if ("DIGITAL_EFORM".equals(c.get("capture_method"))
-          && !"SUPPORTING_DOCUMENT".equals(extracted.path("document_type").asText())) {
-        // An uploaded document cannot stand in for the authenticated declaration.
-        var evidence = (com.fasterxml.jackson.databind.node.ObjectNode) extracted;
-        evidence.put("document_type", "UNKNOWN");
-        evidence.put("requires_review", true);
-      }
-      int version = 1;
-      if (replace != null) {
-        var old =
-            s.db.queryForList(
-                "SELECT * FROM submission_documents WHERE id=? AND submission_id=? AND"
-                    + " repository_only=FALSE",
-                replace,
-                id);
-        if (old.isEmpty())
-          throw new ApiException(404, "NOT_FOUND", "Replacement document not found in this case");
-        String previousType = (String) old.getFirst().get("document_type");
-        String nextType = extracted.path("document_type").asText();
-        boolean uncertainReplacement = "UNKNOWN".equals(previousType)
-            || ("SUPPORTING_DOCUMENT".equals(previousType) && "UNKNOWN".equals(nextType));
-        if (!previousType.equals(nextType) && !uncertainReplacement)
-          throw new ApiException(
-              409, "WRONG_DOCUMENT_TYPE", "Replacement must have the same document classification");
-        version = ((Number) old.getFirst().get("current_version")).intValue() + 1;
-        s.db.update("UPDATE submission_documents SET current_version=?,document_type=? WHERE id=?",
-            version, nextType, docId);
-      } else
-        s.db.update(
-            "INSERT INTO submission_documents(id,submission_id,document_type) VALUES(?,?,?)",
-            docId,
-            id,
-            extracted.path("document_type").asText());
-      String key = UUID.randomUUID() + DocumentContent.extension(bytes), versionId = s.id("VER");
-      // Register before writing: a failed write may still have created a partial object.
-      // Remove newly created files on database rollback; accepted versions are immutable.
-      if (org.springframework.transaction.support.TransactionSynchronizationManager
-          .isSynchronizationActive())
-        org.springframework.transaction.support.TransactionSynchronizationManager
-            .registerSynchronization(
-                new org.springframework.transaction.support.TransactionSynchronization() {
-                  public void afterCompletion(int status) {
-                    if (status != STATUS_COMMITTED)
-                      try {
-                        storage.delete(key);
-                      } catch (Exception cleanupFailure) {
-                        org.slf4j.LoggerFactory.getLogger(DocumentService.class)
-                            .warn(
-                                "Private document rollback cleanup failed for key {}; reconcile"
-                                    + " orphan objects with document_versions",
-                                key);
-                      }
-                  }
-                });
-      storage.put(key, bytes);
-      s.db.update(
-          "INSERT INTO"
-              + " document_versions(id,document_id,version,filename,sha256,storage_key,size_bytes,extraction_json,uploaded_by,created_at)"
-              + " VALUES(?,?,?,?,?,?,?,?,?,?)",
-          versionId,
-          docId,
-          version,
-          filename,
-          hash,
-          key,
-          bytes.length,
-          extracted.toString(),
-          a.getName(),
-          Store.now());
-      for (var f : extracted.path("fields"))
-        s.db.update(
-            "INSERT INTO"
-                + " extracted_fields(id,version_id,field_name,field_value,page_number,supporting_text,method)"
-                + " VALUES(?,?,?,?,?,?,?)",
-            s.id("FIELD"),
-            versionId,
-            f.path("field").asText(),
-            f.path("value").asText(),
-            f.path("page").asInt(),
-            f.path("supporting_text").asText(),
-            extracted.path("method").asText());
-      event(
-          id,
-          a,
-          replace == null ? "UPLOADED" : "REPLACED",
-          map(
-              "documentId",
+      prepared.add(
+          new PreparedFile(
               docId,
-              "version",
+              s.id("VER"),
               version,
-              "sha256",
+              filename,
               hash,
-              "method",
-              extracted.path("method").asText(),
-              "extractionModel", extracted.path("model").asText(""),
-              "decisionModel", extracted.path("decision").path("model").asText(""),
-              "decisionOutcome", extracted.path("decision").path("outcome").asText(""),
-              "convertedFromImages", fromImages,
-              "sourcePageCount", fromImages ? converted.originals().size() : 0));
+              bytes,
+              fromImages,
+              originalHash,
+              converted));
     }
-    s.db.update(
-        "UPDATE document_submissions SET"
-            + " revision=revision+1,validated_revision=NULL,status='PENDING_VALIDATION' WHERE id=?",
-        id);
-    s.db.update(
-        "UPDATE correction_tasks SET status='CORRECTION_SUBMITTED' WHERE submission_id=? AND"
-            + " status<>'RESOLVED'",
-        id);
-    if (process) {
+
+    var createdKeys = new ArrayList<String>();
+    var pendingUploads = new ArrayList<PendingUpload>();
+    try {
+      for (var item : prepared) {
+        String key = UUID.randomUUID() + DocumentContent.extension(item.bytes());
+        boolean syncActive =
+            org.springframework.transaction.support.TransactionSynchronizationManager
+                .isSynchronizationActive();
+        if (syncActive) {
+          final String rollbackKey = key;
+          org.springframework.transaction.support.TransactionSynchronizationManager
+              .registerSynchronization(
+                  new org.springframework.transaction.support.TransactionSynchronization() {
+                    public void afterCompletion(int status) {
+                      if (status != STATUS_COMMITTED) cleanupStorageKeys(List.of(rollbackKey));
+                    }
+                  });
+        } else {
+          createdKeys.add(key);
+        }
+        storage.put(key, item.bytes());
+        pendingUploads.add(
+            new PendingUpload(
+                item.docId(),
+                item.versionId(),
+                item.version(),
+                item.filename(),
+                item.hash(),
+                key,
+                item.bytes(),
+                item.fromImages(),
+                combineImages,
+                item.sourceHash(),
+                groupHash,
+                item.converted() == null ? 0 : item.converted().originals().size(),
+                item.converted() == null
+                    ? null
+                    : s.read(item.converted().originals().toString(), Object.class),
+                replace != null,
+                oldDoc == null ? null : (String) oldDoc.get("document_type"),
+                oldDoc == null ? null : ((Number) oldDoc.get("current_version")).intValue()));
+      }
+    } catch (Exception storageFailure) {
+      cleanupStorageKeys(createdKeys);
+      throw storageFailure;
+    }
+
+    // Persist evidence and submission pending-verification state BEFORE external AI calls.
+    try {
+      s.inTxVoid(
+          () -> {
+            for (var item : pendingUploads) {
+              var pendingMeta = new LinkedHashMap<String, Object>();
+              pendingMeta.put("document_id", item.docId());
+              pendingMeta.put(
+                  "document_type",
+                  item.previousDocType() != null ? item.previousDocType() : "UNKNOWN");
+              pendingMeta.put("method", "PENDING_VERIFICATION");
+              pendingMeta.put("requires_review", true);
+              pendingMeta.put("pending_verification", true);
+              pendingMeta.put("storage_key", item.key());
+              pendingMeta.put("combine_images", item.combineImages());
+              pendingMeta.put("fields", List.of());
+              if (item.fromImages()) {
+                pendingMeta.put("converted_from_images", true);
+                pendingMeta.put("image_source_sha256", item.sourceHash());
+                pendingMeta.put("source_images", item.sourceImages());
+                pendingMeta.put("conversion_library", "img2pdf");
+                pendingMeta.put("conversion_page_count", item.sourcePageCount());
+                if (item.combineImages()) pendingMeta.put("image_group_sha256", item.groupHash());
+              }
+              if (item.replacement()) {
+                s.db.update(
+                    "UPDATE submission_documents SET current_version=? WHERE id=?",
+                    item.version(),
+                    item.docId());
+              } else {
+                s.db.update(
+                    "INSERT INTO submission_documents(id,submission_id,document_type) VALUES(?,?,?)",
+                    item.docId(),
+                    id,
+                    "UNKNOWN");
+              }
+              s.db.update(
+                  "INSERT INTO"
+                      + " document_versions(id,document_id,version,filename,sha256,storage_key,"
+                      + "size_bytes,extraction_json,uploaded_by,created_at)"
+                      + " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                  item.versionId(),
+                  item.docId(),
+                  item.version(),
+                  item.filename(),
+                  item.hash(),
+                  item.key(),
+                  item.bytes().length,
+                  s.json(pendingMeta),
+                  a.getName(),
+                  Store.now());
+            }
+            s.db.update(
+                "UPDATE document_submissions SET"
+                    + " revision=revision+1,validated_revision=NULL,status='PENDING_VALIDATION'"
+                    + " WHERE id=?",
+                id);
+            s.db.update(
+                "UPDATE correction_tasks SET status='CORRECTION_SUBMITTED' WHERE submission_id=?"
+                    + " AND status<>'RESOLVED'",
+                id);
+          });
+    } catch (RuntimeException dbFailure) {
+      cleanupStorageKeys(createdKeys);
+      throw dbFailure;
+    }
+
+    boolean pendingOutage = false;
+    for (var item : pendingUploads) {
+      String outcome =
+          extractAndCommitPendingItem(
+              id,
+              item,
+              captureMethod,
+              (String) prep.get("prevStatus"),
+              combineImages,
+              imagePages,
+              a);
+      if ("PENDING".equals(outcome)) pendingOutage = true;
+    }
+
+    if (pendingOutage) {
+      recordPendingNotification(id);
+    } else if (process) {
       validateInternal(id, a);
-      orchestrator.run(this, id, a);
+      if (!hasPendingVerification(id)) orchestrator.run(this, id, a);
       syncCustomer(id);
     }
     return detail(id, a);
+  }
+
+  private String extractAndCommitPendingItem(
+      String id,
+      PendingUpload item,
+      String captureMethod,
+      String prevSubmissionStatus,
+      boolean combineImages,
+      List<byte[]> imagePages,
+      Authentication a) {
+    try {
+      JsonNode extracted =
+          item.fromImages()
+              ? extractionRequest(item.bytes(), item.docId(), null, true)
+              : (combineImages && !imagePages.isEmpty()
+                  ? extractionPayload(item.bytes(), item.docId(), imagePages)
+                  : extraction(item.bytes(), item.docId()));
+      var metadata = (com.fasterxml.jackson.databind.node.ObjectNode) extracted;
+      metadata.put("storage_key", item.key());
+      metadata.put("combine_images", item.combineImages());
+      metadata.put("pending_verification", false);
+      if (item.fromImages()) {
+        metadata.put("converted_from_images", true);
+        metadata.put("image_source_sha256", item.sourceHash());
+        metadata.set("source_images", s.json.valueToTree(item.sourceImages()));
+        metadata.put("conversion_library", "img2pdf");
+        metadata.put("conversion_page_count", item.sourcePageCount());
+        if (item.combineImages()) metadata.put("image_group_sha256", item.groupHash());
+        if (item.sourcePageCount() > 0) {
+          for (var field : extracted.path("fields"))
+            if (field.path("page").asInt() > item.sourcePageCount())
+              throw new ApiException(
+                  422, "EXTRACTION_FAILED", "Extracted page references exceed the converted PDF page count");
+        }
+      }
+      if ((item.combineImages() || item.fromImages())
+          && !"PASSED".equals(extracted.path("decision").path("outcome").asText())) {
+        metadata.put("requires_review", true);
+      }
+      if ("DIGITAL_EFORM".equals(captureMethod)
+          && !"SUPPORTING_DOCUMENT".equals(extracted.path("document_type").asText())) {
+        metadata.put("document_type", "UNKNOWN");
+        metadata.put("requires_review", true);
+      }
+      String nextType = extracted.path("document_type").asText("UNKNOWN");
+      if (item.replacement()) {
+        String previousType = Objects.toString(item.previousDocType(), "UNKNOWN");
+        boolean uncertainReplacement =
+            "UNKNOWN".equals(previousType)
+                || ("SUPPORTING_DOCUMENT".equals(previousType) && "UNKNOWN".equals(nextType));
+        if (!previousType.equals(nextType) && !uncertainReplacement) {
+          throw new ApiException(
+              409, "WRONG_DOCUMENT_TYPE", "Replacement must have the same document classification");
+        }
+      }
+      s.inTxVoid(
+          () -> {
+            s.db.update(
+                "UPDATE submission_documents SET document_type=? WHERE id=?",
+                nextType,
+                item.docId());
+            s.db.update(
+                "UPDATE document_versions SET extraction_json=? WHERE id=?",
+                metadata.toString(),
+                item.versionId());
+            s.db.update("DELETE FROM extracted_fields WHERE version_id=?", item.versionId());
+            for (var f : extracted.path("fields"))
+              s.db.update(
+                  "INSERT INTO"
+                      + " extracted_fields(id,version_id,field_name,field_value,page_number,"
+                      + "supporting_text,method) VALUES(?,?,?,?,?,?,?)",
+                  s.id("FIELD"),
+                  item.versionId(),
+                  f.path("field").asText(),
+                  f.path("value").asText(),
+                  f.path("page").asInt(),
+                  f.path("supporting_text").asText(),
+                  extracted.path("method").asText());
+            event(
+                id,
+                a,
+                item.replacement() ? "REPLACED" : "UPLOADED",
+                map(
+                    "documentId",
+                    item.docId(),
+                    "version",
+                    item.version(),
+                    "sha256",
+                    item.hash(),
+                    "method",
+                    extracted.path("method").asText(),
+                    "extractionModel",
+                    extracted.path("model").asText(""),
+                    "decisionModel",
+                    extracted.path("decision").path("model").asText(""),
+                    "decisionOutcome",
+                    extracted.path("decision").path("outcome").asText(""),
+                    "convertedFromImages",
+                    item.fromImages(),
+                    "sourcePageCount",
+                    item.fromImages() ? item.sourcePageCount() : 0));
+          });
+      return "EXTRACTED";
+    } catch (ApiException error) {
+      if (error.status() >= 500 || isTransientAiFailure(error)) {
+        markVersionStillPending(id, item, error.code(), a);
+        return "PENDING";
+      }
+      compensateRejectedUpload(id, item, prevSubmissionStatus);
+      if (error.status() == 409) throw error;
+      String attachment = combineImages ? "Combined image pages" : item.filename();
+      throw new ApiException(error.status(), error.code(), attachment + " — " + error.getMessage());
+    } catch (Exception failure) {
+      if (isTransientAiFailure(failure)) {
+        markVersionStillPending(id, item, transientReasonCode(failure), a);
+        return "PENDING";
+      }
+      throw new RuntimeException(failure);
+    }
+  }
+
+  private void markVersionStillPending(
+      String id, PendingUpload item, String reason, Authentication a) {
+    s.inTxVoid(
+        () -> {
+          var rows =
+              s.db.queryForList(
+                  "SELECT extraction_json FROM document_versions WHERE id=?", item.versionId());
+          var meta =
+              rows.isEmpty()
+                  ? new LinkedHashMap<String, Object>()
+                  : new LinkedHashMap<>(
+                      s.readMap(Objects.toString(rows.getFirst().get("extraction_json"), "{}")));
+          meta.put("pending_verification", true);
+          meta.put("method", "PENDING_VERIFICATION");
+          meta.put("pending_reason", reason);
+          meta.put("pending_retryable", true);
+          s.db.update(
+              "UPDATE document_versions SET extraction_json=? WHERE id=?",
+              s.json(meta),
+              item.versionId());
+          s.db.update(
+              "UPDATE document_submissions SET status='PENDING_VALIDATION' WHERE id=? AND"
+                  + " status NOT IN ('OPERATIONS','CANCELLED')",
+              id);
+          event(
+              id,
+              a,
+              "AI_VERIFICATION_PENDING",
+              map("documentId", item.docId(), "versionId", item.versionId(), "reason", reason));
+        });
+  }
+
+  private void compensateRejectedUpload(
+      String id, PendingUpload item, String prevSubmissionStatus) {
+    s.inTxVoid(
+        () -> {
+          s.db.update("DELETE FROM extracted_fields WHERE version_id=?", item.versionId());
+          s.db.update("DELETE FROM document_versions WHERE id=?", item.versionId());
+          if (item.replacement() && item.previousVersion() != null) {
+            s.db.update(
+                "UPDATE submission_documents SET current_version=?,document_type=? WHERE id=?",
+                item.previousVersion(),
+                Objects.toString(item.previousDocType(), "UNKNOWN"),
+                item.docId());
+          } else {
+            s.db.update("DELETE FROM submission_documents WHERE id=?", item.docId());
+          }
+          if (prevSubmissionStatus != null && !prevSubmissionStatus.isBlank()) {
+            s.db.update(
+                "UPDATE document_submissions SET status=? WHERE id=? AND status='PENDING_VALIDATION'",
+                prevSubmissionStatus,
+                id);
+          }
+        });
+    cleanupStorageKeys(List.of(item.key()));
+  }
+
+  void recordPendingNotification(String id) {
+    if (customerNotifications == null) return;
+    s.inTxVoid(
+        () -> {
+          var rows =
+              s.db.queryForList(
+                  "SELECT customer_id,revision FROM document_submissions WHERE id=?", id);
+          if (rows.isEmpty() || rows.getFirst().get("customer_id") == null) return;
+          customerNotifications.publish(
+              id,
+              "VALIDATION_PENDING",
+              "pending:" + rows.getFirst().get("revision"),
+              "Your request and document are saved. Automated document verification is"
+                  + " temporarily delayed; retry verification without re-uploading.");
+        });
+  }
+
+  boolean retryPendingExtractions(String id, Authentication a) {
+    var pending =
+        s.inTx(
+            () -> {
+              var c = access(id, a, true);
+              String captureMethod = Objects.toString(c.get("capture_method"), "");
+              String prevStatus = Objects.toString(c.get("status"), "PENDING_VALIDATION");
+              var list = new ArrayList<Map<String, Object>>();
+              for (var d : documents(id, false)) {
+                var meta = s.readMap(Objects.toString(d.get("extraction_json"), "{}"));
+                if (!Boolean.TRUE.equals(meta.get("pending_verification"))) continue;
+                var row = new LinkedHashMap<>(d);
+                row.put("meta", meta);
+                row.put("captureMethod", captureMethod);
+                row.put("prevStatus", prevStatus);
+                list.add(row);
+              }
+              return list;
+            });
+    if (pending.isEmpty()) return true;
+    boolean anyStillPending = false;
+    for (var entry : pending) {
+      @SuppressWarnings("unchecked")
+      var meta = (Map<String, Object>) entry.get("meta");
+      String key = Objects.toString(meta.get("storage_key"), "");
+      if (key.isBlank()) {
+        anyStillPending = true;
+        continue;
+      }
+      byte[] bytes;
+      try {
+        bytes = storage.read(key);
+      } catch (Exception e) {
+        anyStillPending = true;
+        continue;
+      }
+      boolean fromImages = Boolean.TRUE.equals(meta.get("converted_from_images"));
+      int pageCount =
+          meta.get("conversion_page_count") instanceof Number n ? n.intValue() : 0;
+      int version = ((Number) entry.get("current_version")).intValue();
+      var item =
+          new PendingUpload(
+              (String) entry.get("id"),
+              (String) entry.get("version_id"),
+              version,
+              (String) entry.get("filename"),
+              (String) entry.get("sha256"),
+              key,
+              bytes,
+              fromImages,
+              Boolean.TRUE.equals(meta.get("combine_images")),
+              Objects.toString(meta.get("image_source_sha256"), ""),
+              Objects.toString(meta.get("image_group_sha256"), ""),
+              pageCount,
+              meta.get("source_images"),
+              version > 1,
+              (String) entry.get("document_type"),
+              version > 1 ? version - 1 : null);
+      String outcome =
+          extractAndCommitPendingItem(
+              id,
+              item,
+              (String) entry.get("captureMethod"),
+              (String) entry.get("prevStatus"),
+              Boolean.TRUE.equals(meta.get("combine_images")),
+              List.of(),
+              a);
+      if ("PENDING".equals(outcome)) anyStillPending = true;
+    }
+    return !anyStillPending;
   }
 
   void storeOriginal(String key, byte[] bytes) throws Exception {
@@ -1083,49 +1530,98 @@ public class DocumentService {
             "DIGITAL_EFORM"));
   }
 
-  @Transactional
   public Object reviewDocumentEvidence(
       String id, String versionId, int revision, String note, Authentication actor) {
-    if (!reviewer(actor))
-      throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
-    var c = access(id, actor, true);
-    editable(c);
-    if (!Objects.equals(c.get("revision"), revision))
-      throw new ApiException(409, "STALE_REVIEW", "Reload the current case before recording evidence review");
-    var document =
-        documents(id, false).stream()
-            .filter(d -> versionId.equals(d.get("version_id")))
-            .findFirst()
-            .orElseThrow(() -> new ApiException(409, "STALE_REVIEW", "Review the current document version"));
-    if (document.get("evidence_reviewed_by") != null) return detail(id, actor);
-    var extraction = s.readMap((String) document.get("extraction_json"));
-    if (!Boolean.TRUE.equals(extraction.get("requires_review"))
-        || "UNKNOWN".equals(document.get("document_type"))
-        || !(extraction.get("fields") instanceof List<?> fields)
-        || fields.isEmpty())
-      throw new ApiException(409, "EVIDENCE_NOT_REVIEWABLE", "Use a supported document with readable fields");
-    if (extraction.get("observations") instanceof List<?> observations
-        && observations.stream().anyMatch(item -> item instanceof Map<?, ?> observation
-            && "UNCERTAIN".equals(observation.get("issue_type"))))
-      throw new ApiException(409, "EVIDENCE_CONFLICT", "Resolve the uncertain source fields before recording review");
-    String uploader = s.db.queryForObject(
-        "SELECT uploaded_by FROM document_versions WHERE id=?", String.class, versionId);
-    if (actor.getName().equals(uploader))
-      throw new ApiException(403, "INDEPENDENT_REVIEW_REQUIRED", "Another reviewer must inspect this upload");
-    if (note == null || note.trim().length() < 12 || note.trim().length() > 1000)
-      throw new ApiException(400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12 to 1000 characters");
-    if (!storageVerified(document))
-      throw new ApiException(409, "EVIDENCE_INTEGRITY", "The original document could not be verified");
-    s.db.update("INSERT INTO document_evidence_reviews(version_id,sha256,reviewed_by,reviewed_at) VALUES(?,?,?,?)",
-        versionId, document.get("sha256"), actor.getName(), Store.now());
-    s.db.update("UPDATE document_submissions SET requires_rm_approval=TRUE,approved_revision=NULL WHERE id=?", id);
-    event(id, actor, "EVIDENCE_REVIEWED",
-        map("versionId", versionId, "sha256", document.get("sha256"), "revision", revision, "note", note.trim()));
+    boolean alreadyReviewed =
+        s.inTx(
+            () -> {
+              if (!reviewer(actor))
+                throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
+              var c = access(id, actor, true);
+              editable(c);
+              if (!Objects.equals(c.get("revision"), revision))
+                throw new ApiException(
+                    409, "STALE_REVIEW", "Reload the current case before recording evidence review");
+              var document =
+                  documents(id, false).stream()
+                      .filter(d -> versionId.equals(d.get("version_id")))
+                      .findFirst()
+                      .orElseThrow(
+                          () ->
+                              new ApiException(
+                                  409, "STALE_REVIEW", "Review the current document version"));
+              if (document.get("evidence_reviewed_by") != null) return true;
+              var extraction = s.readMap((String) document.get("extraction_json"));
+              if (!Boolean.TRUE.equals(extraction.get("requires_review"))
+                  || "UNKNOWN".equals(document.get("document_type"))
+                  || !(extraction.get("fields") instanceof List<?> fields)
+                  || fields.isEmpty())
+                throw new ApiException(
+                    409,
+                    "EVIDENCE_NOT_REVIEWABLE",
+                    "Use a supported document with readable fields");
+              if (extraction.get("observations") instanceof List<?> observations
+                  && observations.stream()
+                      .anyMatch(
+                          item ->
+                              item instanceof Map<?, ?> observation
+                                  && "UNCERTAIN".equals(observation.get("issue_type"))))
+                throw new ApiException(
+                    409,
+                    "EVIDENCE_CONFLICT",
+                    "Resolve the uncertain source fields before recording review");
+              String uploader =
+                  s.db.queryForObject(
+                      "SELECT uploaded_by FROM document_versions WHERE id=?",
+                      String.class,
+                      versionId);
+              if (actor.getName().equals(uploader))
+                throw new ApiException(
+                    403, "INDEPENDENT_REVIEW_REQUIRED", "Another reviewer must inspect this upload");
+              if (note == null || note.trim().length() < 12 || note.trim().length() > 1000)
+                throw new ApiException(
+                    400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12 to 1000 characters");
+              if (!storageVerified(document))
+                throw new ApiException(
+                    409, "EVIDENCE_INTEGRITY", "The original document could not be verified");
+              s.db.update(
+                  "INSERT INTO document_evidence_reviews(version_id,sha256,reviewed_by,reviewed_at)"
+                      + " VALUES(?,?,?,?)",
+                  versionId,
+                  document.get("sha256"),
+                  actor.getName(),
+                  Store.now());
+              s.db.update(
+                  "UPDATE document_submissions SET requires_rm_approval=TRUE,approved_revision=NULL"
+                      + " WHERE id=?",
+                  id);
+              event(
+                  id,
+                  actor,
+                  "EVIDENCE_REVIEWED",
+                  map(
+                      "versionId",
+                      versionId,
+                      "sha256",
+                      document.get("sha256"),
+                      "revision",
+                      revision,
+                      "note",
+                      note.trim()));
+              return false;
+            });
+    if (alreadyReviewed) return detail(id, actor);
     validateInternal(id, actor);
-    if (s.db.queryForObject(
-        "SELECT COUNT(*) FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id"
-            + " WHERE e.submission_id=? AND e.status='OPEN' AND r.condition_type='CLASSIFICATION'",
-        Integer.class, id) == 0) {
+    int openClassification =
+        s.inTx(
+            () ->
+                s.db.queryForObject(
+                    "SELECT COUNT(*) FROM document_exceptions e JOIN validation_rules r ON"
+                        + " r.id=e.rule_id WHERE e.submission_id=? AND e.status='OPEN' AND"
+                        + " r.condition_type='CLASSIFICATION'",
+                    Integer.class,
+                    id));
+    if (openClassification == 0 && !hasPendingVerification(id)) {
       orchestrator.run(this, id, actor);
     }
     syncCustomer(id);
@@ -1161,67 +1657,73 @@ public class DocumentService {
     return detail(id, a);
   }
 
-  @Transactional
   public Object riskDecision(
       String id, int revision, String note, boolean clearHold, Authentication actor) {
-    if (!reviewer(actor))
-      throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
-    var c = access(id, actor, true);
-    editable(c);
-    if (!Objects.equals(c.get("revision"), revision) || !currentRevisionValidated(c))
-      throw new ApiException(409, "STALE_REVIEW", "Revalidate and review the current revision");
-    if (note == null || note.trim().length() < 12 || note.length() > 1000)
-      throw new ApiException(
-          400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12?1000 characters");
-    if (clearHold) {
-      var checks = evaluate(id);
-      var assessment = new CaseRisk(s).assess(c, checks);
-      boolean critical =
-          checks.stream()
-              .anyMatch(
-                  ch ->
-                      !Boolean.TRUE.equals(ch.get("passed"))
-                          && (Objects.toString(ch.get("check_key")).startsWith("PROFILE_")
-                              || Set.of("CLASSIFICATION", "INTEGRITY")
-                                  .contains(ch.get("condition_type"))));
-      if (((Number) assessment.get("score")).intValue() >= 60 || critical)
-        throw new ApiException(
-            409,
-            "HOLD_NOT_CLEARABLE",
-            "Resolve critical evidence findings and reduce current risk before explicit clearance");
-      s.db.update("UPDATE document_submissions SET risk_hold=FALSE,requires_rm_approval=TRUE WHERE id=?", id);
-      event(id, actor, "HOLD_CLEARED", map("revision", revision, "note", note.trim()));
-      validateInternal(id, actor);
-    } else {
-      if (Boolean.TRUE.equals(c.get("risk_hold")))
-        throw new ApiException(
-            409,
-            "CASE_ON_HOLD",
-            "Clear the investigation hold before authorising customer contact");
-      s.db.update(
-          "UPDATE document_submissions SET correction_authorized_revision=? WHERE id=?",
-          revision,
-          id);
-      s.db.update(
-          "UPDATE correction_tasks SET status='AWAITING_CORRECTION',assigned_role='CUSTOMER' WHERE"
-              + " submission_id=? AND status='AWAITING_RESOLVER_AUTHORIZATION' AND exception_id IN"
-              + " (SELECT id FROM document_exceptions WHERE submission_id=? AND"
-              + " action_type='REQUEST_CORRECTION')",
-          id,
-          id);
-      if (s.db.queryForObject(
-              "SELECT COUNT(*) FROM correction_tasks WHERE submission_id=? AND"
-                  + " assigned_role='CUSTOMER' AND status='AWAITING_CORRECTION'",
-              Integer.class,
-              id)
-          > 0)
-        s.db.update("UPDATE document_submissions SET status='CORRECTION_REQUIRED' WHERE id=?", id);
-      event(
-          id,
-          actor,
-          "CUSTOMER_CORRECTION_AUTHORIZED",
-          map("revision", revision, "note", note.trim()));
-    }
+    s.inTxVoid(
+        () -> {
+          if (!reviewer(actor))
+            throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
+          var c = access(id, actor, true);
+          editable(c);
+          if (!Objects.equals(c.get("revision"), revision) || !currentRevisionValidated(c))
+            throw new ApiException(
+                409, "STALE_REVIEW", "Revalidate and review the current revision");
+          if (note == null || note.trim().length() < 12 || note.length() > 1000)
+            throw new ApiException(
+                400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12?1000 characters");
+          if (clearHold) {
+            var checks = evaluate(id);
+            var assessment = new CaseRisk(s).assess(c, checks);
+            boolean critical =
+                checks.stream()
+                    .anyMatch(
+                        ch ->
+                            !Boolean.TRUE.equals(ch.get("passed"))
+                                && (Objects.toString(ch.get("check_key")).startsWith("PROFILE_")
+                                    || Set.of("CLASSIFICATION", "INTEGRITY")
+                                        .contains(ch.get("condition_type"))));
+            if (((Number) assessment.get("score")).intValue() >= 60 || critical)
+              throw new ApiException(
+                  409,
+                  "HOLD_NOT_CLEARABLE",
+                  "Resolve critical evidence findings and reduce current risk before explicit"
+                      + " clearance");
+            s.db.update(
+                "UPDATE document_submissions SET risk_hold=FALSE,requires_rm_approval=TRUE WHERE"
+                    + " id=?",
+                id);
+            event(id, actor, "HOLD_CLEARED", map("revision", revision, "note", note.trim()));
+          } else {
+            if (Boolean.TRUE.equals(c.get("risk_hold")))
+              throw new ApiException(
+                  409,
+                  "CASE_ON_HOLD",
+                  "Clear the investigation hold before authorising customer contact");
+            s.db.update(
+                "UPDATE document_submissions SET correction_authorized_revision=? WHERE id=?",
+                revision,
+                id);
+            s.db.update(
+                "UPDATE correction_tasks SET status='AWAITING_CORRECTION',assigned_role='CUSTOMER'"
+                    + " WHERE submission_id=? AND status='AWAITING_RESOLVER_AUTHORIZATION' AND"
+                    + " exception_id IN (SELECT id FROM document_exceptions WHERE submission_id=?"
+                    + " AND action_type='REQUEST_CORRECTION')",
+                id,
+                id);
+            if (s.db.queryForObject(
+                    "SELECT COUNT(*) FROM correction_tasks WHERE submission_id=? AND"
+                        + " assigned_role='CUSTOMER' AND status='AWAITING_CORRECTION'",
+                    Integer.class,
+                    id)
+                > 0) s.db.update("UPDATE document_submissions SET status='CORRECTION_REQUIRED' WHERE id=?", id);
+            event(
+                id,
+                actor,
+                "CUSTOMER_CORRECTION_AUTHORIZED",
+                map("revision", revision, "note", note.trim()));
+          }
+        });
+    if (clearHold) validateInternal(id, actor);
     syncCustomer(id);
     return detail(id, actor);
   }
@@ -1270,11 +1772,14 @@ public class DocumentService {
     boolean pass = true;
     if ("PROFILE_MATCH".equals(rule.get("condition_type"))) {
       String field = (String) rule.get("field_name");
+      boolean includeSupport = "PROFILE_NAME".equals(key);
       var source =
           fields(
-              docs.stream()
-                  .filter(d -> !"SUPPORTING_DOCUMENT".equals(d.get("document_type")))
-                  .toList(),
+              includeSupport
+                  ? docs
+                  : docs.stream()
+                      .filter(d -> !"SUPPORTING_DOCUMENT".equals(d.get("document_type")))
+                      .toList(),
               field);
       String expected = (String) profile.get(field);
       evidence.addAll(source);
@@ -1565,16 +2070,8 @@ public class DocumentService {
         continue;
       }
       if (condition.equals("CLASSIFICATION")) {
-        boolean supportFailed =
-            "DIGITAL_EFORM".equals(c.get("capture_method"))
-                && servicePolicy.supportRequired(c, docs)
-                && !Boolean.TRUE.equals(
-                    servicePolicy
-                        .check(c, docs, Map.of("rule_key", "SERVICE_SUPPORT"))
-                        .get("passed"));
         var uncertain =
             docs.stream()
-                .filter(d -> !(supportFailed && !"SERVICE_REQUEST".equals(d.get("document_type"))))
                 .filter(
                     d ->
                         (d.get("evidence_reviewed_by") == null
@@ -1695,27 +2192,52 @@ public class DocumentService {
         evidence);
   }
 
-  @Transactional
   public Object validate(String id, Authentication a) {
-    var c = access(id, a, true);
-    editable(c);
+    s.inTxVoid(
+        () -> {
+          var c = access(id, a, true);
+          editable(c);
+        });
     validateInternal(id, a);
-    orchestrator.run(this, id, a);
+    if (!hasPendingVerification(id)) orchestrator.run(this, id, a);
     syncCustomer(id);
     return detail(id, a);
   }
 
   void validateInternal(String id, Authentication a) {
-    var c = access(id, a, true);
-    if ("CANCELLED".equals(c.get("status"))) editable(c);
+    boolean cancelled =
+        s.inTx(
+            () -> {
+              var c = access(id, a, true);
+              if ("CANCELLED".equals(c.get("status"))) editable(c);
+              return false;
+            });
+    if (cancelled) return;
+    if (!retryPendingExtractions(id, a)) {
+      recordPendingNotification(id);
+      return;
+    }
     if (addressVerifier != null) {
-      var addressSources = new ArrayList<>(documents(id, false));
-      if ("ADDRESS_CHANGE".equals(c.get("category"))) {
-        documents(id, true).stream().filter(candidate -> repositoryEligible(c, candidate))
-            .forEach(addressSources::add);
-      }
+      var addressSources =
+          s.inTx(
+              () -> {
+                var c = access(id, a, false);
+                var sources = new ArrayList<>(documents(id, false));
+                if ("ADDRESS_CHANGE".equals(c.get("category"))) {
+                  documents(id, true).stream()
+                      .filter(candidate -> repositoryEligible(c, candidate))
+                      .forEach(sources::add);
+                }
+                return sources;
+              });
       addressVerifier.refresh(addressSources);
     }
+    s.inTxVoid(() -> validateEvaluatedInTx(id, a));
+  }
+
+  void validateEvaluatedInTx(String id, Authentication a) {
+    var c = access(id, a, true);
+    if ("CANCELLED".equals(c.get("status"))) editable(c);
     var checks = evaluate(id);
     var failed = new HashSet<String>();
     s.db.update(
@@ -2111,7 +2633,7 @@ public class DocumentService {
             candidate.get("version_id"),
             "sha256",
             candidate.get("sha256")));
-    validateInternal(id, a);
+    validateEvaluatedInTx(id, a);
     s.db.update(
         "UPDATE document_exceptions SET resolution_method='AUTOMATIC_VERIFIED_ATTACHMENT' WHERE"
             + " submission_id=? AND check_key='ATTACH_SUPPORTING_DOCUMENT' AND status='RESOLVED'",
@@ -2324,11 +2846,11 @@ public class DocumentService {
             "SELECT id FROM validation_rules WHERE status='ACTIVE' ORDER BY id", String.class));
   }
 
-  @Transactional
   public Object route(String id, Authentication a) {
-    var c = access(id, a, true);
-    if (!"OPERATIONS".equals(c.get("status"))) validateInternal(id, a);
-    c = access(id, a, false);
+    boolean needsValidation =
+        s.inTx(() -> !"OPERATIONS".equals(access(id, a, true).get("status")));
+    if (needsValidation) validateInternal(id, a);
+    var c = s.inTx(() -> access(id, a, false));
     if (!"OPERATIONS".equals(c.get("status")))
       throw new ApiException(
           409, "NOT_READY", "Current package does not satisfy Operations intake policy");

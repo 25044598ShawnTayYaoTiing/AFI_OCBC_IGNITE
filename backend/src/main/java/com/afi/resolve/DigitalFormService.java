@@ -19,6 +19,9 @@ public class DigitalFormService {
   final DocumentService documents;
   final CustomerNotifications notifications;
 
+  private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Void>> inFlight =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
   public DigitalFormService(
       Store s,
       CustomerService customers,
@@ -121,17 +124,14 @@ public class DigitalFormService {
         "version", row.get("version"), "values", s.readMap((String) row.get("payload_json")));
   }
 
-  @Transactional(rollbackFor = Exception.class)
   public Object submit(String id, String key, Form form, Authentication a) throws Exception {
     return submitInternal(id, key, form, List.of(), a);
   }
 
-  @Transactional(rollbackFor = Exception.class)
   public Object submitWithDocuments(String id, String key, Form form, List<MultipartFile> files, Authentication a) throws Exception {
     return submitWithDocuments(id, key, form, files, a, false);
   }
 
-  @Transactional(rollbackFor = Exception.class)
   public Object submitWithDocuments(String id, String key, Form form, List<MultipartFile> files, Authentication a, boolean combineImages) throws Exception {
     if (files == null || files.isEmpty() || files.size() > 10)
       throw new ApiException(400, "FILE_LIMIT", "Choose 1–10 supporting documents.");
@@ -142,14 +142,13 @@ public class DigitalFormService {
     return submitInternal(id, key, form, files, a, false);
   }
 
-  Object submitInternal(String id, String key, Form form, List<MultipartFile> files, Authentication a, boolean combineImages) throws Exception {
-    var customer = customers.customer(a, true);
+  Object submitInternal(String requestedId, String key, Form rawForm, List<MultipartFile> files, Authentication a, boolean combineImages) throws Exception {
     if (key == null || !key.matches("[A-Za-z0-9_-]{8,100}"))
       throw new ApiException(
           400,
           "INVALID_KEY",
           "Supply a unique Idempotency-Key of 8–100 letters, digits, hyphens or underscores");
-    String operation = (id == null ? "/eforms" : "/submissions/" + id + "/eform") + (files.isEmpty() ? "" : "/with-documents");
+    String operation = (requestedId == null ? "/eforms" : "/submissions/" + requestedId + "/eform") + (files.isEmpty() ? "" : "/with-documents");
     if (operation.length() > 220)
       throw new ApiException(400, "INVALID_REQUEST", "Invalid submission identifier");
     var fileHashes = new ArrayList<Object>();
@@ -164,75 +163,182 @@ public class DigitalFormService {
       DocumentContent.validate(name, file.getBytes());
       fileHashes.add(map("name", name, "sha256", HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(file.getBytes()))));
     }
-    String fingerprint = CustomerSessions.hash(files.isEmpty() ? s.json(form) : s.json(map("form", form, "files", fileHashes)));
-    var previous =
-        s.db.queryForList(
-            "SELECT * FROM customer_upload_requests WHERE customer_id=? AND request_key=?",
-            customer.get("id"),
-            key);
-    if (!previous.isEmpty()) {
-      var p = previous.getFirst();
-      if (!operation.equals(p.get("operation")) || !fingerprint.equals(p.get("fingerprint")))
-        throw new ApiException(
-            409, "IDEMPOTENCY_CONFLICT", "This key belongs to a different form request");
-      return customers.detail((String) p.get("submission_id"), a);
+    String fingerprint = CustomerSessions.hash(files.isEmpty() ? s.json(rawForm) : s.json(map("form", rawForm, "files", fileHashes)));
+
+    var txResult =
+        s.inTxChecked(
+            () -> {
+              var customer = customers.customer(a, true);
+              var previous =
+                  s.db.queryForList(
+                      "SELECT * FROM customer_upload_requests WHERE customer_id=? AND request_key=?",
+                      customer.get("id"),
+                      key);
+              if (!previous.isEmpty()) {
+                var p = previous.getFirst();
+                if (!operation.equals(p.get("operation")) || !fingerprint.equals(p.get("fingerprint")))
+                  throw new ApiException(
+                      409, "IDEMPOTENCY_CONFLICT", "This key belongs to a different form request");
+                return map(
+                    "replayed", true,
+                    "submissionId", p.get("submission_id"),
+                    "customerId", customer.get("id"),
+                    "initial", false);
+              }
+              String id = requestedId;
+              var existing = id == null ? null : customers.owned(id, a);
+              boolean legacy = existing != null && "ACCOUNT_OPENING".equals(existing.get("category"));
+              var declaredAt = Store.now();
+              Form form = rawForm.declaredAt(declaredAt);
+              validateInput(form, legacy);
+              if (id == null && "RESIDENTIAL_ADDRESS_CHANGE".equals(form.requestType()))
+                throw new ApiException(400, "INVALID_FORM", "Choose an available service request.");
+              if (existing != null && !form.requestType().equals(existing.get("category")))
+                throw new ApiException(
+                    409, "REQUEST_TYPE_LOCKED", "Create a separate case for a different service request");
+              var profile = profiles.get((String) customer.get("id"));
+              boolean initial = id == null;
+              if (initial) {
+                id =
+                    documents.createOwned(
+                        (String) customer.get("customer_name"),
+                        (String) customer.get("customer_reference"),
+                        form.requestType(),
+                        (String) customer.get("relationship_manager"),
+                        (String) customer.get("id"),
+                        a);
+                s.db.update("UPDATE document_submissions SET capture_method='DIGITAL_EFORM' WHERE id=?", id);
+              } else {
+                var c = customers.owned(id, a);
+                documents.access(id, a, true);
+                documents.editable(c);
+                if (!"DIGITAL_EFORM".equals(c.get("capture_method")))
+                  throw new ApiException(
+                      409, "WRONG_CAPTURE_METHOD", "Use PDF replacements for this application");
+                if (form.expectedRevision() == null
+                    || form.expectedRevision().intValue() != ((Number) c.get("revision")).intValue())
+                  throw new ApiException(
+                      409, "STALE_FORM", "The application changed. Reload the latest form before editing");
+              }
+              int version =
+                  s.db.queryForObject(
+                      "SELECT COALESCE(MAX(version),0)+1 FROM customer_eforms WHERE submission_id=?",
+                      Integer.class,
+                      id);
+              var payload = s.readMap(s.json(form));
+              payload.put("declaredAt", declaredAt.toString());
+              s.db.update(
+                  "INSERT INTO customer_eforms VALUES(?,?,?,?,?,?,?)",
+                  s.id("EFORM"),
+                  id,
+                  version,
+                  s.json(payload),
+                  s.json(profile),
+                  a.getName(),
+                  declaredAt);
+              var common = new LinkedHashMap<String, String>();
+              common.put("customer_name", (String) customer.get("customer_name"));
+              common.put("customer_reference", (String) customer.get("customer_reference"));
+              common.put("identity_number", (String) profile.get("identity_number"));
+              common.put("request_type", form.requestType());
+              common.put("declaration_timestamp", declaredAt.toString());
+              captureDeclarationReceipts(id, form, legacy, profile, version, common, a);
+              s.db.update(
+                  "UPDATE document_submissions SET"
+                      + " revision=revision+1,validated_revision=NULL,approved_revision=NULL,"
+                      + "status='PENDING_VALIDATION' WHERE id=?",
+                  id);
+              documents.event(
+                  id,
+                  a,
+                  initial ? "EFORM_SUBMITTED" : "EFORM_CORRECTED",
+                  map(
+                      "formVersion",
+                      version,
+                      "profileSource",
+                      "SYNTHETIC_DEMO_NOT_SINGPASS",
+                      "authorisation",
+                      true,
+                      "declaredAt",
+                      declaredAt.toString()));
+              if (initial) customers.copyRepository(customer, id, a);
+              notifications.publish(
+                  id,
+                  initial ? "SUBMISSION_RECEIVED" : "CORRECTION_RECEIVED",
+                  "eform:" + key,
+                  initial
+                      ? "Your digital application has been received."
+                      : "Your updated digital declaration was received and revalidated.");
+              s.db.update(
+                  "INSERT INTO customer_upload_requests VALUES(?,?,?,?,?,?)",
+                  customer.get("id"),
+                  key,
+                  operation,
+                  fingerprint,
+                  id,
+                  Store.now());
+              var flight = new java.util.concurrent.CompletableFuture<Void>();
+              inFlight.put(customer.get("id") + ":" + key, flight);
+              return map(
+                  "replayed", false,
+                  "submissionId", id,
+                  "customerId", customer.get("id"),
+                  "flight", flight,
+                  "initial", initial);
+            });
+
+    String id = (String) txResult.get("submissionId");
+    String customerId = (String) txResult.get("customerId");
+    boolean replayed = Boolean.TRUE.equals(txResult.get("replayed"));
+    boolean initial = Boolean.TRUE.equals(txResult.get("initial"));
+    String flightKey = customerId + ":" + key;
+    if (replayed) {
+      var running = inFlight.get(flightKey);
+      if (running != null) {
+        try {
+          running.get(95, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception ignored) {}
+      }
+      if (!files.isEmpty() && documents.hasPendingVerification(id)) documents.validate(id, a);
+      return customers.detail(id, a);
     }
-    var existing = id == null ? null : customers.owned(id, a);
-    boolean legacy = existing != null && "ACCOUNT_OPENING".equals(existing.get("category"));
-    var declaredAt = Store.now();
-    form = form.declaredAt(declaredAt);
-    validateInput(form, legacy);
-    if (id == null && "RESIDENTIAL_ADDRESS_CHANGE".equals(form.requestType()))
-      throw new ApiException(400, "INVALID_FORM", "Choose an available service request.");
-    if (existing != null && !form.requestType().equals(existing.get("category")))
-      throw new ApiException(
-          409, "REQUEST_TYPE_LOCKED", "Create a separate case for a different service request");
-    var profile = profiles.get((String) customer.get("id"));
-    boolean initial = id == null;
-    if (initial) {
-      id =
-          documents.createOwned(
-              (String) customer.get("customer_name"),
-              (String) customer.get("customer_reference"),
-              form.requestType(),
-              (String) customer.get("relationship_manager"),
-              (String) customer.get("id"),
-              a);
-      s.db.update("UPDATE document_submissions SET capture_method='DIGITAL_EFORM' WHERE id=?", id);
-    } else {
-      var c = customers.owned(id, a);
-      documents.access(id, a, true);
-      documents.editable(c);
-      if (!"DIGITAL_EFORM".equals(c.get("capture_method")))
-        throw new ApiException(
-            409, "WRONG_CAPTURE_METHOD", "Use PDF replacements for this application");
-      if (form.expectedRevision() == null
-          || form.expectedRevision().intValue() != ((Number) c.get("revision")).intValue())
-        throw new ApiException(
-            409, "STALE_FORM", "The application changed. Reload the latest form before editing");
+    @SuppressWarnings("unchecked")
+    var flight = (java.util.concurrent.CompletableFuture<Void>) txResult.get("flight");
+    try {
+      if (!files.isEmpty()) {
+        try {
+          documents.uploadInternal(id, files, null, a, false, combineImages);
+        } catch (ApiException error) {
+          if (initial && error.status() < 500) {
+            documents.deleteInitialDraft(id, customerId, key);
+          }
+          throw error;
+        } catch (Exception error) {
+          if (initial) documents.deleteInitialDraft(id, customerId, key);
+          throw error;
+        }
+      }
+      if (files.isEmpty() || !documents.hasPendingVerification(id)) {
+        documents.validate(id, a);
+      }
+      return customers.detail(id, a);
+    } finally {
+      if (flight != null) {
+        flight.complete(null);
+        inFlight.remove(flightKey, flight);
+      }
     }
-    int version =
-        s.db.queryForObject(
-            "SELECT COALESCE(MAX(version),0)+1 FROM customer_eforms WHERE submission_id=?",
-            Integer.class,
-            id);
-    var payload = s.readMap(s.json(form));
-    payload.put("declaredAt", declaredAt.toString());
-    s.db.update(
-        "INSERT INTO customer_eforms VALUES(?,?,?,?,?,?,?)",
-        s.id("EFORM"),
-        id,
-        version,
-        s.json(payload),
-        s.json(profile),
-        a.getName(),
-        declaredAt);
-    var common = new LinkedHashMap<String, String>();
-    common.put("customer_name", (String) customer.get("customer_name"));
-    common.put("customer_reference", (String) customer.get("customer_reference"));
-    common.put("identity_number", (String) profile.get("identity_number"));
-    common.put("request_type", form.requestType());
-    common.put("declaration_timestamp", declaredAt.toString());
+  }
+
+  private void captureDeclarationReceipts(
+      String id,
+      Form form,
+      boolean legacy,
+      Map<String, Object> profile,
+      int version,
+      LinkedHashMap<String, String> common,
+      Authentication a)
+      throws Exception {
     if (!legacy) {
       if (form.requestType().equals("ADDRESS_CHANGE"))
         common.put("mailing_address", trim(form.mailingAddress()));
@@ -296,43 +402,6 @@ public class DigitalFormService {
         documents.captureDeclaration(id, type, values, version, a);
       }
     }
-    s.db.update(
-        "UPDATE document_submissions SET"
-            + " revision=revision+1,validated_revision=NULL,approved_revision=NULL,status='PENDING_VALIDATION'"
-            + " WHERE id=?",
-        id);
-    documents.event(
-        id,
-        a,
-        initial ? "EFORM_SUBMITTED" : "EFORM_CORRECTED",
-        map(
-            "formVersion",
-            version,
-            "profileSource",
-            "SYNTHETIC_DEMO_NOT_SINGPASS",
-            "authorisation",
-            true,
-            "declaredAt",
-            declaredAt.toString()));
-    if (!files.isEmpty()) documents.uploadInternal(id, files, null, a, !initial, combineImages);
-    if (initial) customers.copyRepository(customer, id, a);
-    if (initial || files.isEmpty()) documents.validate(id, a);
-    notifications.publish(
-        id,
-        initial ? "SUBMISSION_RECEIVED" : "CORRECTION_RECEIVED",
-        "eform:" + key,
-        initial
-            ? "Your digital application has been received."
-            : "Your updated digital declaration was received and revalidated.");
-    s.db.update(
-        "INSERT INTO customer_upload_requests VALUES(?,?,?,?,?,?)",
-        customer.get("id"),
-        key,
-        operation,
-        fingerprint,
-        id,
-        Store.now());
-    return customers.detail(id, a);
   }
 
   static String trim(String value) {
@@ -369,10 +438,8 @@ public class DigitalFormService {
         throw new ApiException(
             400, "INVALID_FORM", "Form values must be single-line and at most 500 characters");
     if ((legacy || "CONTACT_UPDATE".equals(f.requestType()))
-        && ((!trim(f.email()).isBlank()
-                    && !trim(f.email()).matches("[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+")
-                || trim(f.email()).length() > 254)
-            || (!trim(f.mobile()).isBlank() && !trim(f.mobile()).matches("[+0-9 ()-]{7,40}"))))
+        && ((!trim(f.email()).isBlank() && !BankingServicePolicy.validEmail(trim(f.email())))
+            || (!trim(f.mobile()).isBlank() && !BankingServicePolicy.validMobile(trim(f.mobile())))))
       throw new ApiException(
           400, "INVALID_FORM", "Provide a valid contact email and telephone number");
     if (!f.authorisation())

@@ -94,12 +94,22 @@ public class CustomerController {
     return customers.cancel(id, request.expectedRevision(), a);
   }
 
+  private static ResponseEntity<?> submissionResponse(Object body) {
+    if (body instanceof java.util.Map<?, ?> map
+        && map.get("processing") instanceof java.util.Map<?, ?> processing
+        && Boolean.TRUE.equals(processing.get("pendingVerification"))) {
+      return ResponseEntity.accepted().body(body);
+    }
+    return ResponseEntity.ok(body);
+  }
+
   @PostMapping(value = "/eforms/with-documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
   public Object createFormWithDocuments(@RequestHeader("Idempotency-Key") String key,
       @RequestPart("form") DigitalFormService.Form form,
       @RequestParam(defaultValue = "false") boolean combineImages,
       @RequestParam("files") List<MultipartFile> files, Authentication a) throws Exception {
-    return forms.submitWithDocuments(null, key, form, files, a, combineImages);
+    return submissionResponse(
+        forms.submitWithDocuments(null, key, form, files, a, combineImages));
   }
 
   @PostMapping(value = "/submissions/{id}/eform/with-documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -107,7 +117,14 @@ public class CustomerController {
       @RequestPart("form") DigitalFormService.Form form,
       @RequestParam(defaultValue = "false") boolean combineImages,
       @RequestParam("files") List<MultipartFile> files, Authentication a) throws Exception {
-    return forms.submitWithDocuments(id, key, form, files, a, combineImages);
+    return submissionResponse(
+        forms.submitWithDocuments(id, key, form, files, a, combineImages));
+  }
+
+  @PostMapping("/submissions/{id}/retry-validation")
+  @PreAuthorize("hasRole('CUSTOMER')")
+  public Object retryValidation(@PathVariable String id, Authentication a) throws Exception {
+    return submissionResponse(customers.retryValidation(id, a));
   }
 
   @GetMapping("/submissions/{id}/corrections")
@@ -128,7 +145,8 @@ public class CustomerController {
       @RequestParam("files") List<MultipartFile> files,
       Authentication a)
       throws Exception {
-    return customers.uploadRequest(null, null, key, files, a, requestType, combineImages);
+    return submissionResponse(
+        customers.uploadRequest(null, null, key, files, a, requestType, combineImages));
   }
 
   @PostMapping(
@@ -141,7 +159,8 @@ public class CustomerController {
       @RequestParam("files") List<MultipartFile> files,
       Authentication a)
       throws Exception {
-    return customers.uploadRequest(id, null, key, files, a, "ACCOUNT_OPENING", combineImages);
+    return submissionResponse(
+        customers.uploadRequest(id, null, key, files, a, "ACCOUNT_OPENING", combineImages));
   }
 
   @PostMapping(
@@ -155,6 +174,7 @@ public class CustomerController {
       @RequestParam("files") List<MultipartFile> files,
       Authentication a)
       throws Exception {
-    return customers.uploadRequest(id, document, key, files, a, "ACCOUNT_OPENING", combineImages);
+    return submissionResponse(
+        customers.uploadRequest(id, document, key, files, a, "ACCOUNT_OPENING", combineImages));
   }
 }

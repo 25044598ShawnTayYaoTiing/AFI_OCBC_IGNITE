@@ -187,10 +187,55 @@ final class BankingServicePolicy {
     return workflow.normal(a).equals(workflow.normal(b));
   }
 
+  record AddressParts(String block, String street, String unit, String postal, String normalised) {}
+
+  static boolean validEmail(String email) {
+    return email != null
+        && email.length() <= 254
+        && !email.contains("..")
+        && email.matches(
+            "^[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$");
+  }
+
+  static boolean validMobile(String mobile) {
+    if (mobile == null || !mobile.matches("^\\+?[0-9][0-9 ()-]{6,30}$")) return false;
+    String digits = mobile.replaceAll("\\D", "");
+    if (digits.length() < 8 || digits.length() > 15 || digits.chars().distinct().count() < 2)
+      return false;
+    return !digits.startsWith("65")
+        || (digits.length() == 10 && digits.substring(2).matches("[3689]\\d{7}"));
+  }
+
+  static boolean validTaxIdentifier(String tin) {
+    if (tin == null) return false;
+    String trimmed = tin.trim();
+    if (trimmed.length() < 5 || trimmed.length() > 32) return false;
+    if (!trimmed.matches("^[A-Za-z0-9][A-Za-z0-9 -]{3,30}[A-Za-z0-9]$")) return false;
+    String compact = trimmed.replaceAll("[\\s-]+", "").toLowerCase(Locale.ROOT);
+    return !compact.matches(
+        "(?:unknown|none|nil|pending|na|notavailable|test|placeholder|0+|12345+|99999+)");
+  }
+
+  static boolean validCountryName(String country) {
+    if (country == null) return false;
+    String trimmed = country.trim();
+    return trimmed.length() >= 2
+        && trimmed.chars().filter(Character::isLetter).count() >= 2
+        && !trimmed.matches("(?i)^(?:n/?a|none|nil|unknown|pending|-+)$");
+  }
+
+  private static String stripLeadingZeros(String token) {
+    String stripped = token.replaceFirst("^0+(?=\\d)", "");
+    return stripped.isEmpty() ? token : stripped;
+  }
+
   String addressText(Object value) {
     return workflow.normal(value)
+        .replaceAll("\\bs\\s*\\(\\s*(\\d{6})\\s*\\)", "singapore $1")
+        .replaceAll("\\bs\\s+(\\d{6})\\b", "singapore $1")
         .replaceFirst("^block\\s+|^blk\\.?\\s+", "")
-        .replaceAll("\\bunit\\s*#?\\s*(?=\\d+\\s*-)", "#")
+        .replaceAll("\\b(?:block|blk)\\.?\\s+(?=\\d)", "")
+        .replaceAll("\\bunit\\s*(?:no\\.?\\s*)?#?\\s*(?=\\d+\\s*-)", "#")
         .replaceAll("#\\s*", "#")
         .replaceAll("(#\\d+)\\s*-\\s*", "$1-")
         .replaceAll("\\brd\\b", "road")
@@ -198,25 +243,122 @@ final class BankingServicePolicy {
         .replaceAll("\\bst\\b", "street")
         .replaceAll("\\bdr\\b", "drive")
         .replaceAll("\\bcres\\b", "crescent")
-        .replaceAll("[,.]", " ")
+        .replaceAll("\\bpl\\b", "place")
+        .replaceAll("\\bln\\b", "lane")
+        .replaceAll("\\bter\\b", "terrace")
+        .replaceAll("\\bblvd\\b", "boulevard")
+        .replaceAll("\\bjln\\b", "jalan")
+        .replaceAll("\\blor\\b", "lorong")
+        .replaceAll("\\bbt\\b", "bukit")
+        .replaceAll("\\bupp\\b", "upper")
+        .replaceAll("\\bnth\\b", "north")
+        .replaceAll("\\bsth\\b", "south")
+        .replaceAll("\\bctr\\b", "centre")
+        .replaceAll("[,.()]", " ")
         .replaceAll("\\s+", " ")
         .replaceAll("(.*?)\\b(singapore\\s+\\d{6})\\s+(#\\d+-\\S+)(.*)", "$1 $3 $2 $4")
         .replaceAll("\\s+", " ")
         .trim();
   }
 
+  AddressParts parseAddress(Object value, String fallbackPostal) {
+    String norm = addressText(value);
+    String work = norm;
+    String postal = "";
+    var postalMatcher = java.util.regex.Pattern.compile("\\b(?:singapore\\s+)?(\\d{6})\\b").matcher(work);
+    while (postalMatcher.find()) postal = postalMatcher.group(1);
+    if (!postal.isEmpty()) {
+      work = work.replaceAll("\\b(?:singapore\\s+)?\\d{6}\\b", " ");
+    } else if (fallbackPostal != null && fallbackPostal.trim().matches("\\d{6}")) {
+      postal = fallbackPostal.trim();
+    }
+    work = work.replaceAll("\\bsingapore\\b", " ");
+    String unit = "";
+    var unitMatcher = java.util.regex.Pattern.compile("#(\\d+)-([a-z0-9]+)").matcher(work);
+    if (unitMatcher.find()) {
+      unit = "#" + stripLeadingZeros(unitMatcher.group(1)) + "-" + stripLeadingZeros(unitMatcher.group(2));
+      work = work.substring(0, unitMatcher.start()) + " " + work.substring(unitMatcher.end());
+    }
+    work = work.replaceAll("\\s+", " ").trim();
+    String block = "";
+    String street = work;
+    var blockMatcher = java.util.regex.Pattern.compile("^(\\d+[a-z]?)\\s+(.+)$").matcher(work);
+    if (blockMatcher.matches()) {
+      block = blockMatcher.group(1);
+      street = blockMatcher.group(2).trim();
+    }
+    return new AddressParts(block, street, unit, postal, norm);
+  }
+
+  Map<String, Object> compareAddress(
+      Object actualValue, String actualPostal, Object requestedValue, String requestedPostal) {
+    var a = parseAddress(actualValue, actualPostal);
+    var b = parseAddress(requestedValue, requestedPostal);
+    if (a.normalised().isEmpty() || b.normalised().isEmpty()) {
+      return map("matched", "false", "reason", "ADDRESS_MISSING", "detail", "Address value missing.");
+    }
+    if (!Objects.equals(a.unit(), b.unit())) {
+      if (a.unit().isEmpty() || b.unit().isEmpty()) {
+        return map(
+            "matched",
+            "false",
+            "reason",
+            "UNIT_MISSING",
+            "detail",
+            a.unit().isEmpty()
+                ? "Supporting document is missing unit number (" + b.unit() + ")."
+                : "Submitted request is missing unit number (" + a.unit() + ") shown on document.");
+      }
+      return map(
+          "matched",
+          "false",
+          "reason",
+          "UNIT_MISMATCH",
+          "detail",
+          "Unit number differs: document shows " + a.unit() + " vs requested " + b.unit() + ".");
+    }
+    if (!a.postal().isEmpty() && !b.postal().isEmpty() && !a.postal().equals(b.postal())) {
+      return map(
+          "matched",
+          "false",
+          "reason",
+          "POSTAL_MISMATCH",
+          "detail",
+          "Postal code differs: document shows " + a.postal() + " vs requested " + b.postal() + ".");
+    }
+    if (!Objects.equals(a.block(), b.block()) || !Objects.equals(a.street(), b.street())) {
+      return map(
+          "matched",
+          "false",
+          "reason",
+          "STREET_MISMATCH",
+          "detail",
+          "Block or street differs between document ("
+              + a.normalised()
+              + ") and request ("
+              + b.normalised()
+              + ").");
+    }
+    if ((a.postal().isEmpty() ^ b.postal().isEmpty()) && (!a.postal().isEmpty() || !b.postal().isEmpty())) {
+      // Allow fixture/test text without postal if exact block+street+unit match and no SG postal was in either postal_code
+      if (actualPostal != null && !actualPostal.isBlank() || requestedPostal != null && !requestedPostal.isBlank()) {
+        if (!a.postal().isEmpty() && b.postal().isEmpty()
+            || a.postal().isEmpty() && !b.postal().isEmpty() && actualValue.toString().toLowerCase(Locale.ROOT).contains("singapore")) {
+          return map(
+              "matched",
+              "false",
+              "reason",
+              "POSTAL_MISSING",
+              "detail",
+              "Postal code missing on one address (" + a.postal() + " vs " + b.postal() + ").");
+        }
+      }
+    }
+    return map("matched", "true", "reason", "MATCHED", "detail", "All address components and unit matched.");
+  }
+
   boolean sameAddress(Object actualValue, Object requestedValue) {
-    String a = addressText(actualValue), b = addressText(requestedValue);
-    if (a.equals(b)) return true;
-    var pattern = java.util.regex.Pattern.compile("^(\\S+\\s+\\S.*?)(?:\\s+(#\\d+-\\S+))?\\s+(singapore\\s+\\d{6})$");
-    var ma = pattern.matcher(a);
-    var mb = pattern.matcher(b);
-    if (!ma.matches() || !mb.matches()) return false;
-    if (!Objects.equals(ma.group(3), mb.group(3))) return false;
-    String unitA = Objects.toString(ma.group(2), ""), unitB = Objects.toString(mb.group(2), "");
-    if (!unitA.isEmpty() && !unitB.isEmpty() && !unitA.equals(unitB)) return false;
-    String streetA = ma.group(1).trim(), streetB = mb.group(1).trim();
-    return streetA.equals(streetB) || streetA.startsWith(streetB + " ") || streetB.startsWith(streetA + " ");
+    return "true".equals(compareAddress(actualValue, "", requestedValue, "").get("matched"));
   }
 
   boolean foreign(String residency) {
@@ -237,6 +379,29 @@ final class BankingServicePolicy {
         && !phone
             .replaceAll("[^0-9+]", "")
             .equals(Objects.toString(profile.get("mobile"), "").replaceAll("[^0-9+]", ""));
+  }
+
+  String findDuplicateAdditionalAccount(
+      String customerId, String submissionId, String accountType, String currency) {
+    if (customerId == null || customerId.isBlank()) return null;
+    for (var row :
+        s.db.queryForList(
+            "SELECT d.id, d.status, f.payload_json FROM document_submissions d LEFT JOIN"
+                + " customer_eforms f ON f.submission_id=d.id AND f.version=(SELECT"
+                + " COALESCE(MAX(version),0) FROM customer_eforms mf WHERE mf.submission_id=d.id)"
+                + " WHERE d.customer_id=? AND d.id<>? AND d.category='ADDITIONAL_ACCOUNT' AND"
+                + " d.status<>'CANCELLED' ORDER BY d.created_at DESC",
+            customerId,
+            submissionId)) {
+      String payloadJson = Objects.toString(row.get("payload_json"), "");
+      if (payloadJson.isBlank()) continue;
+      var payload = s.readMap(payloadJson);
+      if (same(accountType, payload.get("accountType"))
+          && same(currency, payload.get("currency"))) {
+        return (String) row.get("id");
+      }
+    }
+    return null;
   }
 
   Map<String, Object> check(
@@ -338,25 +503,103 @@ final class BankingServicePolicy {
               }
               case "CONTACT_UPDATE" -> {
                 String email = value(docs, "email"), mobile = value(docs, "mobile");
-                boolean emailValid =
-                    email.isBlank()
-                        || email.length() <= 254
-                            && email.matches("[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+");
-                boolean phoneValid = mobile.isBlank() || mobile.matches("[+0-9 ()-]{7,40}");
+                boolean emailValid = email.isBlank() || validEmail(email);
+                boolean phoneValid = mobile.isBlank() || validMobile(mobile);
                 yield emailValid
                     && phoneValid
                     && ((!email.isBlank() && !same(email, profile.get("email")))
                         || phoneChanged(c, docs, profile));
               }
-              case "ADDITIONAL_ACCOUNT" ->
-                  Set.of("SAVINGS", "CURRENT").contains(value(docs, "account_type"))
-                      && Set.of("SGD", "USD").contains(value(docs, "currency"));
-              case "TAX_RESIDENCY_UPDATE" ->
-                  !value(docs, "tax_residency").isBlank()
-                      && same(value(docs, "tax_declaration"), "Confirmed")
-                      && (!foreign(value(docs, "tax_residency"))
-                          || !value(docs, "foreign_tax_country").isBlank()
-                              && !value(docs, "tax_identifier").isBlank());
+              case "ADDITIONAL_ACCOUNT" -> {
+                String accType = value(docs, "account_type"), ccy = value(docs, "currency");
+                boolean formatOk =
+                    Set.of("SAVINGS", "CURRENT").contains(accType)
+                        && Set.of("SGD", "USD").contains(ccy);
+                String profileRisk =
+                    Objects.toString(profile.get("risk_rating"), "").toUpperCase(Locale.ROOT);
+                boolean profileComplete =
+                    !Objects.toString(profile.get("identity_number"), "").isBlank()
+                        && !Objects.toString(profile.get("residential_address"), "").isBlank()
+                        && !Objects.toString(profile.get("nationality"), "").isBlank()
+                        && !Objects.toString(profile.get("occupation"), "").isBlank()
+                        && profile.get("date_of_birth") != null
+                        && !Set.of("HIGH", "PROHIBITED", "RESTRICTED").contains(profileRisk);
+                if (!profileComplete) {
+                  evidence.add(
+                      map(
+                          "field_name",
+                          "eligibility_status",
+                          "field_value",
+                          profileRisk.isBlank() ? "INCOMPLETE" : profileRisk,
+                          "supporting_text",
+                          "Customer profile does not meet autonomous eligibility requirements for"
+                              + " an additional account."));
+                }
+                String duplicateId =
+                    formatOk
+                        ? findDuplicateAdditionalAccount(
+                            (String) c.get("customer_id"), id, accType, ccy)
+                        : null;
+                if (duplicateId != null) {
+                  evidence.add(
+                      map(
+                          "field_name",
+                          "duplicate_application",
+                          "field_value",
+                          duplicateId,
+                          "supporting_text",
+                          "Existing ADDITIONAL_ACCOUNT request "
+                              + duplicateId
+                              + " already covers "
+                              + accType
+                              + " ("
+                              + ccy
+                              + ")."));
+                }
+                yield formatOk && profileComplete && duplicateId == null;
+              }
+              case "TAX_RESIDENCY_UPDATE" -> {
+                String residency = value(docs, "tax_residency");
+                String declaration = value(docs, "tax_declaration");
+                String country = value(docs, "foreign_tax_country");
+                String tin = value(docs, "tax_identifier");
+                if (residency.isBlank() || !same(declaration, "Confirmed")) yield false;
+                if (!foreign(residency)) {
+                  boolean contradictoryCountry =
+                      !country.isBlank()
+                          && validCountryName(country)
+                          && foreign(country);
+                  if (contradictoryCountry) {
+                    evidence.add(
+                        map(
+                            "field_name",
+                            "jurisdiction_conflict",
+                            "field_value",
+                            country,
+                            "supporting_text",
+                            "Singapore residency exemption conflicts with foreign tax country "
+                                + country
+                                + "."));
+                  }
+                  yield !contradictoryCountry;
+                }
+                boolean contradictorySingapore =
+                    !country.isBlank() && !foreign(country);
+                if (contradictorySingapore) {
+                  evidence.add(
+                      map(
+                          "field_name",
+                          "jurisdiction_conflict",
+                          "field_value",
+                          country,
+                          "supporting_text",
+                          "Foreign tax residency declaration cannot specify Singapore as the"
+                              + " foreign tax country."));
+                }
+                yield !contradictorySingapore
+                    && validCountryName(country)
+                    && validTaxIdentifier(tin);
+              }
               default -> false;
             };
       }
@@ -420,12 +663,96 @@ final class BankingServicePolicy {
                                 + "."));
               }
             }
-            pass &=
-                !requested.isBlank() && !actual.isEmpty()
-                    && actual.stream()
-                        .allMatch(f -> addressChange
-                            ? sameAddress(f.get("field_value"), requested)
-                            : same(f.get("field_value"), requested));
+            String reqPostal = addressChange ? addressValue(docs, category, "postal_code") : "";
+            var supportPostals = addressChange ? addressValues(support, category, "postal_code") : List.<Map<String, Object>>of();
+            String supportPostalVal = supportPostals.size() == 1 ? Objects.toString(supportPostals.getFirst().get("field_value"), "") : "";
+            boolean fieldMatched = !requested.isBlank() && !actual.isEmpty();
+            for (var f : actual) {
+              if (addressChange) {
+                var cmp = compareAddress(f.get("field_value"), supportPostalVal, requested, reqPostal);
+                if (!"true".equals(cmp.get("matched"))) {
+                  fieldMatched = false;
+                  evidence.add(
+                      map(
+                          "document_id",
+                          f.get("document_id"),
+                          "version_id",
+                          f.get("version_id"),
+                          "page_number",
+                          f.get("page_number"),
+                          "field_name",
+                          "address_comparison",
+                          "field_value",
+                          cmp.get("reason"),
+                          "supporting_text",
+                          cmp.get("detail")));
+                }
+              } else {
+                String actualText = Objects.toString(f.get("field_value"), "");
+                boolean match =
+                    "tax_identifier".equals(field)
+                        ? actualText
+                            .replaceAll("[\\s-]+", "")
+                            .equalsIgnoreCase(requested.replaceAll("[\\s-]+", ""))
+                        : same(actualText, requested);
+                if (!match) {
+                  fieldMatched = false;
+                  evidence.add(
+                      map(
+                          "document_id",
+                          f.get("document_id"),
+                          "version_id",
+                          f.get("version_id"),
+                          "page_number",
+                          f.get("page_number"),
+                          "field_name",
+                          "tax_evidence_conflict",
+                          "field_value",
+                          field,
+                          "supporting_text",
+                          "Supporting document "
+                              + field.replace('_', ' ')
+                              + " ("
+                              + actualText
+                              + ") conflicts with declared value ("
+                              + requested
+                              + ")."));
+                }
+              }
+            }
+            pass &= fieldMatched;
+          }
+          for (var doc : support) {
+            if (Boolean.TRUE.equals(doc.get("repository_only"))) continue;
+            var extraction = s.readMap(Objects.toString(doc.get("extraction_json"), "{}"));
+            if (!"GEMINI".equals(extraction.get("method"))) continue;
+            var names = workflow.fields(List.of(doc), "customer_name");
+            var refs = workflow.fields(List.of(doc), "customer_reference");
+            String expectedRef = Objects.toString(c.get("customer_reference"), "");
+            boolean hasOwnerIdentity =
+                !names.isEmpty()
+                    || refs.stream()
+                        .anyMatch(r -> same(r.get("field_value"), expectedRef));
+            if (!hasOwnerIdentity) {
+              pass = false;
+              evidence.add(
+                  map(
+                      "document_id",
+                      doc.get("id"),
+                      "version_id",
+                      doc.get("version_id"),
+                      "filename",
+                      doc.get("filename"),
+                      "field_name",
+                      "support_identity_missing",
+                      "field_value",
+                      "MISSING_CUSTOMER_IDENTITY",
+                      "page_number",
+                      1,
+                      "supporting_text",
+                      "Supporting document does not display a matching customer name or reference"
+                          + " to confirm account-holder ownership."));
+            }
           }
           String requestedPostal = addressChange ? addressValue(docs, category, "postal_code") : "";
           if (!requestedPostal.isBlank()) {

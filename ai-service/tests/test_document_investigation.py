@@ -31,3 +31,24 @@ def test_model_cannot_change_policy_action_or_add_a_citation(monkeypatch):
     assert result.method == 'DETERMINISTIC_FALLBACK'
     assert result.fallback_reason == 'UNVERIFIED_OUTPUT'
     assert result.recommendations[0].evidence_ids == []
+
+
+def test_model_customer_message_is_preserved_and_budget_exhaustion_returns_unavailable(monkeypatch):
+    import time
+    from app import documents as d
+
+    def with_message(*args, **kwargs):
+        return intelligence.ModelInvestigation(recommendations=[intelligence.Recommendation(
+            exception_id='issue-one',
+            explanation='Supporting evidence could not be verified.',
+            evidence_ids=[],
+            recommended_action='ATTACH_VERIFIED_DOCUMENT',
+            human_review_required=False,
+            customer_message='Please upload a clear utility bill showing your current mailing address.')])
+
+    monkeypatch.setattr(intelligence, 'generate', with_message)
+    result = intelligence.investigate_documents(request(), Settings(service_key='test', gemini_api_key='test', gemini_model='test-model'))
+    assert result.method == 'GEMINI'
+    assert result.recommendations[0].customer_message == 'Please upload a clear utility bill showing your current mailing address.'
+    unavailable = d._assess_within_budget([(b'%PDF-fake', 'application/pdf')], Settings(service_key='test', gemini_api_key='test', gemini_model='test-model'), time.monotonic() + 1.0)
+    assert unavailable['outcome'] == 'UNAVAILABLE'

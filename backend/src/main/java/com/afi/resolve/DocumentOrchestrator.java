@@ -35,27 +35,43 @@ public class DocumentOrchestrator {
   }
 
   public void run(DocumentService workflow, String id, Authentication actor) {
-    var c = workflow.access(id, actor, true);
-    if (Set.of("OPERATIONS", "CANCELLED").contains(c.get("status"))) return;
-    if ("CONTACT_UPDATE".equals(c.get("category"))) {
-      workflow.event(
-          id,
-          actor,
-          "CONTACT_VERIFICATION_POLICY",
-          map(
-              "aiUsed",
-              false,
-              "reason",
-              "Contact updates require explicit verification, not AI approval"));
-      return;
-    }
+    boolean shouldInvestigate =
+        s.inTx(
+            () -> {
+              var c = workflow.access(id, actor, true);
+              if (Set.of("OPERATIONS", "CANCELLED").contains(c.get("status"))) return false;
+              if ("CONTACT_UPDATE".equals(c.get("category"))) {
+                workflow.event(
+                    id,
+                    actor,
+                    "CONTACT_VERIFICATION_POLICY",
+                    map(
+                        "aiUsed",
+                        false,
+                        "reason",
+                        "Contact updates require explicit verification, not AI approval"));
+                return false;
+              }
+              return true;
+            });
+    if (!shouldInvestigate) return;
     intelligence.investigate(workflow, id, actor);
-    if (Boolean.TRUE.equals(c.get("risk_hold"))
-        || (c.get("risk_score") instanceof Number score && score.intValue() >= 25)) return;
-    if (!enabled) {
-      workflow.event(id, actor, "AUTOMATION_DISABLED", map("revision", c.get("revision")));
-      return;
-    }
+    s.inTxVoid(
+        () -> {
+          var c = workflow.access(id, actor, true);
+          if (Set.of("OPERATIONS", "CANCELLED").contains(c.get("status"))) return;
+          if (Boolean.TRUE.equals(c.get("risk_hold"))
+              || (c.get("risk_score") instanceof Number score && score.intValue() >= 25)) return;
+          if (!enabled) {
+            workflow.event(id, actor, "AUTOMATION_DISABLED", map("revision", c.get("revision")));
+            return;
+          }
+          runAutomation(workflow, id, actor, c);
+        });
+  }
+
+  private void runAutomation(
+      DocumentService workflow, String id, Authentication actor, Map<String, Object> c) {
     var exceptions =
         s.db.queryForList(
             "SELECT * FROM document_exceptions WHERE submission_id=? AND status='OPEN' AND"

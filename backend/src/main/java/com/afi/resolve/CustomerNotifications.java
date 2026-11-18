@@ -79,8 +79,12 @@ public class CustomerNotifications {
   }
 
   public void sync(String id) {
-    var c = s.db.queryForList("SELECT * FROM document_submissions WHERE id=?", id).getFirst();
-    if (c.get("customer_id") == null || "CANCELLED".equals(c.get("status"))) return;
+    s.inTxVoid(
+        () -> {
+          var c = s.db.queryForList("SELECT * FROM document_submissions WHERE id=?", id).getFirst();
+          if (c.get("customer_id") == null
+              || "CANCELLED".equals(c.get("status"))
+              || "PENDING_VALIDATION".equals(c.get("status"))) return;
     var tasks =
         s.db.queryForList(
             "SELECT t.id,t.status,e.rule_id FROM correction_tasks t JOIN document_exceptions e ON"
@@ -115,5 +119,6 @@ public class CustomerNotifications {
           "OPERATIONS_READY",
           "operations:" + c.get("revision"),
           "Your request has been verified and approved for processing.");
+        });
   }
 }

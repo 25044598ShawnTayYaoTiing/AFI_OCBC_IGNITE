@@ -9,17 +9,73 @@ import java.security.MessageDigest;
 import java.sql.*;
 import java.time.*;
 import java.util.*;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Component
 public class Store {
   final JdbcTemplate db;
   final ObjectMapper json;
+  private volatile TransactionTemplate tx;
 
   public Store(JdbcTemplate db, ObjectMapper json) {
     this.db = db;
     this.json = json;
+  }
+
+  @Autowired(required = false)
+  void setTransactionManager(PlatformTransactionManager manager) {
+    this.tx = manager == null ? null : new TransactionTemplate(manager);
+  }
+
+  @FunctionalInterface
+  interface ThrowingSupplier<T> {
+    T get() throws Exception;
+  }
+
+  private static final class CheckedWrapper extends RuntimeException {
+    final Exception checked;
+
+    CheckedWrapper(Exception checked) {
+      super(checked);
+      this.checked = checked;
+    }
+  }
+
+  <T> T inTx(java.util.function.Supplier<T> fn) {
+    var template = this.tx;
+    return template == null ? fn.get() : template.execute(status -> fn.get());
+  }
+
+  void inTxVoid(Runnable fn) {
+    var template = this.tx;
+    if (template == null) {
+      fn.run();
+      return;
+    }
+    template.executeWithoutResult(status -> fn.run());
+  }
+
+  <T> T inTxChecked(ThrowingSupplier<T> fn) throws Exception {
+    var template = this.tx;
+    if (template == null) return fn.get();
+    try {
+      return template.execute(
+          status -> {
+            try {
+              return fn.get();
+            } catch (RuntimeException | Error ex) {
+              throw ex;
+            } catch (Exception ex) {
+              throw new CheckedWrapper(ex);
+            }
+          });
+    } catch (CheckedWrapper w) {
+      throw w.checked;
+    }
   }
 
   public String id(String prefix) {

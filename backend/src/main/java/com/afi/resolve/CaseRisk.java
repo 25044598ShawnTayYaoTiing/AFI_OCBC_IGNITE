@@ -44,12 +44,18 @@ final class CaseRisk {
                 .anyMatch(
                     e -> supportingIds.contains(e.get("document_id"))
                         && comparedFields.contains(e.get("field_name")));
+        boolean missingSupportIdentity =
+            evidence.stream().anyMatch(e -> "support_identity_missing".equals(e.get("field_name")));
+        boolean taxValueConflict =
+            tax
+                && evidence.stream()
+                    .anyMatch(e -> "tax_evidence_conflict".equals(e.get("field_name")));
         issue =
-            supportingIds.isEmpty()
+            supportingIds.isEmpty() || (missingSupportIdentity && extracted)
                 ? "SUPPORT_MISSING"
                 : !extracted
                     ? "SUPPORT_UNREADABLE"
-                    : tax ? "TAX_CONFLICT" : "ADDRESS_CONFLICT";
+                    : tax ? (taxValueConflict ? "TAX_CONFLICT" : "TIN_MISSING") : "ADDRESS_CONFLICT";
         group = "support";
       } else if (key.startsWith("ATTACH_SUPPORTING") || key.startsWith("REF_SUPPORTING")) {
         issue = "SUPPORT_MISSING";
@@ -72,8 +78,31 @@ final class CaseRisk {
                     e ->
                         "tax_declaration".equals(e.get("field_name"))
                             && "Confirmed".equals(e.get("field_value")));
-        issue = confirmed ? "TIN_MISSING" : "DECLARATION_MISSING";
-        group = confirmed ? "tin" : "declaration";
+        boolean jurisdictionConflict =
+            evidence.stream().anyMatch(e -> "jurisdiction_conflict".equals(e.get("field_name")));
+        issue =
+            jurisdictionConflict
+                ? "TAX_CONFLICT"
+                : confirmed ? "TIN_MISSING" : "DECLARATION_MISSING";
+        group = jurisdictionConflict ? "tax_conflict" : confirmed ? "tin" : "declaration";
+      } else if (key.equals("SERVICE_DETAILS")
+          && "ADDITIONAL_ACCOUNT".equals(submission.get("category"))) {
+        if (evidence.stream()
+            .anyMatch(
+                e ->
+                    "eligibility_status".equals(e.get("field_name"))
+                        || "duplicate_application".equals(e.get("field_name")))) {
+          issue = "ELIGIBILITY_REVIEW";
+          group = "eligibility";
+        }
+      } else if (key.equals("ONEMAP_ADDRESS")
+          && evidence.stream()
+              .anyMatch(
+                  item ->
+                      item.get("addressVerification") instanceof Map<?, ?> v
+                          && "MISMATCH".equals(v.get("status")))) {
+        issue = "ADDRESS_CONFLICT";
+        group = "support";
       }
       if (issue != null)
         add(issues, group, issue, key, Objects.toString(check.get("corrective_action")), evidence);
@@ -173,16 +202,8 @@ final class CaseRisk {
         level,
         hold,
         id);
-    @SuppressWarnings("unchecked")
-    var contributions = (Collection<Map<String, Object>>) result.get("contributions");
-    boolean singleSupportCorrection =
-        !hold
-            && "DIGITAL_EFORM".equals(c.get("capture_method"))
-            && contributions.size() == 1
-            && "SERVICE_SUPPORT".equals(contributions.iterator().next().get("ruleId"));
     boolean authorised =
-        singleSupportCorrection
-            || Objects.equals(c.get("revision"), c.get("correction_authorized_revision"));
+        Objects.equals(c.get("revision"), c.get("correction_authorized_revision"));
     if (hold || (score >= 25 && !authorised)) {
       s.db.update(
           "UPDATE correction_tasks SET"

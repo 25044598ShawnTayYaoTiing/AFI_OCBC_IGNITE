@@ -2,6 +2,8 @@
 import base64
 import json
 import logging
+import time
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -48,27 +50,44 @@ def assess(media, settings):
     request = Request('https://generativelanguage.googleapis.com/v1beta/decisions',
                       data=json.dumps({'model': MODEL, 'input': blocks, 'questions': QUESTIONS}).encode(),
                       headers={'x-goog-api-key': settings.gemini_api_key, 'Content-Type': 'application/json'})
-    try:
-        with urlopen(request, timeout=min(settings.gemini_timeout_ms / 1000, 20)) as response:
-            answers = json.load(response)['answers']
-        for key, question in QUESTIONS.items():
-            answer = answers[key]
-            if answer['type'] != question['type'] or not probability(answer['confidence']):
-                raise ValueError('Invalid decision answer')
-            if answer['type'] == 'choice':
-                if answer['choice'] not in question['criteria'] or not all(
-                        probability(answer['probabilities'][option]) for option in question['criteria']):
-                    raise ValueError('Invalid choice answer')
-            elif answer['type'] == 'noul' and not probability(answer['noul']):
-                raise ValueError('Invalid binary answer')
-            elif answer['type'] == 'score' and not (
-                    type(answer['score']) in (int, float) and 0 <= answer['score'] < len(question['criteria'])
-                    and all(probability(answer['probabilities'][str(i)]) for i in range(len(question['criteria'])))):
-                raise ValueError('Invalid score answer')
-    except (OSError, ValueError, KeyError, TypeError):
-        logging.getLogger(__name__).warning('Document decision assessment unavailable')
-        return {'model': MODEL, 'outcome': 'UNAVAILABLE'}
-    return {'model': MODEL, 'outcome': 'ASSESSED', 'answers': {key: answers[key] for key in QUESTIONS}}
+    deadline = time.monotonic() + min(settings.gemini_timeout_ms / 1000, 18.0)
+    answers = None
+    for attempt in range(2):
+        remaining = deadline - time.monotonic()
+        if attempt > 0 and remaining < 4.0:
+            break
+        try:
+            with urlopen(request, timeout=max(2.0, remaining)) as response:
+                answers = json.load(response)['answers']
+            for key, question in QUESTIONS.items():
+                answer = answers[key]
+                if answer['type'] != question['type'] or not probability(answer['confidence']):
+                    raise ValueError('Invalid decision answer')
+                if answer['type'] == 'choice':
+                    if answer['choice'] not in question['criteria'] or not all(
+                            probability(answer['probabilities'][option]) for option in question['criteria']):
+                        raise ValueError('Invalid choice answer')
+                elif answer['type'] == 'noul' and not probability(answer['noul']):
+                    raise ValueError('Invalid binary answer')
+                elif answer['type'] == 'score' and not (
+                        type(answer['score']) in (int, float) and 0 <= answer['score'] < len(question['criteria'])
+                        and all(probability(answer['probabilities'][str(i)]) for i in range(len(question['criteria'])))):
+                    raise ValueError('Invalid score answer')
+            return {'model': MODEL, 'outcome': 'ASSESSED', 'answers': {key: answers[key] for key in QUESTIONS}}
+        except HTTPError as error:
+            if attempt == 0 and error.code in (408, 429, 500, 502, 503, 504) and deadline - time.monotonic() >= 5.5:
+                time.sleep(0.75)
+                continue
+            break
+        except (URLError, TimeoutError):
+            if attempt == 0 and deadline - time.monotonic() >= 5.5:
+                time.sleep(0.75)
+                continue
+            break
+        except (OSError, ValueError, KeyError, TypeError):
+            break
+    logging.getLogger(__name__).warning('Document decision assessment unavailable')
+    return {'model': MODEL, 'outcome': 'UNAVAILABLE'}
 
 
 def probability(value):

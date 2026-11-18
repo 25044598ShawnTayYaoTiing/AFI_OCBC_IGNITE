@@ -51,27 +51,80 @@ public class DocumentAddressVerifier {
 
   @SuppressWarnings("unchecked")
   public void refresh(List<Map<String, Object>> docs) {
+    var pending =
+        s.inTx(
+            () -> {
+              var items = new ArrayList<Map<String, Object>>();
+              for (String kind : List.of("mailing_address", "residential_address"))
+                items.addAll(sources(docs, kind));
+              return items;
+            });
     var cache = new HashMap<String, OneMapClient.Verification>();
     boolean outage = false;
-    for (String kind : List.of("mailing_address", "residential_address")) for (var source : sources(docs, kind)) {
+    var updates = new ArrayList<Map<String, Object>>();
+    for (var source : pending) {
       String address = Objects.toString(source.get("field_value"), "");
-      if (!OneMapClient.POSTAL.matcher(address).find() && source.get("postalEvidence") instanceof Map<?, ?> postal) {
+      if (!OneMapClient.POSTAL.matcher(address).find()
+          && source.get("postalEvidence") instanceof Map<?, ?> postal) {
         String value = Objects.toString(postal.get("field_value"), "");
         if (value.matches("\\d{6}")) address += " Singapore " + value;
       }
       OneMapClient.Verification result;
       if (Boolean.TRUE.equals(source.get("synthetic"))) {
-        result = new OneMapClient.Verification("SYNTHETIC_DEMO", "SYNTHETIC_DEMO", "Synthetic template evidence only. No live OneMap confirmation was performed.", address, "", null, List.of(), Instant.now());
+        result =
+            new OneMapClient.Verification(
+                "SYNTHETIC_DEMO",
+                "SYNTHETIC_DEMO",
+                "Synthetic template evidence only. No live OneMap confirmation was performed.",
+                address,
+                "",
+                null,
+                List.of(),
+                Instant.now());
       } else if (outage) {
-        result = new OneMapClient.Verification("UNAVAILABLE", "ONEMAP_UNAVAILABLE", "OneMap is unavailable. Retry validation or obtain manual review; the address is not rejected as invalid.", address, "", null, List.of(), Instant.now());
+        result =
+            new OneMapClient.Verification(
+                "UNAVAILABLE",
+                "ONEMAP_UNAVAILABLE",
+                "OneMap is unavailable. Retry validation or obtain manual review; the address is"
+                    + " not rejected as invalid.",
+                address,
+                "",
+                null,
+                List.of(),
+                Instant.now());
       } else {
         result = cache.computeIfAbsent(address, oneMap::verifyText);
         outage = "UNAVAILABLE".equals(result.status());
       }
-      var payload = map("result", result, "evidence", source);
-      int updated = s.db.update("UPDATE document_address_verifications SET result_json=?,checked_at=? WHERE version_id=? AND field_name=?", s.json(payload), Store.now(), source.get("version_id"), source.get("field_name"));
-      if (updated == 0) s.db.update("INSERT INTO document_address_verifications(version_id,field_name,result_json,checked_at) VALUES(?,?,?,?)", source.get("version_id"), source.get("field_name"), s.json(payload), Store.now());
+      updates.add(map("source", source, "payload", map("result", result, "evidence", source)));
     }
+    if (updates.isEmpty()) return;
+    s.inTxVoid(
+        () -> {
+          for (var update : updates) {
+            @SuppressWarnings("unchecked")
+            var source = (Map<String, Object>) update.get("source");
+            String payloadJson = s.json(update.get("payload"));
+            int updated =
+                s.db.update(
+                    "UPDATE document_address_verifications SET result_json=?,checked_at=? WHERE"
+                        + " version_id=? AND field_name=?",
+                    payloadJson,
+                    Store.now(),
+                    source.get("version_id"),
+                    source.get("field_name"));
+            if (updated == 0)
+              s.db.update(
+                  "INSERT INTO"
+                      + " document_address_verifications(version_id,field_name,result_json,checked_at)"
+                      + " VALUES(?,?,?,?)",
+                  source.get("version_id"),
+                  source.get("field_name"),
+                  payloadJson,
+                  Store.now());
+          }
+        });
   }
 
   @SuppressWarnings("unchecked")

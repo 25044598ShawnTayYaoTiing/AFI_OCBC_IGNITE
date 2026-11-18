@@ -22,6 +22,9 @@ public class CustomerService {
   final UserDetailsService staff;
   final DocumentStorage storage;
 
+  private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Void>> inFlight =
+      new java.util.concurrent.ConcurrentHashMap<>();
+
   public CustomerService(
       Store s,
       DocumentService documents,
@@ -280,6 +283,8 @@ public class CustomerService {
             c.get("validated_at") != null,
             "revalidation",
             ((Number) c.get("revision")).intValue() > 1,
+            "pendingVerification",
+            documents.hasPendingVerification(id),
             "reviewRequired",
             Set.of("RESOLUTION_MANAGEMENT", "ON_HOLD").contains(c.get("status"))),
         "requirements",
@@ -299,16 +304,64 @@ public class CustomerService {
   }
 
   @SuppressWarnings("unchecked")
+  Map<String, String> flashLiteCustomerMessages(String submissionId, Object revision) {
+    var result = new LinkedHashMap<String, String>();
+    var rows =
+        s.db.queryForList(
+            "SELECT result_json FROM document_investigations WHERE submission_id=? AND revision=?"
+                + " AND method='GEMINI' ORDER BY completed_at DESC LIMIT 1",
+            submissionId,
+            revision);
+    if (rows.isEmpty()) return result;
+    var parsed = s.readMap(Objects.toString(rows.getFirst().get("result_json"), "{}"));
+    if (!(parsed.get("recommendations") instanceof List<?> recs)) return result;
+    for (var item : recs) {
+      if (!(item instanceof Map<?, ?> rec)) continue;
+      String exId = Objects.toString(rec.get("exception_id"), "");
+      String msg = Objects.toString(rec.get("customer_message"), "").trim();
+      if (exId.isBlank() || msg.isBlank() || msg.length() > 600) continue;
+      if (msg.matches(".*\\b(?:FILE|VER|EXC|RULE|SERVICE|ONEMAP|CASE)-[A-Za-z0-9-]+.*")) continue;
+      result.put(exId, msg);
+    }
+    return result;
+  }
+
+  @SuppressWarnings("unchecked")
   String customerInstruction(
       Map<String, Object> ownedCase,
       Map<String, Object> task,
       List<Map<String, Object>> evidence,
-      List<Map<String, Object>> caseDocs) {
+      List<Map<String, Object>> caseDocs,
+      Map<String, String> flashLiteMessages) {
+    String exceptionId = Objects.toString(task.get("exception_id"), "");
+    String aiMsg = flashLiteMessages.get(exceptionId);
+    if (aiMsg != null && !aiMsg.isBlank()) return aiMsg;
     String ruleKey = Objects.toString(task.get("rule_key"), "");
     String category = Objects.toString(ownedCase.get("category"), "");
     boolean residential = "RESIDENTIAL_ADDRESS_CHANGE".equals(category);
     boolean address = "ADDRESS_CHANGE".equals(category) || residential;
     String addressLabel = residential ? "residential address" : "mailing address";
+    for (var e : evidence) {
+      if ("address_comparison".equals(e.get("field_name"))) {
+        String detailText = Objects.toString(e.get("supporting_text"), "").trim();
+        if (!detailText.isBlank()) {
+          return detailText
+              + " Please upload a supporting document matching the requested "
+              + addressLabel
+              + " (including exact unit number) or update your request.";
+        }
+      }
+      if ("support_identity_missing".equals(e.get("field_name"))) {
+        return "Your supporting document does not display a matching customer name or reference."
+            + " Please upload a document clearly showing your account-holder name and details.";
+      }
+      if ("duplicate_application".equals(e.get("field_name"))
+          || "eligibility_status".equals(e.get("field_name"))
+          || "jurisdiction_conflict".equals(e.get("field_name"))) {
+        String detailText = Objects.toString(e.get("supporting_text"), "").trim();
+        if (!detailText.isBlank()) return detailText;
+      }
+    }
     if ("SERVICE_SUPPORT".equals(ruleKey) || "ATTACH_SUPPORTING_DOCUMENT".equals(ruleKey)) {
       var uploadedSupport =
           caseDocs.stream()
@@ -392,14 +445,17 @@ public class CustomerService {
     var caseDocs = documents.documents(id, false);
     var available = new HashSet<Object>();
     caseDocs.forEach(d -> available.add(d.get("id")));
+    var aiMessages = flashLiteCustomerMessages(id, ownedCase.get("revision"));
     return s
         .db
         .queryForList(
-            "SELECT t.id,t.status,r.rule_key,t.assigned_role,r.name AS rule_name,r.condition_type,r.document_type,r.corrective_action,e.description AS finding_reason,e.evidence_json FROM"
-                + " correction_tasks t JOIN document_exceptions e ON e.id=t.exception_id JOIN"
-                + " validation_rules r ON r.id=e.rule_id WHERE t.submission_id=? AND"
-                + " t.assigned_role='CUSTOMER' AND t.status NOT IN ('RESOLVED','ESCALATED') AND"
-                + " e.status='OPEN' ORDER BY t.created_at,t.id",
+            "SELECT t.id,t.exception_id,t.status,r.rule_key,t.assigned_role,r.name AS"
+                + " rule_name,r.condition_type,r.document_type,r.corrective_action,e.description"
+                + " AS finding_reason,e.evidence_json FROM correction_tasks t JOIN"
+                + " document_exceptions e ON e.id=t.exception_id JOIN validation_rules r ON"
+                + " r.id=e.rule_id WHERE t.submission_id=? AND t.assigned_role='CUSTOMER' AND"
+                + " t.status NOT IN ('RESOLVED','ESCALATED') AND e.status='OPEN' ORDER BY"
+                + " t.created_at,t.id",
             id)
         .stream()
         .map(
@@ -433,7 +489,7 @@ public class CustomerService {
                   "documentIds",
                   ids,
                   "instruction",
-                  customerInstruction(ownedCase, t, evidence, caseDocs),
+                  customerInstruction(ownedCase, t, evidence, caseDocs, aiMessages),
                   "reason", t.get("finding_reason"),
                   "ruleName", t.get("rule_name"),
                   "assignedRole", t.get("assigned_role"),
@@ -474,14 +530,39 @@ public class CustomerService {
   }
 
   /** Customer-row lock serialises replay checks and processing, across JVMs and restarts. */
-  @Transactional(rollbackFor = Exception.class)
   public Object upload(
       String id, String replace, String key, List<MultipartFile> files, Authentication a)
       throws Exception {
     return uploadRequest(id, replace, key, files, a, "ACCOUNT_OPENING");
   }
 
-  @Transactional(rollbackFor = Exception.class)
+  public Object retryValidation(String id, Authentication a) throws Exception {
+    var c = owned(id, a);
+    if ("CANCELLED".equals(c.get("status")) || "OPERATIONS".equals(c.get("status"))) {
+      return detail(id, a);
+    }
+    if (documents.hasPendingVerification(id) || "PENDING_VALIDATION".equals(c.get("status"))) {
+      recoverPendingValidation(id, true, a);
+    }
+    return detail(id, a);
+  }
+
+  private void recoverPendingValidation(String id, boolean allowRepositoryCopy, Authentication a)
+      throws Exception {
+    if (documents.retryPendingExtractions(id, a)) {
+      if (allowRepositoryCopy && documents.documents(id, true).isEmpty()) {
+        s.inTxChecked(
+            () -> {
+              copyRepository(customer(a, false), id, a);
+              return null;
+            });
+      }
+      documents.validate(id, a);
+    } else {
+      documents.recordPendingNotification(id);
+    }
+  }
+
   public Object uploadRequest(
       String id,
       String replace,
@@ -493,11 +574,16 @@ public class CustomerService {
     return uploadRequest(id, replace, key, files, a, requestType, false);
   }
 
-  @Transactional(rollbackFor = Exception.class)
-  public Object uploadRequest(String id, String replace, String key, List<MultipartFile> files, Authentication a, String requestType, boolean combineImages) throws Exception {
-    var c = customer(a, true);
-    if (id != null) owned(id, a);
-    if (id == null
+  public Object uploadRequest(
+      String requestedId,
+      String replace,
+      String key,
+      List<MultipartFile> files,
+      Authentication a,
+      String requestType,
+      boolean combineImages)
+      throws Exception {
+    if (requestedId == null
         && !("ACCOUNT_OPENING".equals(requestType)
             || BankingServicePolicy.REQUESTS.contains(requestType)))
       throw new ApiException(
@@ -507,7 +593,9 @@ public class CustomerService {
           400,
           "INVALID_KEY",
           "Supply an Idempotency-Key of 8–100 letters, digits, hyphens or underscores");
-    if (files == null || files.isEmpty() || files.size() > (replace == null || combineImages ? 10 : 1))
+    if (files == null
+        || files.isEmpty()
+        || files.size() > (replace == null || combineImages ? 10 : 1))
       throw new ApiException(400, "FILE_LIMIT", "Choose 1–10 documents, or one replacement form");
     long total = 0;
     var fingerprints = new ArrayList<Object>();
@@ -535,86 +623,168 @@ public class CustomerService {
                       java.security.MessageDigest.getInstance("SHA-256").digest(f.getBytes()))));
     }
     String operation =
-        id == null
+        requestedId == null
             ? "/submissions"
             : "/submissions/"
-                + id
+                + requestedId
                 + "/documents"
                 + (replace == null ? "" : "/" + replace + "/replacement");
-    if (id == null && !"ACCOUNT_OPENING".equals(requestType))
+    if (requestedId == null && !"ACCOUNT_OPENING".equals(requestType))
       operation += "?requestType=" + requestType;
     if (operation.length() > 220)
       throw new ApiException(400, "INVALID_REQUEST", "Document identifier is too long");
+    final String opKey = operation;
     String fingerprint = CustomerSessions.hash(s.json(fingerprints));
-    var previous =
-        s.db.queryForList(
-            "SELECT * FROM customer_upload_requests WHERE customer_id=? AND request_key=?",
-            c.get("id"),
-            key);
-    if (!previous.isEmpty()) {
-      var prior = previous.getFirst();
-      if (!operation.equals(prior.get("operation"))
-          || !fingerprint.equals(prior.get("fingerprint")))
-        throw new ApiException(
-            409,
-            "IDEMPOTENCY_CONFLICT",
-            "Original request key is bound to a different operation or ordered file content");
-      return detail((String) prior.get("submission_id"), a);
+
+    var prep =
+        s.inTxChecked(
+            () -> {
+              var c = customer(a, true);
+              if (requestedId != null) owned(requestedId, a);
+              var previous =
+                  s.db.queryForList(
+                      "SELECT * FROM customer_upload_requests WHERE customer_id=? AND request_key=?",
+                      c.get("id"),
+                      key);
+              if (!previous.isEmpty()) {
+                var prior = previous.getFirst();
+                if (!opKey.equals(prior.get("operation"))
+                    || !fingerprint.equals(prior.get("fingerprint")))
+                  throw new ApiException(
+                      409,
+                      "IDEMPOTENCY_CONFLICT",
+                      "Original request key is bound to a different operation or ordered file content");
+                return map(
+                    "replayed", true,
+                    "submissionId", prior.get("submission_id"),
+                    "customerId", c.get("id"),
+                    "initial", false);
+              }
+              boolean initial = requestedId == null;
+              String submissionId = requestedId;
+              if (initial) {
+                submissionId =
+                    documents.createOwned(
+                        (String) c.get("customer_name"),
+                        (String) c.get("customer_reference"),
+                        requestType,
+                        (String) c.get("relationship_manager"),
+                        (String) c.get("id"),
+                        a);
+                notifications.publish(
+                    submissionId,
+                    "SUBMISSION_RECEIVED",
+                    "received",
+                    "Your document application has been received.");
+              }
+              if (replace != null
+                  && "DIGITAL_EFORM".equals(owned(submissionId, a).get("capture_method"))
+                  && documents.documents(submissionId, false).stream()
+                      .anyMatch(
+                          d ->
+                              replace.equals(d.get("id"))
+                                  && "DIGITAL_EFORM"
+                                      .equals(
+                                          s.readMap((String) d.get("extraction_json")).get("method"))))
+                throw new ApiException(
+                    409, "EDIT_EFORM", "Edit the digital declaration instead of replacing its receipt");
+              s.db.update(
+                  "INSERT INTO"
+                      + " customer_upload_requests(customer_id,request_key,operation,fingerprint,"
+                      + "submission_id,created_at) VALUES(?,?,?,?,?,?)",
+                  c.get("id"),
+                  key,
+                  opKey,
+                  fingerprint,
+                  submissionId,
+                  Store.now());
+              documents.event(
+                  submissionId,
+                  a,
+                  "CUSTOMER_UPLOAD_CONFIRMED",
+                  map(
+                      "source",
+                      "CUSTOMER_PORTAL",
+                      "operation",
+                      initial ? "INTAKE" : replace == null ? "ADD" : "REPLACE"));
+              var flight = new java.util.concurrent.CompletableFuture<Void>();
+              inFlight.put(c.get("id") + ":" + key, flight);
+              return map(
+                  "replayed", false,
+                  "submissionId", submissionId,
+                  "customerId", c.get("id"),
+                  "flight", flight,
+                  "initial", initial);
+            });
+
+    String id = (String) prep.get("submissionId");
+    String customerId = (String) prep.get("customerId");
+    boolean replayed = Boolean.TRUE.equals(prep.get("replayed"));
+    boolean initial = Boolean.TRUE.equals(prep.get("initial"));
+    String flightKey = customerId + ":" + key;
+    if (replayed) {
+      var running = inFlight.get(flightKey);
+      if (running != null) {
+        try {
+          running.get(95, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception ignored) {}
+      }
+      if (documents.hasPendingVerification(id)) {
+        recoverPendingValidation(id, initial, a);
+      }
+      return detail(id, a);
     }
-    boolean initial = id == null;
-    if (initial) {
-      id =
-          documents.createOwned(
-              (String) c.get("customer_name"),
-              (String) c.get("customer_reference"),
-              requestType,
-              (String) c.get("relationship_manager"),
-              (String) c.get("id"),
-              a);
-      notifications.publish(
-          id, "SUBMISSION_RECEIVED", "received", "Your document application has been received.");
+
+    @SuppressWarnings("unchecked")
+    var flight = (java.util.concurrent.CompletableFuture<Void>) prep.get("flight");
+    try {
+      try {
+        documents.uploadInternal(id, files, replace, a, false, combineImages);
+      } catch (ApiException error) {
+        if (error.status() < 500) {
+          if (initial) {
+            documents.deleteInitialDraft(id, customerId, key);
+          } else {
+            s.inTxVoid(
+                () ->
+                    s.db.update(
+                        "DELETE FROM customer_upload_requests WHERE customer_id=? AND request_key=?",
+                        customerId,
+                        key));
+          }
+        }
+        throw error;
+      } catch (Exception error) {
+        if (initial) documents.deleteInitialDraft(id, customerId, key);
+        throw error;
+      }
+
+      if (!documents.hasPendingVerification(id)) {
+        if (initial) {
+          s.inTxChecked(
+              () -> {
+                copyRepository(customer(a, false), id, a);
+                return null;
+              });
+        }
+        documents.validate(id, a);
+        if (!initial && !documents.hasPendingVerification(id)) {
+          s.inTxVoid(
+              () ->
+                  notifications.publish(
+                      id,
+                      "CORRECTION_RECEIVED",
+                      "received:" + key,
+                      "Your updated documents have been received and checked."));
+        }
+      }
+      return detail(id, a);
+    } finally {
+      if (flight != null) {
+        flight.complete(null);
+        inFlight.remove(flightKey, flight);
+      }
     }
-    if (replace != null
-        && "DIGITAL_EFORM".equals(owned(id, a).get("capture_method"))
-        && documents.documents(id, false).stream()
-            .anyMatch(
-                d ->
-                    replace.equals(d.get("id"))
-                        && "DIGITAL_EFORM"
-                            .equals(s.readMap((String) d.get("extraction_json")).get("method"))))
-      throw new ApiException(
-          409, "EDIT_EFORM", "Edit the digital declaration instead of replacing its receipt");
-    documents.uploadInternal(id, files, replace, a, !initial, combineImages);
-    if (initial) {
-      copyRepository(c, id, a);
-      documents.validate(id, a);
-    }
-    if (!initial)
-      notifications.publish(
-          id,
-          "CORRECTION_RECEIVED",
-          "received:" + key,
-          "Your updated documents have been received and checked.");
-    s.db.update(
-        "INSERT INTO"
-            + " customer_upload_requests(customer_id,request_key,operation,fingerprint,submission_id,created_at)"
-            + " VALUES(?,?,?,?,?,?)",
-        c.get("id"),
-        key,
-        operation,
-        fingerprint,
-        id,
-        Store.now());
-    documents.event(
-        id,
-        a,
-        "CUSTOMER_UPLOAD_CONFIRMED",
-        map(
-            "source",
-            "CUSTOMER_PORTAL",
-            "operation",
-            initial ? "INTAKE" : replace == null ? "ADD" : "REPLACE"));
-    return detail(id, a);
   }
 
   /** Copy only a staff-linked authorised source. Never trust a repository ID from public input. */

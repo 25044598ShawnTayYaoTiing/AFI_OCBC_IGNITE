@@ -166,8 +166,7 @@ public class CustomerEmailDispatcher {
 
   public boolean canVerifyContact(String recipient) {
     return enabled
-        && recipient != null
-        && recipient.matches("[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+")
+        && BankingServicePolicy.validEmail(recipient)
         && !recipient.toLowerCase(Locale.ROOT).endsWith(".invalid")
         && (Arrays.stream(testRecipients.split(","))
                 .map(String::trim)
