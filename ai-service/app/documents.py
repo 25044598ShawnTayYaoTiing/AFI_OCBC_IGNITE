@@ -117,7 +117,14 @@ def _supporting_fallback(doc_type: str, field: str, raw_value: str | None, suppo
         if (label in LABELS and LABELS[label] != field) or re.fullmatch(
                 r'(?:residential |mailing )?(?:postal|post|zip) code|case reference|tax identification reference', label):
             return None
-    return quote_in(raw_value, support)
+    try:
+        return quote_in(raw_value, support)
+    except ValueError:
+        tokens = [t for t in re.split(r'[\s,]+', raw_value.strip()) if t]
+        if not tokens:
+            return None
+        match = re.search(r'[\s,]+'.join(re.escape(token) for token in tokens), support)
+        return match.group(0) if match else None
 
 
 def _normalise_supporting_fields(proposed: ModelExtraction) -> None:
