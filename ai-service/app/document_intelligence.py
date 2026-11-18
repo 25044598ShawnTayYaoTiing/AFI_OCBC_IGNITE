@@ -4,6 +4,7 @@ Status never contains SDK exception text, URLs or credentials. Evidence identifi
 are issued by Spring and every model citation must refer to the supplied catalogue.
 """
 import json
+import time
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Literal
@@ -37,7 +38,7 @@ def failure_code(error: Exception) -> str:
     if code == 429: return 'PROVIDER_QUOTA_OR_RATE_LIMIT'
     if code == 404: return 'MODEL_UNAVAILABLE'
     if code == 400: return 'PROVIDER_REQUEST_REJECTED'
-    if code in (408, 504): return 'PROVIDER_TIMEOUT'
+    if code in (408, 504) or isinstance(error, TimeoutError) or 'Timeout' in type(error).__name__: return 'PROVIDER_TIMEOUT'
     if isinstance(error, ValueError): return 'UNVERIFIED_OUTPUT'
     return 'PROVIDER_UNAVAILABLE'
 
@@ -62,15 +63,25 @@ def generate(schema, payload: dict, instruction: str, settings: Settings, media=
             elif key in ('type','required','enum','items','anyOf','description'): result[key] = wire(value)
         return result
     with genai.Client(api_key=settings.gemini_api_key, http_options=types.HttpOptions(
-            timeout=settings.gemini_timeout_ms, retry_options=types.HttpRetryOptions(attempts=1))) as client:
-        response = client.models.generate_content(model=settings.gemini_model,
-            contents=[json.dumps(payload, ensure_ascii=False), *(media or [])],
-            config=types.GenerateContentConfig(system_instruction=instruction,
-                response_mime_type='application/json', response_json_schema=wire(full_schema),
-                temperature=0, max_output_tokens=16384 if media else 4096,
-                thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
-                    if settings.gemini_model.removeprefix('models/').startswith('gemini-3') else None,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
+            timeout=min(settings.gemini_timeout_ms, 20_000), retry_options=types.HttpRetryOptions(attempts=1))) as client:
+        for attempt in range(3):
+            try:
+                response = client.models.generate_content(model=settings.gemini_model,
+                    contents=[json.dumps(payload, ensure_ascii=False), *(media or [])],
+                    config=types.GenerateContentConfig(system_instruction=instruction,
+                        response_mime_type='application/json', response_json_schema=wire(full_schema),
+                        temperature=0, max_output_tokens=16384 if media else 4096,
+                        thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW)
+                            if settings.gemini_model.removeprefix('models/').startswith('gemini-3') else None,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
+                break
+            except Exception as error:
+                if attempt < 2 and getattr(error, 'code', None) in (408, 429, 500, 502, 503, 504):
+                    time.sleep(1.0 * (attempt + 1))
+                    continue
+                raise
+    if not response.text:
+        raise ValueError('Empty model response')
     return schema.model_validate_json(response.text, strict=True)
 
 class StrictModel(BaseModel):

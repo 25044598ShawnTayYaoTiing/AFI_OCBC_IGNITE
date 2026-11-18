@@ -43,10 +43,10 @@ ALIASES = {
     'foreign_tax_country': ('foreign tax jurisdiction', 'foreign tax country'),
     'tax_identifier': ('tin', 'tax identifier', 'tax identification number'),
     'tax_declaration': ('tax declaration', 'tax declaration confirmed'),
-    'customer_name': ('customer full name', 'applicant full name', 'applicant name', 'full name', 'client name', 'client full name', 'name of customer', 'name of applicant', 'account holder', 'account holder name', 'bill to'),
+    'customer_name': ('customer full name', 'applicant full name', 'applicant name', 'full name', 'client name', 'client full name', 'name of customer', 'name of applicant', 'account holder', 'account holder name', 'bill to', 'billed to', 'name', 'customer', 'account name', 'prepared for', 'addressee', 'recipient'),
     'identity_number': ('synthetic identity', 'identity number', 'identity identifier'),
     'customer_reference': ('customer ref', 'client reference', 'customer id', 'client id', 'customer number', 'customer identifier', 'customer reference number'),
-    'mailing_address': ('postal address', 'correspondence address', 'correspondence mailing address', 'postal mailing address', 'billing address'),
+    'mailing_address': ('postal address', 'correspondence address', 'correspondence mailing address', 'postal mailing address', 'billing address', 'address', 'service address', 'premises address', 'supply address', 'property address', 'statement address', 'delivery address', 'street address', 'recipient address'),
     'residential_address': ('home address', 'residence address', 'permanent address', 'current residential address'),
     'contact_information': ('email', 'email address', 'contact number', 'phone number', 'contact details'),
     'declaration_date': ('date of declaration', 'date signed', 'signed date', 'date of signing'),
@@ -106,6 +106,39 @@ class VisualExtraction(ModelExtraction):
     quality: Literal['READABLE', 'BLURRY', 'CROPPED', 'INCOMPLETE', 'UNREADABLE']
 
 
+def _supporting_fallback(doc_type: str, field: str, raw_value: str | None, support: str) -> str | None:
+    if doc_type != 'SUPPORTING_DOCUMENT' or not raw_value or missing(raw_value):
+        return None
+    if field not in ('customer_name', 'mailing_address', 'residential_address', 'postal_code', 'foreign_tax_country', 'tax_identifier'):
+        return None
+    for line in support.splitlines():
+        parts = re.split(r':|\t+| {2,}', line.strip(), maxsplit=1)
+        label = re.sub(r'[^a-z0-9]+', ' ', parts[0].lower()).strip()
+        if (label in LABELS and LABELS[label] != field) or re.fullmatch(
+                r'(?:residential |mailing )?(?:postal|post|zip) code|case reference|tax identification reference', label):
+            return None
+    return quote_in(raw_value, support)
+
+
+def _normalise_supporting_fields(proposed: ModelExtraction) -> None:
+    if proposed.document_type != 'SUPPORTING_DOCUMENT':
+        return
+    has_mailing = any(f.field in ('mailing_address', 'new_mailing_address') for f in proposed.fields)
+    cleaned = []
+    for item in proposed.fields:
+        if item.field == 'customer_reference' and re.match(
+                r'(?i)^\s*(?:account|acct|bill|invoice|meter|policy|statement)\s*(?:no\.?|number|id|#)\b',
+                item.supporting_text.strip()):
+            continue
+        if item.field == 'residential_address' and not has_mailing:
+            first_label = re.sub(r'[^a-z0-9]+', ' ', re.split(r':|\t+| {2,}', item.supporting_text.strip(), maxsplit=1)[0].lower()).strip()
+            if LABELS.get(first_label) != 'residential_address':
+                item = item.model_copy(update={'field': 'mailing_address'})
+                has_mailing = True
+        cleaned.append(item)
+    proposed.fields = cleaned
+
+
 def extract_visual(document_id, media, page_count, settings):
     if not settings.gemini_api_key:
         reject(503, 'AI_NOT_CONFIGURED', 'Image and scanned PDF extraction requires Gemini. Retry when the AI service is configured.')
@@ -117,6 +150,7 @@ def extract_visual(document_id, media, page_count, settings):
             'Utility and telecommunications bills, bank statements, proof of address, and issued tax residency certificates are SUPPORTING_DOCUMENT. '
             'Distinguish issued tax certificates from customer tax self-declarations. '
             'Read pages in their upright orientation, including sideways scans. Transcribe each page verbatim, preserving labels and newlines. Put each table label and its value on consecutive lines, or separate them with a tab. Map visible fields to the closed schema. '
+            'On a SUPPORTING_DOCUMENT such as a utility bill or bank statement, map the recipient/billing/premises address to mailing_address unless separate mailing and residential addresses are explicitly contrasted. Do not map a utility Account No. to customer_reference. '
             'Cite the exact visible label and value on its page. Never infer missing text, dates, identities, consent, signatures or authenticity. '
             'Use existing/new address fields separately. New Email maps to email, New Mobile to mobile, TIN to tax_identifier. '
             'Omit unreadable or absent values. Report ambiguity with requires_review=true. '
@@ -128,6 +162,7 @@ def extract_visual(document_id, media, page_count, settings):
             raise ValueError('Invalid page transcription')
         if not any(page.strip() for page in proposed.pages):
             reject(422, 'IMAGE_UNREADABLE', 'Upload a copy with readable document content.')
+        _normalise_supporting_fields(proposed)
         # Repeated headers on multi-page forms are common. Keep consistent values once;
         # conflicting repetitions remain explicit review observations, never a chosen guess.
         grouped = {}
@@ -137,7 +172,8 @@ def extract_visual(document_id, media, page_count, settings):
                 if item.page > page_count:
                     raise ValueError('Invalid visual page')
                 support = quote_in(item.supporting_text, proposed.pages[item.page - 1])
-                value = source_value(item.field, support)
+                value = source_value(item.field, support) or _supporting_fallback(
+                    proposed.document_type, item.field, item.value, support)
                 if value is None:
                     raise ValueError('Citation does not identify the extracted field')
                 grouped.setdefault(item.field, []).append((item, value))
@@ -167,7 +203,8 @@ def extract_visual(document_id, media, page_count, settings):
             model=settings.gemini_model,
             notes=notes)
         assessment = document_decisions.assess(
-            [(part.inline_data.data, part.inline_data.mime_type) for part in media], settings)
+            [(part.inline_data.data, part.inline_data.mime_type)
+             for part in media if getattr(part, 'inline_data', None)], settings)
         return document_decisions.reconcile(result, assessment, settings.decision_threshold)
     except HTTPException:
         raise
@@ -272,6 +309,7 @@ def source_value(field: str, support: str) -> str | None:
 
 
 def normalise(proposed: ModelExtraction, pages: list[str]) -> tuple[list[EvidenceField], list[Observation]]:
+    _normalise_supporting_fields(proposed)
     counts = Counter(item.field for item in proposed.fields)
     fields = []
     _, observations = normalise_items(proposed.model_copy(update={'fields': []}), pages)
@@ -317,7 +355,8 @@ def normalise_items(proposed: ModelExtraction, pages: list[str]) -> tuple[list[E
         if item.field in seen:
             raise ValueError('Duplicate field; ambiguous source')
         seen.add(item.field)
-        cited_value = source_value(item.field, support)
+        cited_value = source_value(item.field, support) or _supporting_fallback(
+            proposed.document_type, item.field, item.value, support)
         if cited_value is None:
             raise ValueError('Citation does not identify the extracted field')
         if missing(item.value):
@@ -347,6 +386,8 @@ def normalise_items(proposed: ModelExtraction, pages: list[str]) -> tuple[list[E
                 observations.append(Observation(field=item.field, page=item.page,
                     supporting_text=support, issue_type='POTENTIALLY_MISSING'))
                 continue
+            if value not in support:
+                value = quote_in(value, support)
             fields.append(EvidenceField(field=item.field, value=value, page=item.page, supporting_text=support))
     return fields, observations[:20]
 
@@ -389,6 +430,7 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
             'Utility and telecommunications bills, bank statements, proof of address and issued tax residency certificates are SUPPORTING_DOCUMENT. '
             'Distinguish issued certificates from customer tax self-declarations. '
             'Normalise field labels to the schema: Customer/Applicant Full Name -> customer_name; Customer Reference/Client ID -> customer_reference; '
+            'On a SUPPORTING_DOCUMENT such as a utility bill or bank statement, map the recipient/billing/premises address to mailing_address unless separate mailing and residential addresses are explicitly contrasted. Do not map a utility Account No. to customer_reference. '
             'For service updates map New Email -> email and New Mobile -> mobile, Request Type -> request_type, Foreign Tax Country -> foreign_tax_country, TIN -> tax_identifier, and Tax Declaration -> tax_declaration. Existing generic Email Address/Contact Number -> contact_information; Tax Residency Country -> tax_residency; Account Category/Account Selection -> required_selection. Terms Acknowledged and Declaration Confirmed are consent fields, NOT account selection. '
             'Case Reference and Tax Identification Reference are NOT customer_reference. Do not combine distinct address types or invent fields. '
             'Keep explicitly labelled new/proposed addresses in new_mailing_address or new_residential_address and old/existing addresses in existing_mailing_address or existing_residential_address. Never substitute an old address for a new address. Return separately labelled postal codes in their corresponding postal-code fields. '

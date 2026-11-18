@@ -299,11 +299,99 @@ public class CustomerService {
   }
 
   @SuppressWarnings("unchecked")
+  String customerInstruction(
+      Map<String, Object> ownedCase,
+      Map<String, Object> task,
+      List<Map<String, Object>> evidence,
+      List<Map<String, Object>> caseDocs) {
+    String ruleKey = Objects.toString(task.get("rule_key"), "");
+    String category = Objects.toString(ownedCase.get("category"), "");
+    boolean residential = "RESIDENTIAL_ADDRESS_CHANGE".equals(category);
+    boolean address = "ADDRESS_CHANGE".equals(category) || residential;
+    String addressLabel = residential ? "residential address" : "mailing address";
+    if ("SERVICE_SUPPORT".equals(ruleKey) || "ATTACH_SUPPORTING_DOCUMENT".equals(ruleKey)) {
+      var uploadedSupport =
+          caseDocs.stream()
+              .filter(d -> !"SERVICE_REQUEST".equals(d.get("document_type")))
+              .toList();
+      if (uploadedSupport.isEmpty() || "ATTACH_SUPPORTING_DOCUMENT".equals(ruleKey)) {
+        return "Please provide a document containing the required information.";
+      }
+      var supportIds =
+          uploadedSupport.stream().map(d -> d.get("id")).collect(java.util.stream.Collectors.toSet());
+      var targetFields =
+          address
+              ? Set.of(
+                  "mailing_address",
+                  "new_mailing_address",
+                  "residential_address",
+                  "new_residential_address",
+                  "postal_code",
+                  "mailing_postal_code",
+                  "residential_postal_code",
+                  "new_mailing_postal_code",
+                  "new_residential_postal_code")
+              : Set.of("foreign_tax_country", "tax_identifier");
+      boolean hasExtractedTargetField =
+          evidence.stream()
+              .anyMatch(
+                  e ->
+                      supportIds.contains(e.get("document_id"))
+                          && targetFields.contains(Objects.toString(e.get("field_name"), "")));
+      if (hasExtractedTargetField) {
+        return address
+            ? "The address in your supporting document does not match your requested "
+                + addressLabel
+                + ". Please upload a document showing the correct address or update your requested address."
+            : "The tax residency details in your supporting document do not match your requested tax residency and TIN. Please upload a document showing the correct details or update your request.";
+      }
+      boolean unclear =
+          evidence.stream()
+              .anyMatch(
+                  e ->
+                      "supporting_document_status".equals(e.get("field_name"))
+                          && "UNCLEAR_DOCUMENT".equals(e.get("field_value")));
+      if (!unclear) {
+        for (var d : uploadedSupport) {
+          var extraction = s.readMap(Objects.toString(d.get("extraction_json"), "{}"));
+          String notes = Objects.toString(extraction.get("notes"), "");
+          if (notes.contains("could not be read clearly")
+              || notes.contains("could not be verified")) {
+            unclear = true;
+            break;
+          }
+          if (extraction.get("decision") instanceof Map<?, ?> decision
+              && decision.get("answers") instanceof Map<?, ?> answers
+              && answers.get("readable") instanceof Map<?, ?> readable
+              && readable.get("noul") instanceof Number noul
+              && noul.doubleValue() < 0.80) {
+            unclear = true;
+            break;
+          }
+        }
+      }
+      if (unclear) {
+        return "We could not clearly read your supporting document. Please upload a clearer copy.";
+      }
+      return address
+          ? "Your supporting document does not contain the information required to verify your "
+              + addressLabel
+              + "."
+          : "Your supporting document does not contain the information required to verify your tax residency.";
+    }
+    if ("SERVICE_ONEMAP_MAILING".equals(ruleKey)) {
+      return "We could not verify your requested mailing address. Please check the building address and postal code or update your requested address.";
+    }
+    return Objects.toString(task.get("corrective_action"), "");
+  }
+
+  @SuppressWarnings("unchecked")
   public Object corrections(String id, Authentication a) {
     var ownedCase = owned(id, a);
     if ("CANCELLED".equals(ownedCase.get("status"))) return List.of();
+    var caseDocs = documents.documents(id, false);
     var available = new HashSet<Object>();
-    documents.documents(id, false).forEach(d -> available.add(d.get("id")));
+    caseDocs.forEach(d -> available.add(d.get("id")));
     return s
         .db
         .queryForList(
@@ -325,11 +413,11 @@ public class CustomerService {
                       .filter(
                           doc ->
                               !"SERVICE_SUPPORT".equals(t.get("rule_key"))
-                                  || documents.documents(id, false).stream()
+                                  || caseDocs.stream()
                                       .anyMatch(
                                           d ->
                                               doc.equals(d.get("id"))
-                                                  && "SUPPORTING_DOCUMENT"
+                                                  && !"SERVICE_REQUEST"
                                                       .equals(d.get("document_type"))))
                       .distinct()
                       .toList();
@@ -345,7 +433,7 @@ public class CustomerService {
                   "documentIds",
                   ids,
                   "instruction",
-                  t.get("corrective_action"),
+                  customerInstruction(ownedCase, t, evidence, caseDocs),
                   "reason", t.get("finding_reason"),
                   "ruleName", t.get("rule_name"),
                   "assignedRole", t.get("assigned_role"),

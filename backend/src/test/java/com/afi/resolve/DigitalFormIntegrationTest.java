@@ -217,8 +217,8 @@ class DigitalFormIntegrationTest {
                         .header("Idempotency-Key", UUID.randomUUID().toString()))
                 .andExpect(status().isOk())
                 .andReturn());
-    assertThat(bad.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
-    assertThat(bad.path("corrections").size()).isZero();
+    assertThat(bad.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
+    assertThat(bad.path("corrections").toString()).contains("SERVICE_SUPPORT");
     mvc.perform(
             post("/api/documents/submissions/" + id + "/authorize-correction")
                 .with(httpBasic("reviewer", "reviewer-demo"))

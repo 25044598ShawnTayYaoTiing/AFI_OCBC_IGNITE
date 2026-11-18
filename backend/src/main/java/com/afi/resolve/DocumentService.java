@@ -1502,8 +1502,12 @@ public class DocumentService {
               .filter(d -> "PACKAGE".equals(type) || type.equals(d.get("document_type")))
               .toList();
       if (condition.equals("ONEMAP_ADDRESS")) {
+        var targetDocs =
+            "SERVICE_ONEMAP_MAILING".equals(rule.get("rule_key"))
+                ? relevant.stream().filter(d -> "SERVICE_REQUEST".equals(d.get("document_type"))).toList()
+                : relevant;
         var addressChecks = addressVerifier == null ? List.<Map<String, Object>>of()
-            : addressVerifier.checks(this, rule, relevant);
+            : addressVerifier.checks(this, rule, targetDocs.isEmpty() ? relevant : targetDocs);
         if ("SERVICE_ONEMAP_MAILING".equals(rule.get("rule_key"))) {
           boolean verified = !addressChecks.isEmpty()
               && addressChecks.stream().allMatch(check -> Boolean.TRUE.equals(check.get("passed")));
@@ -1561,8 +1565,16 @@ public class DocumentService {
         continue;
       }
       if (condition.equals("CLASSIFICATION")) {
+        boolean supportFailed =
+            "DIGITAL_EFORM".equals(c.get("capture_method"))
+                && servicePolicy.supportRequired(c, docs)
+                && !Boolean.TRUE.equals(
+                    servicePolicy
+                        .check(c, docs, Map.of("rule_key", "SERVICE_SUPPORT"))
+                        .get("passed"));
         var uncertain =
             docs.stream()
+                .filter(d -> !(supportFailed && !"SERVICE_REQUEST".equals(d.get("document_type"))))
                 .filter(
                     d ->
                         (d.get("evidence_reviewed_by") == null

@@ -38,7 +38,7 @@ final class CaseRisk {
         String category = Objects.toString(submission.get("category"), "");
         boolean tax = "TAX_RESIDENCY_UPDATE".equals(category);
         var comparedFields = tax ? List.of("tax_identifier", "foreign_tax_country")
-            : BankingServicePolicy.addressLabels(category, BankingServicePolicy.requestedAddressField(category));
+            : List.of("mailing_address", "new_mailing_address", "residential_address", "new_residential_address");
         boolean extracted =
             evidence.stream()
                 .anyMatch(
@@ -173,7 +173,16 @@ final class CaseRisk {
         level,
         hold,
         id);
-    boolean authorised = Objects.equals(c.get("revision"), c.get("correction_authorized_revision"));
+    @SuppressWarnings("unchecked")
+    var contributions = (Collection<Map<String, Object>>) result.get("contributions");
+    boolean singleSupportCorrection =
+        !hold
+            && "DIGITAL_EFORM".equals(c.get("capture_method"))
+            && contributions.size() == 1
+            && "SERVICE_SUPPORT".equals(contributions.iterator().next().get("ruleId"));
+    boolean authorised =
+        singleSupportCorrection
+            || Objects.equals(c.get("revision"), c.get("correction_authorized_revision"));
     if (hold || (score >= 25 && !authorised)) {
       s.db.update(
           "UPDATE correction_tasks SET"

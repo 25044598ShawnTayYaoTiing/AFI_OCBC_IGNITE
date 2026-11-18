@@ -85,21 +85,25 @@ export function DocumentOverview() {
             label: "Require attention",
             value: cases.data ? attention : "—",
             note: `${readyCount} ready to approve · ${m?.onHold ?? 0} on hold`,
+            tone: attention > 0 ? "warning" : "default",
           },
           {
             label: "Resolved automatically",
             value: m?.automaticallyResolved ?? "—",
             note: "Verified repository attachments",
+            tone: "success",
           },
           {
             label: "Sent to Operations",
             value: m?.successfullyRouted ?? "—",
             note: "Approved & handed over",
+            tone: "accent",
           },
           {
             label: "Total submissions",
             value: m?.totalSubmissions ?? (cases.data ? items.length : "—"),
             note: `${m?.humanInterventionRequired ?? 0} needing human action`,
+            tone: "default",
           },
         ]}
       />
@@ -428,9 +432,10 @@ export function DocumentReports() {
   const issueItems = m
     ? Object.entries(m.recurringErrors)
         .sort((a, b) => b[1] - a[1])
-        .map(([name, count]) => ({
+        .map(([name, count], index) => ({
           label: name,
           value: count,
+          tone: index < 2 ? "danger" : index < 5 ? "warning" : "info",
         }))
     : [];
   const riskItems = m?.riskCounts
@@ -438,18 +443,22 @@ export function DocumentReports() {
         {
           label: "High risk",
           value: m.riskCounts.HIGH ?? 0,
+          tone: "danger",
         },
         {
           label: "Medium risk",
           value: m.riskCounts.MEDIUM ?? 0,
+          tone: "warning",
         },
         {
           label: "Low risk",
           value: m.riskCounts.LOW ?? 0,
+          tone: "success",
         },
         {
           label: "Unassessed",
           value: m.riskCounts.UNASSESSED ?? 0,
+          tone: "neutral",
         },
       ].filter((item) => item.value > 0)
     : [];
@@ -472,11 +481,13 @@ export function DocumentReports() {
                 label: "Automatically resolved",
                 value: m.automaticallyResolved,
                 note: "Verified repository attachments",
+                tone: "success",
               },
               {
                 label: "Document replacements",
                 value: m.resubmissionCycles,
                 note: "Customer resubmission cycles",
+                tone: "default",
               },
               {
                 label: "Average correction time",
@@ -485,11 +496,13 @@ export function DocumentReports() {
                     ? "Not measured"
                     : `${Math.round(m.averageCorrectionSeconds)}s`,
                 note: `${m.measuredCorrectionTasks} resolved tasks measured`,
+                tone: "accent",
               },
               {
                 label: "Needed staff review",
                 value: m.humanInterventionRequired,
                 note: `${m.onHold ?? 0} currently on hold`,
+                tone: m.humanInterventionRequired > 0 ? "warning" : "default",
               },
             ]}
           />

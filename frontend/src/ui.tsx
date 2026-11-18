@@ -213,12 +213,20 @@ export function Dialog({
 export function MetricStrip({
   items,
 }: {
-  items: { label: string; value: ReactNode; note?: string }[];
+  items: {
+    label: string;
+    value: ReactNode;
+    note?: string;
+    tone?: "default" | "accent" | "success" | "warning" | "danger";
+  }[];
 }) {
   return (
     <div className="metric-strip" data-count={items.length}>
       {items.map((item) => (
-        <div className="metric-item" key={item.label}>
+        <div
+          className={`metric-item ${item.tone ? `metric-tone-${item.tone}` : ""}`}
+          key={item.label}
+        >
           <span>{item.label}</span>
           <strong>{item.value}</strong>
           {item.note && <small>{item.note}</small>}

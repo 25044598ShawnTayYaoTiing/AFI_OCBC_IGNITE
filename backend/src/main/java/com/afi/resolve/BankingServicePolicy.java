@@ -190,14 +190,33 @@ final class BankingServicePolicy {
   String addressText(Object value) {
     return workflow.normal(value)
         .replaceFirst("^block\\s+|^blk\\.?\\s+", "")
-        .replaceAll("\\bunit\\s+(?=\\d+\\s*-)", "#")
+        .replaceAll("\\bunit\\s*#?\\s*(?=\\d+\\s*-)", "#")
         .replaceAll("#\\s*", "#")
         .replaceAll("(#\\d+)\\s*-\\s*", "$1-")
         .replaceAll("\\brd\\b", "road")
         .replaceAll("\\bave\\b", "avenue")
+        .replaceAll("\\bst\\b", "street")
+        .replaceAll("\\bdr\\b", "drive")
+        .replaceAll("\\bcres\\b", "crescent")
         .replaceAll("[,.]", " ")
         .replaceAll("\\s+", " ")
+        .replaceAll("(.*?)\\b(singapore\\s+\\d{6})\\s+(#\\d+-\\S+)(.*)", "$1 $3 $2 $4")
+        .replaceAll("\\s+", " ")
         .trim();
+  }
+
+  boolean sameAddress(Object actualValue, Object requestedValue) {
+    String a = addressText(actualValue), b = addressText(requestedValue);
+    if (a.equals(b)) return true;
+    var pattern = java.util.regex.Pattern.compile("^(\\S+\\s+\\S.*?)(?:\\s+(#\\d+-\\S+))?\\s+(singapore\\s+\\d{6})$");
+    var ma = pattern.matcher(a);
+    var mb = pattern.matcher(b);
+    if (!ma.matches() || !mb.matches()) return false;
+    if (!Objects.equals(ma.group(3), mb.group(3))) return false;
+    String unitA = Objects.toString(ma.group(2), ""), unitB = Objects.toString(mb.group(2), "");
+    if (!unitA.isEmpty() && !unitB.isEmpty() && !unitA.equals(unitB)) return false;
+    String streetA = ma.group(1).trim(), streetB = mb.group(1).trim();
+    return streetA.equals(streetB) || streetA.startsWith(streetB + " ") || streetB.startsWith(streetA + " ");
   }
 
   boolean foreign(String residency) {
@@ -348,19 +367,64 @@ final class BankingServicePolicy {
               docs.stream()
                   .filter(d -> "SUPPORTING_DOCUMENT".equals(d.get("document_type")))
                   .toList();
+          var uploadedEvidence =
+              docs.stream()
+                  .filter(
+                      d ->
+                          !"SERVICE_REQUEST".equals(d.get("document_type"))
+                              && !Boolean.TRUE.equals(d.get("repository_only")))
+                  .toList();
           boolean addressChange = Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(category);
           var expectedFields = addressChange ? List.of(requestedAddressField(category))
               : List.of("foreign_tax_country", "tax_identifier");
           pass = !support.isEmpty();
           for (String field : expectedFields) {
             var actual = addressChange ? addressValues(support, category, field) : workflow.fields(support, field);
+            if (addressChange && actual.isEmpty() && "mailing_address".equals(field)) {
+              actual = workflow.fields(support, "residential_address");
+            }
             String requested = addressChange ? addressValue(docs, category, field) : value(docs, field);
             evidence.addAll(actual);
+            if (actual.isEmpty() && !uploadedEvidence.isEmpty()) {
+              for (var d : uploadedEvidence) {
+                var extraction = s.readMap(Objects.toString(d.get("extraction_json"), "{}"));
+                String notes = Objects.toString(extraction.get("notes"), "");
+                boolean unclear =
+                    notes.contains("could not be read clearly")
+                        || notes.contains("could not be verified");
+                if (!unclear && extraction.get("decision") instanceof Map<?, ?> decision
+                    && decision.get("answers") instanceof Map<?, ?> answers
+                    && answers.get("readable") instanceof Map<?, ?> readable
+                    && readable.get("noul") instanceof Number noul) {
+                  unclear = noul.doubleValue() < 0.80;
+                }
+                evidence.add(
+                    map(
+                        "document_id",
+                        d.get("id"),
+                        "version_id",
+                        d.get("version_id"),
+                        "filename",
+                        d.get("filename"),
+                        "field_name",
+                        "supporting_document_status",
+                        "field_value",
+                        unclear ? "UNCLEAR_DOCUMENT" : "MISSING_REQUIRED_INFORMATION",
+                        "page_number",
+                        1,
+                        "supporting_text",
+                        unclear
+                            ? "Uploaded supporting document could not be read clearly."
+                            : "Uploaded supporting document does not contain the required "
+                                + field.replace('_', ' ')
+                                + "."));
+              }
+            }
             pass &=
                 !requested.isBlank() && !actual.isEmpty()
                     && actual.stream()
                         .allMatch(f -> addressChange
-                            ? addressText(f.get("field_value")).equals(addressText(requested))
+                            ? sameAddress(f.get("field_value"), requested)
                             : same(f.get("field_value"), requested));
           }
           String requestedPostal = addressChange ? addressValue(docs, category, "postal_code") : "";

@@ -24,12 +24,12 @@ public class AiClient {
       var factory =
           new JdkClientHttpRequestFactory(
               HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build());
-      factory.setReadTimeout(Duration.ofSeconds(35));
+      factory.setReadTimeout(Duration.ofSeconds(90));
       requestFactory = factory;
     } catch (java.io.UncheckedIOException fallback) {
       var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
       factory.setConnectTimeout(Duration.ofSeconds(4));
-      factory.setReadTimeout(Duration.ofSeconds(35));
+      factory.setReadTimeout(Duration.ofSeconds(90));
       requestFactory = factory;
     }
     client =

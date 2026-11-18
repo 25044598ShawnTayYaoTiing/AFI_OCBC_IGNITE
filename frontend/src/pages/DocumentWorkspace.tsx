@@ -201,11 +201,17 @@ export function DocumentWorkspace() {
           <Link className="back-link" to="/submissions">
             Cases <ArrowRight size={14} />
           </Link>
+          <span className="case-reference">
+            {data.submission.customer_reference}
+          </span>
         </div>
         <div className="case-title-row">
           <div>
-            <h1>{label(data.submission.category)}</h1>
-            <p>{data.submission.customer_name}</p>
+            <span className="eyebrow">
+              {label(data.submission.category)} · Revision{" "}
+              {data.submission.revision}
+            </span>
+            <h1>{data.submission.customer_name}</h1>
           </div>
         </div>
       </header>
@@ -262,31 +268,69 @@ export function DocumentWorkspace() {
           >
             {tab === "overview" && (
               <div className="overview-sections">
-                <CaseSummary detail={data} />
-                <CaseDecisionPanel key={id} detail={data} busy={!!busy} onAction={run} />
+                <div className="demo-top-card">
+                  <CaseSummary detail={data} />
+                  <CaseDecisionPanel
+                    key={id}
+                    detail={data}
+                    busy={!!busy}
+                    onAction={run}
+                  />
+                </div>
                 {state.open.length > 0 && (
-                  <CaseIssues detail={data} selected={finding} onSelect={setFinding} onInspect={inspect} />
+                  <CaseIssues
+                    detail={data}
+                    selected={finding}
+                    onSelect={setFinding}
+                    onInspect={inspect}
+                  />
                 )}
-                {!locked && isReviewer(session) && data.submission.category === "CONTACT_UPDATE" &&
-                  open.some((item) => item.check_key === "SERVICE_PHONE_REVIEW") && (
-                    <ContactPhoneReview id={id} revision={data.submission.revision} onUpdate={() => void result.refresh()} />
+                {!locked &&
+                  isReviewer(session) &&
+                  data.submission.category === "CONTACT_UPDATE" &&
+                  open.some(
+                    (item) => item.check_key === "SERVICE_PHONE_REVIEW",
+                  ) && (
+                    <ContactPhoneReview
+                      id={id}
+                      revision={data.submission.revision}
+                      onUpdate={() => void result.refresh()}
+                    />
                   )}
                 {state.customerTasks.length > 0 && (
-                  <Disclosure title="Customer corrections" open={requestedTab === "corrections"}>
-                    <CorrectionTasks detail={data} onUpload={() => setParams({ tab: "review" })} />
-                  </Disclosure>
+                  <CorrectionTasks
+                    detail={data}
+                    onUpload={() => setParams({ tab: "review" })}
+                  />
                 )}
-                <Disclosure title="Review details" open={openDetails ? true : undefined}>
-                  {data.riskAssessment && <RiskInvestigation detail={data} onUpdate={() => void result.refresh()} showActions={false} />}
+                <Disclosure
+                  title="AI investigation, risk & readiness details"
+                  open={openDetails ? true : undefined}
+                >
+                  {data.riskAssessment && (
+                    <RiskInvestigation
+                      detail={data}
+                      onUpdate={() => void result.refresh()}
+                      showActions={false}
+                    />
+                  )}
                   <AutonomyEvidence detail={data} onInspect={inspect} />
-                  {!locked && <PreflightView detail={data} busy={!!busy} onRun={() => void run("preflight")} />}
+                  {!locked && (
+                    <PreflightView
+                      detail={data}
+                      busy={!!busy}
+                      onRun={() => void run("preflight")}
+                    />
+                  )}
                 </Disclosure>
               </div>
             )}
             {tab === "review" && (
               <>
                 <CaseComparison detail={data} onInspect={inspect} />
-                {!!data.addressVerifications?.length && <Disclosure title="Address verification"><AddressVerificationPanel detail={data} onInspect={inspect} /></Disclosure>}
+                {!!data.addressVerifications?.length && (
+                  <AddressVerificationPanel detail={data} onInspect={inspect} />
+                )}
                 {!locked && (
                   <div
                     className="upload-area"

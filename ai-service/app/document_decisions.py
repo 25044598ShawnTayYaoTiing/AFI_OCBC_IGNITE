@@ -49,7 +49,7 @@ def assess(media, settings):
                       data=json.dumps({'model': MODEL, 'input': blocks, 'questions': QUESTIONS}).encode(),
                       headers={'x-goog-api-key': settings.gemini_api_key, 'Content-Type': 'application/json'})
     try:
-        with urlopen(request, timeout=settings.gemini_timeout_ms / 1000) as response:
+        with urlopen(request, timeout=min(settings.gemini_timeout_ms / 1000, 20)) as response:
             answers = json.load(response)['answers']
         for key, question in QUESTIONS.items():
             answer = answers[key]
@@ -89,8 +89,6 @@ def reconcile(extraction, assessment, threshold):
             or classification['confidence'] < threshold
             or readable['noul'] < threshold or readable['confidence'] < threshold
             or route['choice'] != 'continue_checks'
-            or route['probabilities'][route['choice']] < threshold
-            or route['confidence'] < threshold
             or answers['consistency']['probabilities']['2'] < threshold):
         extraction.requires_review = True
         assessment['outcome'] = 'UNCERTAIN'

@@ -60,29 +60,111 @@ export function SubmissionTable({
   return (
     <div className="table-scroll">
       <table className="submission-table demo-submission-table">
-        <thead><tr>
-          <th scope="col">Customer</th><th scope="col">Request</th>
-          <th scope="col">Status</th><th scope="col">Risk</th><th scope="col">Next action</th>
-        </tr></thead>
+        <thead>
+          <tr>
+            <th scope="col">Customer</th>
+            <th scope="col">Request type</th>
+            <th scope="col">Status</th>
+            <th scope="col">Risk &amp; checks</th>
+            <th scope="col">Next action</th>
+            <th scope="col">Submitted</th>
+          </tr>
+        </thead>
         <tbody>
-          {items.map((item) => (
-            <tr key={item.id}>
-              <td><Link className="record-link" to={"/submissions/" + item.id + "?tab=" + tab}>{item.customer_name} <ArrowRight size={14} /></Link></td>
-              <td>{label(item.category)}</td>
-              <td><Badge value={item.status} /></td>
-              <td>{item.risk_level && item.risk_score != null ? label(item.risk_level) + " · " + item.risk_score + "/100" : "Not assessed"}</td>
-              <td>{nextCaseAction(item, item.open_exceptions ?? 0)}</td>
-            </tr>
-          ))}
+          {items.map((item) => {
+            const currentValidated =
+              item.validated_revision === item.revision && !!item.checks_total;
+            return (
+              <tr key={item.id}>
+                <td>
+                  <Link
+                    className="record-link"
+                    to={"/submissions/" + item.id + "?tab=" + tab}
+                  >
+                    {item.customer_name} <ArrowRight size={14} />
+                  </Link>
+                  <small className="secondary-line mono">
+                    {item.customer_reference}
+                  </small>
+                </td>
+                <td>
+                  <span className="priority-service-tag">
+                    {label(item.category)}
+                  </span>
+                  <small className="secondary-line">
+                    {item.submission_source === "CUSTOMER_PORTAL"
+                      ? item.capture_method === "DIGITAL_EFORM"
+                        ? "Digital declaration"
+                        : "Customer upload"
+                      : "Staff upload"}
+                  </small>
+                </td>
+                <td>
+                  <div className="status-cell-badges">
+                    <Badge value={item.status} />
+                    {item.risk_hold && <Badge value="ON_HOLD" text="On hold" />}
+                  </div>
+                </td>
+                <td>
+                  {item.risk_level && item.risk_score != null ? (
+                    <span
+                      className={`inline-risk-tag risk-tag-${item.risk_level.toLowerCase()}`}
+                    >
+                      {label(item.risk_level)} · {item.risk_score}/100
+                    </span>
+                  ) : (
+                    <span className="muted small">Not assessed</span>
+                  )}
+                  {currentValidated && (
+                    <small className="secondary-line">
+                      {item.checks_passed ?? 0}/{item.checks_total} checks
+                      passed
+                    </small>
+                  )}
+                </td>
+                <td>
+                  <strong className="table-next-action">
+                    {nextCaseAction(item, item.open_exceptions ?? 0)}
+                  </strong>
+                  <small className="secondary-line">
+                    {item.open_exceptions
+                      ? `${item.open_exceptions} open ${item.open_exceptions === 1 ? "issue" : "issues"}`
+                      : item.status === "OPERATIONS"
+                        ? "Handover complete"
+                        : "No open issues"}
+                  </small>
+                </td>
+                <td className="nowrap small muted">
+                  {dateTime(item.created_at)}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
+const statusToneMap: Record<string, string> = {
+  OPERATIONS: "success",
+  READY: "success",
+  RESOLUTION_MANAGEMENT: "info",
+  HUMAN_REVIEW: "info",
+  PENDING_VALIDATION: "warning",
+  CORRECTION_REQUIRED: "warning",
+  ON_HOLD: "danger",
+  DRAFT: "neutral",
+  CANCELLED: "neutral",
+};
+
 export function StatusChart({ metrics }: { metrics: Metrics }) {
-  const entries = Object.entries(metrics.statuses).filter(
-    ([, value]) => value > 0,
+  const entries = Object.entries(metrics.statuses)
+    .filter(([, value]) => value > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const total = Math.max(
+    1,
+    entries.reduce((sum, [, value]) => sum + value, 0),
   );
   const maximum = Math.max(1, ...entries.map(([, value]) => value));
   return (
@@ -90,18 +172,73 @@ export function StatusChart({ metrics }: { metrics: Metrics }) {
       className="status-chart"
       aria-label="Current submission status distribution"
     >
-      <h3>Submission distribution</h3>
-      {entries.map(([status, count]) => (
-        <div key={status} className="chart-row">
-          <span>
-            {status === "OPERATIONS" ? "With Operations" : label(status)}
-          </span>
-          <div className="chart-track" aria-hidden="true">
-            <div style={{ width: `${(count / maximum) * 100}%` }} />
+      <div className="chart-header">
+        <h3>Submission status breakdown</h3>
+        <span>{metrics.totalSubmissions} total</span>
+      </div>
+      {entries.map(([status, count]) => {
+        const tone = statusToneMap[status] || "info";
+        const pct = Math.round((count / total) * 100);
+        return (
+          <div key={status} className="chart-row">
+            <span className="chart-label">
+              <i className={`chart-dot tone-${tone}`} aria-hidden="true" />
+              {status === "OPERATIONS" ? "With Operations" : label(status)}
+            </span>
+            <div className="chart-track" aria-hidden="true">
+              <div
+                className={`chart-fill tone-${tone}`}
+                style={{ width: `${Math.max(6, (count / maximum) * 100)}%` }}
+              />
+            </div>
+            <strong className="chart-value">
+              {count} <small>({pct}%)</small>
+            </strong>
           </div>
-          <strong>{count}</strong>
-        </div>
-      ))}
+        );
+      })}
+    </div>
+  );
+}
+
+export function HorizontalBarChart({
+  items,
+  tone = "accent",
+  ariaLabel,
+}: {
+  items: { label: string; value: number; tone?: string }[];
+  tone?: string;
+  ariaLabel: string;
+}) {
+  const maximum = Math.max(1, ...items.map((item) => item.value));
+  const total = Math.max(
+    1,
+    items.reduce((sum, item) => sum + item.value, 0),
+  );
+  return (
+    <div className="status-chart" aria-label={ariaLabel}>
+      {items.map((item) => {
+        const barTone = item.tone || tone;
+        const pct = Math.round((item.value / total) * 100);
+        return (
+          <div key={item.label} className="chart-row">
+            <span className="chart-label" title={item.label}>
+              {item.label}
+            </span>
+            <div className="chart-track" aria-hidden="true">
+              <div
+                className={`chart-fill tone-${barTone}`}
+                style={{
+                  width: `${item.value > 0 ? Math.max(6, (item.value / maximum) * 100) : 0}%`,
+                }}
+              />
+            </div>
+            <strong className="chart-value">
+              {item.value} <small>({pct}%)</small>
+            </strong>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -219,6 +356,71 @@ const eventNames: Record<string, string> = {
   CREATED: "Request created",
   ADMINISTRATIVE_ATTACHMENT: "Authorised repository document attached",
 };
+function parseDetails(raw: unknown): Record<string, unknown> | null {
+  if (!raw) return null;
+  if (typeof raw === "object" && !Array.isArray(raw))
+    return raw as Record<string, unknown>;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        return JSON.parse(trimmed) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function formatActor(actor: string) {
+  const lower = actor.toLowerCase();
+  if (lower === "reviewer" || lower === "rules-admin")
+    return `Resolution Management (${actor})`;
+  if (lower.startsWith("user-") || lower.startsWith("customer"))
+    return "Customer Portal";
+  return label(actor);
+}
+
+function timelineTone(key: string) {
+  if (
+    /VERIFIED|RESOLVED|COMPLETED|ROUTED|APPROVED|PASSED|CLEARED/.test(key)
+  )
+    return "success";
+  if (/BLOCKED|FAILED|DETECTED|CANCELLED/.test(key)) return "danger";
+  if (/PLANNED|HOLD|ESCALATED/.test(key)) return "warning";
+  return "info";
+}
+
+function humanAuditSummary(key: string, details: Record<string, unknown> | null) {
+  if (!details) return "";
+  const parts: string[] = [];
+  if (typeof details.note === "string" && details.note)
+    parts.push(`"${details.note}"`);
+  if (typeof details.verificationNote === "string" && details.verificationNote)
+    parts.push(`"${details.verificationNote}"`);
+  if (typeof details.reason === "string" && details.reason)
+    parts.push(String(details.reason));
+  if (typeof details.verification === "string" && details.verification)
+    parts.push(String(details.verification));
+  if (typeof details.checks === "number") {
+    const failed =
+      typeof details.failed === "number" ? `, ${details.failed} failed` : "";
+    parts.push(`${details.checks} checks evaluated${failed}`);
+  }
+  if (typeof details.approvedChecks === "number")
+    parts.push(`${details.approvedChecks} checks verified`);
+  if (typeof details.findings === "number")
+    parts.push(`${details.findings} finding(s) analysed`);
+  if (typeof details.level === "string" && typeof details.score === "number")
+    parts.push(`${label(details.level)} risk (${details.score}/100)`);
+  if (typeof details.method === "string" && !key.includes("RISK"))
+    parts.push(provenance(String(details.method)));
+  if (typeof details.revision === "number")
+    parts.push(`Revision ${details.revision}`);
+  return parts.join(" · ");
+}
+
 export function AuditList({
   items,
   compact = false,
@@ -231,38 +433,67 @@ export function AuditList({
       {items.map((event, index) => {
         const key = event.eventType.replace("DOCUMENT_", "");
         const [date, time] = dateTime(event.timestamp).split(", ");
-        const startsDay = index === 0 || dateKey(items[index - 1].timestamp) !== dateKey(event.timestamp);
+        const startsDay =
+          index === 0 ||
+          dateKey(items[index - 1].timestamp) !== dateKey(event.timestamp);
+        const parsed = parseDetails(event.details);
+        const summary = humanAuditSummary(key, parsed);
+        const tone = timelineTone(key);
         return (
           <Fragment key={event.id}>
-          {startsDay && !compact && <li className="audit-day"><strong>{date} SGT</strong></li>}
-          <li>
-            <span className="timeline-dot" />
-            <div className="activity-content">
-              <div className="activity-heading">
-                <strong>{eventNames[key] || label(key)}</strong>
-                <time dateTime={event.timestamp}>{compact ? dateTime(event.timestamp) + " SGT" : time || date}</time>
-              </div>
-
-              {!compact && (
-                <Disclosure title="Advanced details">
-                  <p className="preserve-lines">{detailText(event.details)}</p>
-                  <dl className="metadata">
-                    <div>
-                      <dt>Event ID</dt>
-                      <dd>{event.id}</dd>
-                    </div>
-                    <div><dt>Actor</dt><dd>{event.actor}</dd></div>
-                    {event.correlationId && (
+            {startsDay && !compact && (
+              <li className="audit-day">
+                <strong>{date} SGT</strong>
+              </li>
+            )}
+            <li className="timeline-entry">
+              <span className={`timeline-dot tone-${tone}`} />
+              <div className="activity-content">
+                <div className="activity-heading">
+                  <strong>{eventNames[key] || label(key)}</strong>
+                  <time dateTime={event.timestamp}>
+                    {compact ? dateTime(event.timestamp) + " SGT" : time || date}
+                  </time>
+                </div>
+                <div className="activity-subline">
+                  <span className="activity-actor">
+                    {formatActor(event.actor)}
+                  </span>
+                  {summary && (
+                    <span className="activity-summary">{summary}</span>
+                  )}
+                </div>
+                {!compact && (
+                  <Disclosure title="Advanced details">
+                    <p className="preserve-lines small mono">
+                      {detailText(event.details)}
+                    </p>
+                    <dl className="metadata">
                       <div>
-                        <dt>Reference</dt>
-                        <dd>{event.correlationId}</dd>
+                        <dt>Event ID</dt>
+                        <dd className="mono">{event.id}</dd>
                       </div>
-                    )}
-                  </dl>
-                </Disclosure>
-              )}
-            </div>
-          </li>
+                      <div>
+                        <dt>Actor</dt>
+                        <dd>{event.actor}</dd>
+                      </div>
+                      {event.exceptionId && (
+                        <div>
+                          <dt>Case reference</dt>
+                          <dd className="mono">{event.exceptionId}</dd>
+                        </div>
+                      )}
+                      {event.correlationId && (
+                        <div>
+                          <dt>Reference</dt>
+                          <dd className="mono">{event.correlationId}</dd>
+                        </div>
+                      )}
+                    </dl>
+                  </Disclosure>
+                )}
+              </div>
+            </li>
           </Fragment>
         );
       })}
@@ -283,11 +514,11 @@ export function Checklist({
   return (
     <ul className="validation-list">
       {checks.map((check, index) => (
-        <li key={check.id || index}>
-          <span>
+        <li key={check.id || index} className="validation-list-item">
+          <div className="validation-list-main">
             <strong>{check.name}</strong>
-            {!check.passed && <small>{check.corrective_action}</small>}
-          </span>
+            {!check.passed && <p>{check.corrective_action}</p>}
+          </div>
           <Badge value={check.passed ? "PASSED" : "FAILED"} />
         </li>
       ))}

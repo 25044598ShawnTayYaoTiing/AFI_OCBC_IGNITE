@@ -24,6 +24,9 @@ public class DocumentAddressVerifier {
           || observations.stream().anyMatch(f -> proposed.equals(f.get("field")));
       String field = explicitNew ? proposed : kind;
       var selected = fields.stream().filter(f -> field.equals(f.get("field_name"))).findFirst().orElse(null);
+      if (selected == null && "SUPPORTING_DOCUMENT".equals(doc.get("document_type")) && "mailing_address".equals(kind)) {
+        selected = fields.stream().filter(f -> "residential_address".equals(f.get("field_name"))).findFirst().orElse(null);
+      }
       if (selected == null && explicitNew) {
         var observation = observations.stream().filter(f -> proposed.equals(f.get("field"))).findFirst().orElse(null);
         if (observation != null) selected = map("field_name", field, "field_value", "", "page_number", observation.get("page"), "supporting_text", observation.get("supporting_text"));
