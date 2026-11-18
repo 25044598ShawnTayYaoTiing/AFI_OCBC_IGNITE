@@ -47,6 +47,25 @@ export interface Version {
   created_at: string;
   uploaded_by: string;
 }
+export interface DecisionAnswer {
+  type?: "noul" | "choice" | "score";
+  confidence?: number;
+  noul?: number;
+  choice?: string;
+  score?: number;
+  probabilities?: Record<string, number>;
+  legend?: Record<string, string>;
+}
+export interface DecisionAssessment {
+  model?: string;
+  outcome: "PASSED" | "UNCERTAIN" | "UNAVAILABLE";
+  threshold?: number;
+  min_confidence?: number;
+  confidence_band?: "HIGH" | "MEDIUM" | "LOW";
+  elapsed_ms?: number;
+  usage?: { total_input_tokens?: number };
+  answers?: Record<string, DecisionAnswer>;
+}
 export interface Doc {
   id: string;
   version_id: string;
@@ -59,13 +78,7 @@ export interface Doc {
   extraction: {
     method: string;
     requires_review: boolean;
-    decision?: {
-      outcome: "PASSED" | "UNCERTAIN" | "UNAVAILABLE";
-      answers?: {
-        readable?: { noul: number };
-        classification?: { choice: string; probabilities: Record<string, number> };
-      };
-    } | null;
+    decision?: DecisionAssessment | null;
     converted_from_images?: boolean;
     source_images?: { filename: string; size_bytes: number }[];
     notes: string;

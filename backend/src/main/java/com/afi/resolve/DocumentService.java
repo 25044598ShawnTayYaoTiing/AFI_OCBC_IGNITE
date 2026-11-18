@@ -26,6 +26,7 @@ public class DocumentService {
   final CustomerNotifications customerNotifications;
   final DocumentAddressVerifier addressVerifier;
   final ImagePdfService imagePdfs;
+  private final ThreadLocal<Map<String, String>> extractionContext = new ThreadLocal<>();
   static final Set<String> TYPES =
       Set.of(
           "SERVICE_REQUEST",
@@ -649,6 +650,11 @@ public class DocumentService {
           imagePages != null ? imagePages.stream().map(b -> Base64.getEncoder().encodeToString(b)).toList() :
             DocumentContent.type(bytes).startsWith("image/") ? List.of(Base64.getEncoder().encodeToString(bytes)) : Base64.getEncoder().encodeToString(bytes));
       if (converted) payload.put("converted_from_images", true);
+      var ctx = extractionContext.get();
+      if (ctx != null && !ctx.isEmpty()) {
+        if (ctx.containsKey("request_type")) payload.put("request_type", ctx.get("request_type"));
+        payload.put("context", ctx);
+      }
       String body =
           ai.client
               .post()
@@ -1162,6 +1168,43 @@ public class DocumentService {
     return detail(id, a);
   }
 
+  Map<String, String> buildExtractionContext(String id, Authentication a) {
+    return s.inTx(
+        () -> {
+          var c = access(id, a, false);
+          var ctx = new LinkedHashMap<String, String>();
+          putTrimmed(ctx, "request_type", c.get("category"));
+          putTrimmed(ctx, "customer_name", c.get("customer_name"));
+          putTrimmed(ctx, "customer_reference", c.get("customer_reference"));
+          var form = latestForm(id);
+          if (!form.isEmpty()) {
+            String mailing = Objects.toString(form.get("mailingAddress"), "").trim();
+            String postal = Objects.toString(form.get("postalCode"), "").trim();
+            if (!mailing.isBlank()) {
+              putTrimmed(
+                  ctx,
+                  "requested_mailing_address",
+                  !postal.isBlank() && !mailing.contains(postal)
+                      ? mailing + " Singapore " + postal
+                      : mailing);
+            }
+            putTrimmed(ctx, "requested_tax_residency", form.get("taxResidency"));
+            putTrimmed(ctx, "foreign_tax_country", form.get("foreignTaxCountry"));
+            putTrimmed(ctx, "tax_identifier", form.get("taxIdentifier"));
+            putTrimmed(ctx, "account_type", form.get("accountType"));
+            putTrimmed(ctx, "currency", form.get("currency"));
+            putTrimmed(ctx, "email", form.get("email"));
+            putTrimmed(ctx, "mobile", form.get("mobile"));
+          }
+          return ctx;
+        });
+  }
+
+  private static void putTrimmed(Map<String, String> target, String key, Object raw) {
+    String val = Objects.toString(raw, "").trim();
+    if (!val.isBlank()) target.put(key, val.length() > 300 ? val.substring(0, 300) : val);
+  }
+
   private String extractAndCommitPendingItem(
       String id,
       PendingUpload item,
@@ -1171,12 +1214,19 @@ public class DocumentService {
       List<byte[]> imagePages,
       Authentication a) {
     try {
-      JsonNode extracted =
-          item.fromImages()
-              ? extractionRequest(item.bytes(), item.docId(), null, true)
-              : (combineImages && !imagePages.isEmpty()
-                  ? extractionPayload(item.bytes(), item.docId(), imagePages)
-                  : extraction(item.bytes(), item.docId()));
+      var context = buildExtractionContext(id, a);
+      JsonNode extracted;
+      extractionContext.set(context);
+      try {
+        extracted =
+            item.fromImages()
+                ? extractionRequest(item.bytes(), item.docId(), null, true)
+                : (combineImages && !imagePages.isEmpty()
+                    ? extractionPayload(item.bytes(), item.docId(), imagePages)
+                    : extraction(item.bytes(), item.docId()));
+      } finally {
+        extractionContext.remove();
+      }
       if ("UNAVAILABLE".equals(extracted.path("decision").path("outcome").asText(""))) {
         throw new ApiException(
             503,
@@ -1272,10 +1322,7 @@ public class DocumentService {
                       f.path("page").asInt(),
                       f.path("supporting_text").asText(),
                       extracted.path("method").asText());
-                event(
-                    id,
-                    a,
-                    item.replacement() ? "REPLACED" : "UPLOADED",
+                var auditDetails =
                     map(
                         "documentId",
                         item.docId(),
@@ -1294,7 +1341,15 @@ public class DocumentService {
                         "convertedFromImages",
                         item.fromImages(),
                         "sourcePageCount",
-                        item.fromImages() ? item.sourcePageCount() : 0));
+                        item.fromImages() ? item.sourcePageCount() : 0);
+                var decisionNode = extracted.path("decision");
+                if (decisionNode.has("min_confidence") && decisionNode.get("min_confidence").isNumber()) {
+                  auditDetails.put("decisionMinConfidence", decisionNode.get("min_confidence").asDouble());
+                }
+                if (decisionNode.hasNonNull("confidence_band")) {
+                  auditDetails.put("decisionConfidenceBand", decisionNode.get("confidence_band").asText());
+                }
+                event(id, a, item.replacement() ? "REPLACED" : "UPLOADED", auditDetails);
                 return "EXTRACTED";
               });
       return commitOutcome;

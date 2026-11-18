@@ -611,4 +611,50 @@ class StageTwoReliabilityTest {
         "SELECT status FROM document_submissions WHERE id=?", String.class, subId))
         .isEqualTo("OPERATIONS");
   }
+
+  @Test
+  void extractionContextIncludesCustomerAndServiceDetailsWithDecisionConfidenceAudit()
+      throws Exception {
+    var form = addressForm("298B Sengkang East Way, #12-345", "543298");
+    doAnswer(call -> {
+      var n = extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+          "customer_name", "Alex Tan",
+          "customer_reference", reference,
+          "mailing_address", "Blk 298B Sengkang East Way #12-345 Singapore 543298"));
+      n.put("method", "GEMINI");
+      var dec = n.putObject("decision");
+      dec.put("model", "gemini-decision-1");
+      dec.put("outcome", "PASSED");
+      dec.put("min_confidence", 0.87);
+      dec.put("confidence_band", "HIGH");
+      return n;
+    }).when(documents).extraction(any(byte[].class), anyString());
+
+    var res = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(form).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-ctx.pdf", "application/pdf",
+                "%PDF-CTX-CHECK".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+
+    String subId = res.path("submission").path("id").asText();
+    assertThat(res.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    var reviewerAuth = UsernamePasswordAuthenticationToken.authenticated(
+        "reviewer", null, List.of(new SimpleGrantedAuthority("ROLE_REVIEWER")));
+    var ctx = documents.buildExtractionContext(subId, reviewerAuth);
+    assertThat(ctx)
+        .containsEntry("request_type", "ADDRESS_CHANGE")
+        .containsEntry("customer_name", "Alex Tan")
+        .containsEntry("customer_reference", reference)
+        .containsEntry("requested_mailing_address", "298B Sengkang East Way, #12-345 Singapore 543298");
+
+    var auditDetails = s.db.queryForObject(
+        "SELECT details FROM audit_logs WHERE exception_id=? AND event_type='DOCUMENT_UPLOADED' ORDER BY timestamp DESC LIMIT 1",
+        String.class, subId);
+    assertThat(auditDetails).contains("0.87", "HIGH");
+  }
 }

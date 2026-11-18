@@ -21,11 +21,13 @@ _EXTRACT_TOTAL_BUDGET_S = 72.0
 _FLASH_EXTRACT_BUDGET_S = 52.0
 
 
-def _assess_within_budget(media, settings: Settings, deadline_s: float):
+def _assess_within_budget(media, settings: Settings, deadline_s: float, request_type: str | None = None, context: dict | None = None):
     remaining = deadline_s - time.monotonic()
     if remaining < 4.0:
         return {'model': document_decisions.MODEL, 'outcome': 'UNAVAILABLE'}
     budgeted = replace(settings, gemini_timeout_ms=max(4_000, min(settings.gemini_timeout_ms, int(remaining * 1000))))
+    if request_type or context:
+        return document_decisions.assess(media, budgeted, request_type, context)
     return document_decisions.assess(media, budgeted)
 
 DocumentType = Literal['CUSTOMER_INFORMATION', 'ACCOUNT_APPLICATION', 'TAX_RESIDENCY', 'SUPPORTING_DOCUMENT', 'UNKNOWN', 'SERVICE_REQUEST']
@@ -38,6 +40,17 @@ class ExtractRequest(StrictModel):
     pdf_base64: str | None = Field(default=None, max_length=23_000_000)
     converted_from_images: bool = False
     images_base64: list[str] = Field(default_factory=list, max_length=10)
+    request_type: str | None = Field(default=None, max_length=64)
+    context: dict[str, str] | None = None
+
+    @field_validator('context')
+    @classmethod
+    def check_context(cls, value):
+        if value is None:
+            return None
+        if len(value) > 12:
+            raise ValueError('Too many context fields')
+        return {str(k)[:48]: str(v)[:300] for k, v in value.items()}
 
 # Model labels are normalised before the same closed field enum is validated.
 ALIASES = {
@@ -159,7 +172,7 @@ def _normalise_supporting_fields(proposed: ModelExtraction) -> None:
     proposed.fields = cleaned
 
 
-def extract_visual(document_id, media, page_count, settings):
+def extract_visual(document_id, media, page_count, settings, request_type=None, context=None):
     if not settings.gemini_api_key:
         reject(503, 'AI_NOT_CONFIGURED', 'Image and scanned PDF extraction requires Gemini. Retry when the AI service is configured.')
     overall_deadline = time.monotonic() + _EXTRACT_TOTAL_BUDGET_S
@@ -226,7 +239,8 @@ def extract_visual(document_id, media, page_count, settings):
             notes=notes)
         assessment = _assess_within_budget(
             [(part.inline_data.data, part.inline_data.mime_type)
-             for part in media if getattr(part, 'inline_data', None)], settings, overall_deadline)
+             for part in media if getattr(part, 'inline_data', None)],
+            settings, overall_deadline, request_type, context)
         return document_decisions.reconcile(result, assessment, settings.decision_threshold)
     except HTTPException:
         raise
@@ -420,7 +434,7 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
             reject(422, 'INVALID_IMAGE', 'Send either one PDF or ordered image pages, not both.')
         media = [types.Part.from_bytes(data=raw, mime_type=mime)
                  for raw, mime in decode_images(request.images_base64)]
-        return extract_visual(request.document_id, media, len(media), settings)
+        return extract_visual(request.document_id, media, len(media), settings, request.request_type, request.context)
     try:
         raw = base64.b64decode(request.pdf_base64, validate=True)
         if not raw or len(raw) > (16 if request.converted_from_images else 10) * 1024 * 1024 or not raw.startswith(b'%PDF-'):
@@ -440,7 +454,7 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
         reject(422, 'INVALID_PDF', 'Use a readable, unencrypted PDF of at most 10 MB and 30 pages.')
     if request.converted_from_images or any(not page.strip() for page in pages) or any(has_visual_resources(page) for page in reader.pages):
         return extract_visual(request.document_id,
-            [types.Part.from_bytes(data=raw, mime_type='application/pdf')], len(pages), settings)
+            [types.Part.from_bytes(data=raw, mime_type='application/pdf')], len(pages), settings, request.request_type, request.context)
     if not settings.gemini_api_key:
         reject(503, 'AI_NOT_CONFIGURED', 'Configure Gemini to extract document evidence.')
     overall_deadline = time.monotonic() + _EXTRACT_TOTAL_BUDGET_S
@@ -472,7 +486,7 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
             fields=fields, observations=observations, requires_review=proposed.requires_review or not fields,
             method='GEMINI', model=settings.gemini_model,
             notes='Live Gemini extraction with normalised fields and independently grounded page citations. Approved Spring rules determine validity.')
-        assessment = _assess_within_budget([(raw, 'application/pdf')], settings, overall_deadline)
+        assessment = _assess_within_budget([(raw, 'application/pdf')], settings, overall_deadline, request.request_type, request.context)
         return document_decisions.reconcile(result, assessment, settings.decision_threshold)
     except HTTPException:
         raise

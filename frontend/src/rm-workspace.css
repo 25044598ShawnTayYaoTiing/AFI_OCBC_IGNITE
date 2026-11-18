@@ -1084,3 +1084,135 @@ body {
     gap: 12px;
   }
 }
+
+.d1-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-subtle);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.d1-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.d1-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.d1-meta {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.d1-conf-pill,
+.d1-conf-mini {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 8px;
+}
+.d1-conf-pill.is-high,
+.d1-conf-mini.is-high {
+  background: rgba(16, 185, 129, 0.14);
+  color: var(--success-text);
+}
+.d1-conf-pill.is-medium,
+.d1-conf-mini.is-medium {
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--warning-text);
+}
+.d1-conf-pill.is-low,
+.d1-conf-mini.is-low {
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--danger-text, #b91c1c);
+}
+.d1-details {
+  margin-top: 10px;
+}
+.d1-details > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.d1-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+.d1-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.d1-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.d1-q {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 650;
+}
+.d1-choice {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+  margin: 4px 0 8px;
+}
+.d1-bars {
+  display: grid;
+  gap: 5px;
+}
+.d1-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) 1fr 44px;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.d1-bar-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.d1-bar-label.is-top {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.d1-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.d1-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--text-muted);
+}
+.d1-fill.is-top {
+  background: var(--accent);
+}
+.d1-pct {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}

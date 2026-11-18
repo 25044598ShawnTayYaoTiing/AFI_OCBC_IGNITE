@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Detail } from "../document-types";
 import { dateTime, label, post } from "../api";
 import { ErrorBox, Panel } from "../components";
+import { minimumDecisionConfidence } from "./DecisionAssessmentPanel";
 
 export function RiskInvestigation({
   detail,
@@ -95,6 +96,12 @@ export function RiskInvestigation({
                     {document.extraction.requires_review
                       ? "Reviewer confirmation required"
                       : "Verified"}
+                    {(() => {
+                      const minConf = minimumDecisionConfidence(document.extraction.decision);
+                      return minConf !== null
+                        ? ` · Decision confidence ${(minConf * 100).toFixed(0)}%`
+                        : "";
+                    })()}
                   </p>
                 ))}
               </li>
