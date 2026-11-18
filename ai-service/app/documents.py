@@ -114,7 +114,7 @@ def extract_visual(document_id, media, page_count, settings):
             'Extract only supported synthetic banking forms or supporting documents; otherwise use UNKNOWN. '
             'Utility and telecommunications bills, bank statements, proof of address, and issued tax residency certificates are SUPPORTING_DOCUMENT. '
             'Distinguish issued tax certificates from customer tax self-declarations. '
-            'Read pages in their upright orientation, including sideways scans. Transcribe each page verbatim, preserving labels and newlines. Map visible fields to the closed schema. '
+            'Read pages in their upright orientation, including sideways scans. Transcribe each page verbatim, preserving labels and newlines. Put each table label and its value on consecutive lines, or separate them with a tab. Map visible fields to the closed schema. '
             'Cite the exact visible label and value on its page. Never infer missing text, dates, identities, consent, signatures or authenticity. '
             'Use existing/new address fields separately. New Email maps to email, New Mobile to mobile, TIN to tax_identifier. '
             'Omit unreadable or absent values. Report ambiguity with requires_review=true. '
@@ -247,19 +247,33 @@ def has_visual_resources(page):
 def source_value(field: str, support: str) -> str | None:
     """Read a cited label/value block; never concatenate separate source fields."""
     lines = support.splitlines(keepends=True)
+
     def key(value):
         return re.sub(r'[^a-z0-9]+', ' ', value.lower()).strip()
+
+    def label_and_value(line):
+        parts = re.split(r':|\t+| {2,}', line.strip(), maxsplit=1)
+        return key(parts[0]), parts[1].strip() if len(parts) == 2 else ''
+
+    def known_label(label):
+        return label in LABELS or re.fullmatch(
+            r'(?:residential |mailing )?(?:postal|post|zip) code|case reference|tax identification reference', label)
+
     for index, line in enumerate(lines):
-        label, colon, inline = line.partition(':')
-        source_label = key(label)
+        source_label, inline = label_and_value(line)
         if source_label.replace(' ', '_') != field and LABELS.get(source_label) != field:
             continue
-        if colon and inline.strip():
-            return inline.strip()
+        if inline:
+            # Another labelled column on the same line belongs to a separate field.
+            for separator in re.finditer(r'\t+| {2,}', inline):
+                following_label, _ = label_and_value(inline[separator.end():])
+                if known_label(following_label):
+                    return inline[:separator.start()].rstrip()
+            return inline
         values = []
         for following in lines[index + 1:]:
-            candidate = key(following.partition(':')[0])
-            if candidate in LABELS or re.fullmatch(r'(?:residential |mailing )?(?:postal|post|zip) code|case reference|tax identification reference', candidate):
+            candidate, _ = label_and_value(following)
+            if known_label(candidate):
                 break
             if not any(value.strip() for value in values) and following.strip() and missing(following.strip()):
                 # Keep an explicit missing marker separate from explanatory text.

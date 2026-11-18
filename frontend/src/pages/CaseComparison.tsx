@@ -33,22 +33,33 @@ export function CaseComparison({
         filename: field.filename || doc.filename,
       })),
     );
+  const category = detail.submission.category;
+  const addressKind = category === "ADDRESS_CHANGE" ? "mailing"
+    : category === "RESIDENTIAL_ADDRESS_CHANGE" ? "residential" : null;
+  const comparisonKey = (key: string) => {
+    if (!addressKind) return key;
+    if (key === "new_mailing_address" || key === "new_residential_address") return key.slice(4);
+    return key === `${addressKind}_postal_code` || key === `new_${addressKind}_postal_code`
+      ? "postal_code" : key;
+  };
   const primary = [
     ...new Set(requestedFields[detail.submission.category] || ["customer_name", "customer_reference"]),
   ];
   const rest = [
     ...new Set(
       [...profile, ...declarations, ...supporting].map(
-        (field) => field.field_name,
+        (field) => comparisonKey(field.field_name),
       ),
     ),
   ].filter((key) => !primary.includes(key));
   function cell(fields: Field[], key: string) {
     const found = fields
-      .filter((field) => field.field_name === key)
+      .filter((field) => comparisonKey(field.field_name) === key)
       .filter(
         (field, index, all) =>
-          all.findIndex((other) => other.field_value === field.field_value) ===
+          all.findIndex((other) => other.field_value === field.field_value &&
+            other.document_id === field.document_id && other.version_id === field.version_id &&
+            other.page_number === field.page_number) ===
           index,
       );
     return found.length ? (
@@ -77,7 +88,7 @@ export function CaseComparison({
       <span className="comparison-missing">Not available</span>
     );
   }
-  const primaryWithValues = primary.filter((key) => [...declarations, ...profile, ...supporting].some((field) => field.field_name === key));
+  const primaryWithValues = primary.filter((key) => [...declarations, ...profile, ...supporting].some((field) => comparisonKey(field.field_name) === key));
   const supportNotRequired = detail.checks.some((check) => check.check_key === "SERVICE_SUPPORT" && check.outcome === "NOT_APPLICABLE");
   function rows(keys: string[]) {
     return (
@@ -94,12 +105,12 @@ export function CaseComparison({
           </thead>
           <tbody>
             {keys.map((key) => {
-              const requested = declarations.filter((field) => field.field_name === key);
-              const provided = supporting.filter((field) => field.field_name === key);
-              const uncertain = detail.documents.some((doc) => doc.document_type === "SUPPORTING_DOCUMENT" && doc.extraction.observations?.some((item) => item.field === key));
+              const requested = declarations.filter((field) => comparisonKey(field.field_name) === key);
+              const provided = supporting.filter((field) => comparisonKey(field.field_name) === key);
+              const uncertain = detail.documents.some((doc) => doc.document_type === "SUPPORTING_DOCUMENT" && doc.extraction.observations?.some((item) => comparisonKey(item.field) === key));
               const compare = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
               const outcome = uncertain ? "Uncertain" : !provided.length ? (supportNotRequired ? "Not required" : "Missing") : !requested.length ? "No request value" :
-                provided.every((field) => requested.some((other) => compare(field.field_value) === compare(other.field_value))) ? "Exact match" : "Values differ";
+                new Set([...requested, ...provided].map((field) => compare(field.field_value))).size === 1 ? "Exact match" : "Values differ";
               return (
               <tr key={key}>
                 <th scope="row">{label(key)}</th>

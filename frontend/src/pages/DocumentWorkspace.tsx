@@ -33,6 +33,7 @@ export function DocumentWorkspace() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [evidenceReviewNote, setEvidenceReviewNote] = useState("");
   const [progress, setProgress] = useState(0);
   const [selected, setSelected] = useState("");
   const [version, setVersion] = useState("");
@@ -65,6 +66,33 @@ export function DocumentWorkspace() {
   const locked = ["OPERATIONS", "CANCELLED"].includes(
     data?.submission.status || "",
   );
+  const currentVersion = doc?.versions.find((item) => item.id === doc.version_id);
+  useEffect(() => {
+    setEvidenceReviewNote("");
+  }, [id, doc?.version_id, version]);
+
+  async function confirmEvidence() {
+    if (!doc || !data || mutation.current) return;
+    mutation.current = true;
+    setBusy("review-evidence");
+    setError("");
+    setNotice("");
+    try {
+      await post(`${BASE}/submissions/${id}/versions/${doc.version_id}/review-evidence`, {
+        revision: data.submission.revision,
+        note: evidenceReviewNote.trim(),
+      });
+      await result.refresh();
+      setEvidenceReviewNote("");
+      setNotice("Evidence review recorded.");
+    } catch (failure) {
+      setError(message(failure));
+    } finally {
+      mutation.current = false;
+      setBusy("");
+    }
+  }
+
   async function run(action: string, note?: string): Promise<boolean> {
     if (mutation.current) return false;
     mutation.current = true;
@@ -361,7 +389,13 @@ export function DocumentWorkspace() {
                             version; check each citation before acting.
                           </Notice>
                         )}
-                        {doc.extraction.requires_review && <Notice>Check the extracted details against the original document.</Notice>}
+                        {(!version || version === doc.version_id) && doc.extraction.requires_review && (
+                          <Notice>
+                            {doc.evidence_reviewed_by
+                              ? `Evidence review recorded by ${doc.evidence_reviewed_by}.`
+                              : "Compare the original with the document type and each extracted field before recording review."}
+                          </Notice>
+                        )}
                         <PdfPreview
                           caseId={id}
                           versionId={version || doc.version_id}
@@ -369,6 +403,27 @@ export function DocumentWorkspace() {
                           pageCount={doc.versions.find(item => item.id === (version || doc.version_id))?.source_page_count || 1}
                           convertedFromImages={doc.versions.find(item => item.id === (version || doc.version_id))?.converted_from_images || false}
                         />
+                        {!locked && isReviewer(session) && (!version || version === doc.version_id)
+                          && doc.extraction.requires_review && !doc.evidence_reviewed_by
+                          && doc.document_type !== "UNKNOWN" && doc.fields.length > 0
+                          && !doc.extraction.observations?.some((item) => item.issue_type === "UNCERTAIN") && (
+                          currentVersion?.uploaded_by === session?.username ? (
+                            <Notice>Another reviewer must inspect this upload.</Notice>
+                          ) : (
+                            <div className="form-body">
+                              <label>
+                                Evidence review note
+                                <textarea value={evidenceReviewNote} rows={3} maxLength={1000}
+                                  disabled={!!busy} onChange={(event) => setEvidenceReviewNote(event.target.value)} />
+                              </label>
+                              <button type="button" className="button secondary"
+                                disabled={!!busy || evidenceReviewNote.trim().length < 12}
+                                onClick={() => void confirmEvidence()}>
+                                Confirm document type and extracted fields
+                              </button>
+                            </div>
+                          )
+                        )}
                       </Panel>
                     </div>
                     <Panel title="Details read from this document" className="review-sidebar">

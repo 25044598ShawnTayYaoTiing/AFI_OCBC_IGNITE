@@ -39,6 +39,14 @@ public class DocumentController {
 
   public record RiskReview(int revision, String note) {}
 
+  @PostMapping("/submissions/{id}/versions/{version}/review-evidence")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object reviewEvidence(
+      @PathVariable String id, @PathVariable String version, @RequestBody RiskReview request,
+      Authentication actor) {
+    return service.reviewDocumentEvidence(id, version, request.revision(), request.note(), actor);
+  }
+
   @PostMapping("/submissions/{id}/authorize-correction")
   @PreAuthorize("hasRole('REVIEWER')")
   public Object authorizeCorrection(

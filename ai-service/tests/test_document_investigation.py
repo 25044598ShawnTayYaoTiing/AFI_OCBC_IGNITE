@@ -14,10 +14,11 @@ def request(evidence=None):
 def test_fallback_uses_recorded_policy_without_inventing_a_document_subtype():
     result = intelligence.investigate_documents(request(), Settings(service_key='test', gemini_api_key='', gemini_model='test-model'))
     assert result.method == 'DETERMINISTIC_FALLBACK'
-    explanation = result.recommendations[0].explanation
-    assert 'Supply the required synthetic supporting document' in explanation
-    assert 'not proof of a missing document' in explanation
-    assert 'passport' not in explanation.lower()
+    recommendation = result.recommendations[0]
+    assert recommendation.explanation == (
+        'Supporting document required. Supply the required synthetic supporting document')
+    assert recommendation.evidence_ids == []
+    assert recommendation.recommended_action == 'ATTACH_VERIFIED_DOCUMENT'
 
 
 def test_model_cannot_change_policy_action_or_add_a_citation(monkeypatch):

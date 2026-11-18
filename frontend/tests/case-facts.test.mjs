@@ -13,7 +13,7 @@ test("absence of findings does not imply current checks passed or readiness", ()
   assert.equal(facts.current, false);
   assert.equal(facts.severity, "Not assessed");
   assert.equal(facts.ready, false);
-  assert.equal(nextCaseAction(data.submission, 0), "Check the current document package");
+  assert.equal(nextCaseAction(data.submission, 0), "Check the request");
 });
 
 test("recorded policy severity and task ownership stay distinct from a risk score", () => {
@@ -27,13 +27,13 @@ test("recorded policy severity and task ownership stay distinct from a risk scor
 });
 
 test("handover and revision freshness determine the next action", () => {
-  assert.equal(nextCaseAction({ status: "OPERATIONS", revision: 3, validated_revision: 3 }, 0), "Operations handover recorded");
-  assert.equal(nextCaseAction({ status: "HUMAN_REVIEW", revision: 3, validated_revision: 3 }, 2), "Reviewer must assess the unresolved findings");
-  assert.equal(nextCaseAction({ status: "DRAFT", revision: 0, validated_revision: null }, 0), "Upload the customer’s account-opening documents");
+  assert.equal(nextCaseAction({ status: "OPERATIONS", revision: 3, validated_revision: 3 }, 0), "With Operations");
+  assert.equal(nextCaseAction({ status: "HUMAN_REVIEW", revision: 3, validated_revision: 3 }, 2), "Review open issues");
+  assert.equal(nextCaseAction({ status: "DRAFT", revision: 0, validated_revision: null }, 0), "Add documents");
 });
 
-test("a recorded correction is actionable only for the validated revision", () => {
+test("waiting for customer corrections requires a current validation", () => {
   const submission = { status: "CORRECTION_REQUIRED", revision: 2, validated_revision: 2, next_action: "Obtain a corrected tax declaration." };
-  assert.equal(nextCaseAction(submission, 1), submission.next_action);
-  assert.equal(nextCaseAction({ ...submission, revision: 3 }, 1), "Check the current document package");
+  assert.equal(nextCaseAction(submission, 1), "Wait for customer corrections");
+  assert.equal(nextCaseAction({ ...submission, revision: 3 }, 1), "Check the request");
 });

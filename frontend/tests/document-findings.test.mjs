@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { groupFindings, issueCategory, issueGuidance, issueTitle } from "../src/pages/DocumentFindings.ts";
+import { groupFindings, issueCategory, issueTitle } from "../src/pages/DocumentFindings.ts";
 
 const finding = (id, check_key, status = "OPEN", overrides = {}) => ({
   id, check_key, status, field_name: "customer_reference", severity: "BLOCKING",
@@ -21,9 +21,8 @@ test("groups only related references with matching status and preserves every fi
   assert.deepEqual(groups[0].items.map((item) => item.id), ["1", "2", "3"]);
   assert.deepEqual(groups.flatMap((group) => group.items.map((item) => item.id)).sort(),
     findings.map((item) => item.id).sort());
-  assert.match(issueGuidance(findings[0], "SYN-CASE"), /SYN-CASE/);
-  assert.equal(issueTitle(findings[0]), "Customer reference must match submission");
-  assert.equal(issueGuidance(findings[3], "SYN-CASE"), null);
+  assert.equal(issueTitle(findings[0]), "Customer reference differs");
+  assert.deepEqual(groups.find(group => group.items[0].status === "RESOLVED")?.items.map(item => item.id), ["4"]);
 });
 
 test("different action or severity is not merged", () => {
@@ -37,7 +36,7 @@ test("different action or severity is not merged", () => {
 
 
 test("separates human actions, automatic actions and verified autonomous resolutions", () => {
-  assert.equal(issueCategory(finding("human", "MATCH_MAILING")), "Human-required action");
-  assert.equal(issueCategory(finding("auto", "ATTACH_SUPPORTING_DOCUMENT", "OPEN", { action_type: "ATTACH_VERIFIED_DOCUMENT" })), "Policy-controlled automatic action");
-  assert.equal(issueCategory(finding("done", "ATTACH_SUPPORTING_DOCUMENT", "RESOLVED", { resolution_method: "AUTOMATIC_VERIFIED_ATTACHMENT" })), "Autonomous resolution - verified");
+  assert.equal(issueCategory(finding("human", "MATCH_MAILING")), "Needs a person to review");
+  assert.equal(issueCategory(finding("auto", "ATTACH_SUPPORTING_DOCUMENT", "OPEN", { action_type: "ATTACH_VERIFIED_DOCUMENT" })), "Eligible for automatic resolution");
+  assert.equal(issueCategory(finding("done", "ATTACH_SUPPORTING_DOCUMENT", "RESOLVED", { resolution_method: "AUTOMATIC_VERIFIED_ATTACHMENT" })), "Resolved automatically and verified");
 });
