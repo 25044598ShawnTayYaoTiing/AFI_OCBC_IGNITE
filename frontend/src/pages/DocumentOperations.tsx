@@ -11,6 +11,7 @@ import { detailText, label, post, privatePdf, useResource } from "../api";
 import type { Audit } from "../api";
 import type { Detail, Metrics, Submission } from "../document-types";
 import {
+  Badge,
   Empty,
   ErrorBox,
   Loading,
@@ -20,9 +21,11 @@ import {
 import { useAuth } from "../auth";
 import { readUiPreferences } from "../preferences";
 import { Disclosure, MetricStrip, SectionNav } from "../ui";
+import { nextCaseAction } from "./case-facts";
 import {
   AuditList,
   BASE,
+  HorizontalBarChart,
   message,
   reportNav,
   StatusChart,
@@ -32,21 +35,198 @@ import {
 export function DocumentOverview() {
   const cases = useResource<Submission[]>(`${BASE}/submissions`, 15000);
   const metrics = useResource<Metrics>(`${BASE}/analytics`, 15000);
-  const attention = (cases.data || []).filter(needsAttention).length;
+  const items = cases.data || [];
+  const m = metrics.data;
+  const attentionList = items
+    .filter(needsAttention)
+    .slice()
+    .sort(
+      (a, b) =>
+        Number(!!b.risk_hold) - Number(!!a.risk_hold) ||
+        (b.risk_score ?? -1) - (a.risk_score ?? -1),
+    );
+  const attention = attentionList.length;
+  const readyCount = items.filter(
+    (item) =>
+      ["RESOLUTION_MANAGEMENT", "READY"].includes(item.status) &&
+      item.validated_revision === item.revision &&
+      !item.open_exceptions &&
+      !item.risk_hold,
+  ).length;
   return (
     <div className="page-stack">
-      <PageHeader title="Overview" description="Review customer requests, see what was resolved automatically, and send verified cases to Operations.">
-        <Link className="button primary" to="/exceptions">Review cases needing attention <ArrowRight size={16} /></Link>
+      <PageHeader
+        eyebrow="Resolution Management · Service Operations"
+        title="Overview"
+        description="Review customer requests, see what was resolved automatically, and send verified cases to Operations."
+      >
+        <Link className="button secondary" to="/submissions?view=ready">
+          Ready for approval ({readyCount})
+        </Link>
+        <Link className="button primary" to="/exceptions">
+          Review cases needing attention ({cases.data ? attention : "—"}){" "}
+          <ArrowRight size={16} />
+        </Link>
       </PageHeader>
-      {cases.error && <ErrorBox message="Could not load cases." retry={() => void cases.refresh()} />}
-      {metrics.error && <ErrorBox message="Could not load case totals." retry={() => void metrics.refresh()} />}
-      <MetricStrip items={[
-        { label: "Require attention", value: cases.data ? attention : "—" },
-        { label: "Resolved automatically", value: metrics.data?.automaticallyResolved ?? "—" },
-        { label: "Sent to Operations", value: metrics.data?.successfullyRouted ?? "—" },
-      ]} />
-      <Panel title="Recent cases" action={<Link className="text-link" to="/submissions">View all cases <ArrowRight size={15} /></Link>}>
-        {cases.loading ? <Loading /> : cases.data && <SubmissionTable items={cases.data.slice(0, 6)} />}
+      {cases.error && (
+        <ErrorBox
+          message="Could not load cases."
+          retry={() => void cases.refresh()}
+        />
+      )}
+      {metrics.error && (
+        <ErrorBox
+          message="Could not load case totals."
+          retry={() => void metrics.refresh()}
+        />
+      )}
+      <MetricStrip
+        items={[
+          {
+            label: "Require attention",
+            value: cases.data ? attention : "—",
+            note: `${readyCount} ready to approve · ${m?.onHold ?? 0} on hold`,
+            tone: attention > 0 ? "warning" : "default",
+          },
+          {
+            label: "Resolved automatically",
+            value: m?.automaticallyResolved ?? "—",
+            note: "Verified repository attachments",
+            tone: "success",
+          },
+          {
+            label: "Sent to Operations",
+            value: m?.successfullyRouted ?? "—",
+            note: "Approved & handed over",
+            tone: "accent",
+          },
+          {
+            label: "Total submissions",
+            value: m?.totalSubmissions ?? (cases.data ? items.length : "—"),
+            note: `${m?.humanInterventionRequired ?? 0} needing human action`,
+            tone: "default",
+          },
+        ]}
+      />
+      {m && (
+        <div className="risk-counts" aria-label="Case risk distribution">
+          <span className="risk-counts-title">Risk &amp; hold posture</span>
+          {(["HIGH", "MEDIUM", "LOW"] as const).map((level) => (
+            <Link
+              key={level}
+              to="/submissions"
+              className={`risk-pill risk-pill-${level.toLowerCase()}`}
+            >
+              <span>{label(level)} risk</span>
+              <strong>{m.riskCounts?.[level] ?? 0}</strong>
+            </Link>
+          ))}
+          <Link to="/exceptions" className="risk-pill risk-pill-hold">
+            <span>On hold</span>
+            <strong>{m.onHold ?? 0}</strong>
+          </Link>
+        </div>
+      )}
+      <div className="content-columns command-primary-grid">
+        <Panel
+          title="Priority cases needing attention"
+          subtitle="Ordered by hold status and exception risk score."
+          action={
+            <Link className="text-link" to="/exceptions">
+              View queue ({attention}) <ArrowRight size={14} />
+            </Link>
+          }
+        >
+          {cases.loading ? (
+            <Loading />
+          ) : attentionList.length ? (
+            <div className="record-list">
+              {attentionList.slice(0, 5).map((item) => (
+                <Link
+                  key={item.id}
+                  className="record-row priority-case-row"
+                  to={`/submissions/${item.id}`}
+                >
+                  <div className="priority-case-main">
+                    <div className="priority-case-header">
+                      <strong>{item.customer_name}</strong>
+                      <span className="reference">
+                        {item.customer_reference}
+                      </span>
+                      <span className="priority-service-tag">
+                        {label(item.category)}
+                      </span>
+                    </div>
+                    <p className="queue-next-action">
+                      <span className="next-action-indicator">Next:</span>{" "}
+                      {nextCaseAction(item, item.open_exceptions ?? 0)}
+                    </p>
+                  </div>
+                  <div className="priority-case-badges">
+                    {item.risk_hold && <Badge value="ON_HOLD" text="On hold" />}
+                    {item.risk_level && (
+                      <Badge
+                        value={item.risk_level}
+                        text={`${label(item.risk_level)} · ${item.risk_score ?? 0}`}
+                      />
+                    )}
+                    <Badge value={item.status} />
+                  </div>
+                  <ArrowRight size={16} />
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <Empty
+              title="All caught up"
+              description="No cases currently require correction or reviewer action."
+            />
+          )}
+        </Panel>
+        <Panel
+          title="Pipeline &amp; status breakdown"
+          subtitle="Current distribution of submissions and automation outcomes."
+          action={
+            <Link className="text-link" to="/reports">
+              Reports &amp; audit <ArrowRight size={14} />
+            </Link>
+          }
+        >
+          <div className="panel-body">
+            <div className="automation-kpi-grid">
+              <div className="automation-kpi-card tone-success">
+                <span>Auto-resolved</span>
+                <strong>{m?.automaticallyResolved ?? "—"}</strong>
+                <small>Verified attachments</small>
+              </div>
+              <div className="automation-kpi-card tone-warning">
+                <span>Staff / customer</span>
+                <strong>{m?.humanInterventionRequired ?? "—"}</strong>
+                <small>Action required</small>
+              </div>
+              <div className="automation-kpi-card tone-danger">
+                <span>Blocked</span>
+                <strong>{m?.failedOrBlockedAutomation ?? "—"}</strong>
+                <small>Safety check blocked</small>
+              </div>
+            </div>
+            {m && m.totalSubmissions > 0 && <StatusChart metrics={m} />}
+          </div>
+        </Panel>
+      </div>
+      <Panel
+        title="Recent cases"
+        action={
+          <Link className="text-link" to="/submissions">
+            View all cases <ArrowRight size={15} />
+          </Link>
+        }
+      >
+        {cases.loading ? (
+          <Loading />
+        ) : (
+          cases.data && <SubmissionTable items={cases.data.slice(0, 6)} />
+        )}
       </Panel>
     </div>
   );
@@ -250,11 +430,44 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
 export function DocumentReports() {
   const result = useResource<Metrics>(`${BASE}/analytics`);
   const m = result.data;
+  const issueItems = m
+    ? Object.entries(m.recurringErrors)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, count], index) => ({
+          label: name,
+          value: count,
+          tone: index < 2 ? "danger" : index < 5 ? "warning" : "info",
+        }))
+    : [];
+  const riskItems = m?.riskCounts
+    ? [
+        {
+          label: "High risk",
+          value: m.riskCounts.HIGH ?? 0,
+          tone: "danger",
+        },
+        {
+          label: "Medium risk",
+          value: m.riskCounts.MEDIUM ?? 0,
+          tone: "warning",
+        },
+        {
+          label: "Low risk",
+          value: m.riskCounts.LOW ?? 0,
+          tone: "success",
+        },
+        {
+          label: "Unassessed",
+          value: m.riskCounts.UNASSESSED ?? 0,
+          tone: "neutral",
+        },
+      ].filter((item) => item.value > 0)
+    : [];
   return (
     <div className="page-stack">
       <PageHeader
         title="Reports & Audit"
-        description="See case outcomes and review recorded activity."
+        description="See case outcomes, recurring exception patterns and recorded activity."
       />
       <SectionNav label="Reports views" items={reportNav} />
       {result.error ? (
@@ -268,33 +481,55 @@ export function DocumentReports() {
               {
                 label: "Automatically resolved",
                 value: m.automaticallyResolved,
+                note: "Verified repository attachments",
+                tone: "success",
               },
-              { label: "Document replacements", value: m.resubmissionCycles },
+              {
+                label: "Document replacements",
+                value: m.resubmissionCycles,
+                note: "Customer resubmission cycles",
+                tone: "default",
+              },
               {
                 label: "Average correction time",
                 value:
                   m.averageCorrectionSeconds === null
                     ? "Not measured"
                     : `${Math.round(m.averageCorrectionSeconds)}s`,
+                note: `${m.measuredCorrectionTasks} resolved tasks measured`,
+                tone: "accent",
               },
               {
                 label: "Needed staff review",
                 value: m.humanInterventionRequired,
+                note: `${m.onHold ?? 0} currently on hold`,
+                tone: m.humanInterventionRequired > 0 ? "warning" : "default",
               },
             ]}
           />
-          <div className="content-columns">
-            <Panel title="Common submission issues">
+          <div className="content-columns reports-analytics-grid">
+            <Panel
+              title="Common submission issues"
+              subtitle="Frequency of findings across submitted packages."
+            >
               <div className="panel-body">
-                {Object.entries(m.recurringErrors).length ? (
-                  Object.entries(m.recurringErrors)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([name, count]) => (
-                      <div className="report-issue" key={name}>
-                        <span>{name}</span>
-                        <strong>{count}</strong>
+                {issueItems.length ? (
+                  <div
+                    className="report-issue-grid"
+                    aria-label="Common submission issues distribution"
+                    role="list"
+                  >
+                    {issueItems.map((item) => (
+                      <div
+                        className="report-issue-item"
+                        key={item.label}
+                        role="listitem"
+                      >
+                        <span>{item.label}</span>
+                        <strong>{item.value}</strong>
                       </div>
-                    ))
+                    ))}
+                  </div>
                 ) : (
                   <Empty title="No exception history yet" />
                 )}
@@ -304,9 +539,24 @@ export function DocumentReports() {
                 </p>
               </div>
             </Panel>
-            <Panel title="Submission status">
+            <Panel
+              title="Submission status &amp; risk"
+              subtitle="Current case states and exception risk tiers."
+            >
               <div className="panel-body">
                 <StatusChart metrics={m} />
+                {riskItems.length > 0 && (
+                  <div className="report-subchart">
+                    <div className="chart-header">
+                      <h3>Exception risk tiers</h3>
+                      <span>{m.onHold ?? 0} on hold</span>
+                    </div>
+                    <HorizontalBarChart
+                      items={riskItems}
+                      ariaLabel="Exception risk distribution"
+                    />
+                  </div>
+                )}
               </div>
             </Panel>
           </div>
@@ -325,7 +575,7 @@ export function DocumentReports() {
                 </dd>
               </div>
             </dl>
-            <p>
+            <p className="muted">
               Validation turnaround includes time waiting for customer
               corrections. It is not extraction latency or a performance
               benchmark.
