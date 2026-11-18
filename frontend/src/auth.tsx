@@ -181,7 +181,7 @@ export function Login({
           </div>
         </div>
         <p className="login-footer">
-          A Team AFI prototype. Synthetic records only.
+          A Team AFI prototype.
           <br />
           Independent project · Not an official OCBC application.
         </p>

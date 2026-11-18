@@ -106,11 +106,11 @@ public class DocumentService {
             + " of forgery.");
     seed(
         "PROFILE_NAME",
-        "Name must match the synthetic bank profile",
+        "Name must match the customer profile",
         "PACKAGE",
         "PROFILE_MATCH",
         "customer_name",
-        "Confirm the name against your synthetic profile; Resolution Management must review"
+        "Confirm the name against your profile; Resolution Management must review"
             + " identity discrepancies.");
     seed(
         "PROFILE_ADDRESS",
@@ -122,11 +122,11 @@ public class DocumentService {
             + " reference and the declared new address.");
     seed(
         "PROFILE_IDENTITY",
-        "Identity must match the synthetic bank profile",
+        "Identity must match the customer profile",
         "PACKAGE",
         "PROFILE_MATCH",
         "identity_number",
-        "Provide a declaration with the identity recorded in your synthetic customer profile.");
+        "Provide a declaration with the identity recorded in your customer profile.");
     seed(
         "EFORM_REQUIRED",
         "Digital declaration has required information",
@@ -152,7 +152,7 @@ public class DocumentService {
           type,
           "ATTACHMENT",
           "",
-          "Attach the required synthetic form.");
+          "Attach the required document.");
     for (String type : List.of("CUSTOMER_INFORMATION", "ACCOUNT_APPLICATION", "TAX_RESIDENCY")) {
       seed(
           "NAME_" + type,
@@ -174,7 +174,7 @@ public class DocumentService {
           type,
           "EQUALS_PRESENT",
           "signature_indicator",
-          "Request confirmation of the synthetic signature indicator; never generate a signature.");
+          "Request confirmation of the signature indicator; never generate a signature.");
     }
     seed(
         "TAX_DATE",
@@ -183,13 +183,6 @@ public class DocumentService {
         "DATE",
         "declaration_date",
         "Request a corrected tax declaration with a valid customer-supplied date.");
-    seed(
-        "REF_SUPPORTING",
-        "Supporting document case reference",
-        "SUPPORTING_DOCUMENT",
-        "CASE_REFERENCE",
-        "customer_reference",
-        "Replace the supporting document with one bearing this case's customer reference.");
     seed(
         "TAX_RESIDENCY",
         "Tax residency selection",
@@ -705,7 +698,7 @@ public class DocumentService {
             new ApiException(
                 422,
                 code,
-                "Upload a complete readable document visibly labelled as synthetic demo data. No document was accepted.");
+                "This file exceeds the supported text limit. Try a shorter document.");
         case "UNSUPPORTED_DOCUMENT" ->
             new ApiException(
                 422,
@@ -849,12 +842,12 @@ public class DocumentService {
       if (combineImages || fromImages)
         ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).put("requires_review", true);
       if ("DIGITAL_EFORM".equals(c.get("capture_method"))
-          && !"SUPPORTING_DOCUMENT".equals(extracted.path("document_type").asText()))
-        throw new ApiException(
-            409,
-            "EDIT_EFORM",
-            filename + " — This is a form. Upload supporting evidence for your service request."
-                + " To change the declaration, edit the request details.");
+          && !"SUPPORTING_DOCUMENT".equals(extracted.path("document_type").asText())) {
+        // An uploaded document cannot stand in for the authenticated declaration.
+        var evidence = (com.fasterxml.jackson.databind.node.ObjectNode) extracted;
+        evidence.put("document_type", "UNKNOWN");
+        evidence.put("requires_review", true);
+      }
       int version = 1;
       if (replace != null) {
         var old =
@@ -865,11 +858,16 @@ public class DocumentService {
                 id);
         if (old.isEmpty())
           throw new ApiException(404, "NOT_FOUND", "Replacement document not found in this case");
-        if (!old.getFirst().get("document_type").equals(extracted.path("document_type").asText()))
+        String previousType = (String) old.getFirst().get("document_type");
+        String nextType = extracted.path("document_type").asText();
+        boolean uncertainReplacement = "UNKNOWN".equals(previousType)
+            || ("SUPPORTING_DOCUMENT".equals(previousType) && "UNKNOWN".equals(nextType));
+        if (!previousType.equals(nextType) && !uncertainReplacement)
           throw new ApiException(
               409, "WRONG_DOCUMENT_TYPE", "Replacement must have the same document classification");
         version = ((Number) old.getFirst().get("current_version")).intValue() + 1;
-        s.db.update("UPDATE submission_documents SET current_version=? WHERE id=?", version, docId);
+        s.db.update("UPDATE submission_documents SET current_version=?,document_type=? WHERE id=?",
+            version, nextType, docId);
       } else
         s.db.update(
             "INSERT INTO submission_documents(id,submission_id,document_type) VALUES(?,?,?)",
@@ -1280,7 +1278,7 @@ public class DocumentService {
               "method",
               "SYNTHETIC_CUSTOMER_PROFILE",
               "supporting_text",
-              "Authorised synthetic core-banking profile (not Singpass): " + expected));
+              "Authorised customer profile: " + expected));
       pass =
           (!"PROFILE_IDENTITY".equals(key) || !source.isEmpty())
               && source.stream()
@@ -1354,7 +1352,7 @@ public class DocumentService {
               "field_value",
               pass ? "SATISFIED" : "MISSING_OR_UNSUPPORTED",
               "supporting_text",
-              "Backend checked the authenticated declaration and authorised synthetic profile: "
+              "Backend checked the authenticated declaration and authorised customer profile: "
                   + key));
     }
     return check(rule, key, pass, evidence);
@@ -1453,6 +1451,9 @@ public class DocumentService {
             "SELECT * FROM validation_rules WHERE status='ACTIVE' ORDER BY rule_key")) {
       var servicePolicy = new BankingServicePolicy(this, s);
       if (!servicePolicy.applicable(rule, c)) continue;
+      // External supporting evidence is linked by the authenticated case, not a printed ID.
+      if ("SUPPORTING_DOCUMENT".equals(rule.get("document_type"))
+          && "CASE_REFERENCE".equals(rule.get("condition_type"))) continue;
       if ("INTEGRITY".equals(rule.get("condition_type"))) {
         for (var document : docs) {
           String integrity = integrityStatus(document);
@@ -1773,7 +1774,9 @@ public class DocumentService {
     s.db.update("UPDATE correction_tasks SET assigned_role='REVIEWER' WHERE submission_id=? AND status='ESCALATED' AND exception_id IN (SELECT e.id FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id WHERE r.condition_type='ONEMAP_ADDRESS')", id);
     for (var ex :
         s.db.queryForList(
-            "SELECT * FROM document_exceptions WHERE submission_id=? AND status='OPEN'", id)) {
+            "SELECT e.*, r.document_type AS rule_document_type, r.condition_type AS rule_condition_type"
+                + " FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id"
+                + " WHERE e.submission_id=? AND e.status='OPEN'", id)) {
       if (failed.contains(ex.get("check_key"))) continue;
       // Close only if a current check explicitly verifies this requirement; retired rules require
       // review.
@@ -1783,12 +1786,16 @@ public class DocumentService {
                   ch ->
                       ch.get("check_key").equals(ex.get("check_key"))
                           && Boolean.TRUE.equals(ch.get("passed")));
-      if (!verified) continue;
+      boolean retiredSupportingReference =
+          "SUPPORTING_DOCUMENT".equals(ex.get("rule_document_type"))
+              && "CASE_REFERENCE".equals(ex.get("rule_condition_type"));
+      if (!verified && !retiredSupportingReference) continue;
       s.db.update(
           "UPDATE document_exceptions SET"
-              + " status='RESOLVED',resolved_at=?,resolution_method='VERIFIED_REVALIDATION' WHERE"
+              + " status='RESOLVED',resolved_at=?,resolution_method=? WHERE"
               + " id=?",
           Store.now(),
+          retiredSupportingReference ? "RULE_RETIRED" : "VERIFIED_REVALIDATION",
           ex.get("id"));
       s.db.update(
           "UPDATE correction_tasks SET status='RESOLVED',resolved_at=? WHERE exception_id=?",
@@ -1889,12 +1896,9 @@ public class DocumentService {
   }
 
   boolean repositoryEligible(Map<String, Object> c, Map<String, Object> d) {
-    var values = fields(List.of(d), "customer_reference");
     return Boolean.TRUE.equals(d.get("authorised"))
         && "SUPPORTING_DOCUMENT".equals(d.get("document_type"))
         && Objects.equals(c.get("customer_reference"), d.get("verified_reference"))
-        && values.size() == 1
-        && normal(values.getFirst().get("field_value")).equals(normal(c.get("customer_reference")))
         && d.get("valid_until") != null
         && !LocalDate.parse(d.get("valid_until").toString()).isBefore(LocalDate.now(ZoneOffset.UTC))
         && !Boolean.TRUE.equals(
@@ -1905,7 +1909,7 @@ public class DocumentService {
     return checks.stream().anyMatch(check -> "ATTACH_SUPPORTING_DOCUMENT".equals(check.get("rule_key"))
             && Boolean.TRUE.equals(check.get("passed")))
         && checks.stream()
-            .filter(check -> Set.of("SERVICE_SUPPORT", "REF_SUPPORTING").contains(check.get("rule_key")))
+            .filter(check -> "SERVICE_SUPPORT".equals(check.get("rule_key")))
             .allMatch(check -> Boolean.TRUE.equals(check.get("passed")));
   }
 

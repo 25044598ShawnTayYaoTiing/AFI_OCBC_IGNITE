@@ -109,7 +109,7 @@ export function SettingsWorkspace() {
                       <dt>Environment</dt>
                       <dd>
                         {session.demoMode
-                          ? "Synthetic demonstration"
+                          ? "Demonstration"
                           : "Application workspace"}
                       </dd>
                     </div>
@@ -381,7 +381,7 @@ export function SettingsWorkspace() {
                   </div>
                   <div>
                     <dt>Data</dt>
-                    <dd>Synthetic demonstration only</dd>
+                    <dd>Demonstration only</dd>
                   </div>
                 </dl>
                 <p className="muted">

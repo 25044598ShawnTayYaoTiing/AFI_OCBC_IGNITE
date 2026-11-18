@@ -290,7 +290,7 @@ export function Twin() {
                   <span className="eyebrow">ORIGINAL OPERATIONAL STATE</span>
                   <h2>{item.batchId || item.id}</h2>
                   <span className="small muted">
-                    Read from persistent synthetic records
+                    Read from persistent demo records
                   </span>
                 </div>
               </div>
@@ -1358,7 +1358,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
       setResetOpen(false);
       setResetText("");
       op.setMessage(
-        "Synthetic dataset reset. Historical audit events were retained. Trigger a failure to start the primary demonstration.",
+        "Demo dataset reset. Historical audit events were retained. Trigger a failure to start the primary demonstration.",
       );
     });
   }
@@ -1445,11 +1445,11 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
             </Panel>
             <Panel
               title="Safety boundaries"
-              subtitle="Built for a synthetic banking operations demonstration"
+              subtitle="Built for a banking operations demo"
             >
               <ul className="safety-list">
                 {[
-                  "Synthetic records only; no customer information.",
+                  "Use fictional records.",
                   "No real transfers, settlements, or ledger postings.",
                   "AI recommendations cannot write operational data.",
                   "Execution requires deterministic safety checks.",
@@ -1648,7 +1648,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                 <div>
                   <span>Environment</span>
                   <Badge
-                    value={session.demoMode ? "SYNTHETIC DEMO" : "STANDARD"}
+                    value={session.demoMode ? "DEMO" : "STANDARD"}
                   />
                 </div>
                 <div>
@@ -1659,7 +1659,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                   <span>Operating mode</span>
                   <strong>
                     {session.demoMode
-                      ? "Synthetic records only"
+                      ? "Demo records"
                       : "Operational workspace"}
                   </strong>
                 </div>
@@ -1679,7 +1679,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
                 <div>
                   <strong>Resolution Management</strong>
                   <p>
-                    Own document submissions, upload synthetic PDFs, validate
+                    Own document submissions, upload supporting documents, validate
                     evidence and execute permitted administrative actions.
                     Legacy recovery is available separately.
                   </p>
@@ -1837,14 +1837,14 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
         <section id="demo-environment" className="settings-demo-section">
           <div className="section-heading">
             <div>
-              <span className="eyebrow">SYNTHETIC ENVIRONMENT</span>
+              <span className="eyebrow">DEMO ENVIRONMENT</span>
               <h2>Demo environment</h2>
               <p>
-                These utilities create or replace synthetic records in the
+                These utilities create or replace demo records in the
                 shared demonstration workspace.
               </p>
             </div>
-            <Badge value="SYNTHETIC DEMO" />
+            <Badge value="DEMO" />
           </div>
           <div className="demo-controls-grid">
             <Panel
@@ -1861,7 +1861,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
               >
                 <div className="form-row">
                   <label>
-                    Total synthetic records
+                    Total demo records
                     <input
                       type="number"
                       min={2}
@@ -1922,7 +1922,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
               </form>
             </Panel>
             <Panel
-              title="Reset the synthetic dataset"
+              title="Reset the demo dataset"
               subtitle="Prepare a clean starting point for your next demonstration"
               action={<RotateCcw size={21} className="amber-text" />}
             >
@@ -1959,7 +1959,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
               {[
                 {
                   title: "Prepare the failure",
-                  text: "Reset, then trigger a partially processed synthetic batch.",
+                  text: "Reset, then trigger a partially processed demo batch.",
                   icon: Database,
                 },
                 {
@@ -2013,7 +2013,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
             <span className="eyebrow">ABOUT AFI RESOLVE</span>
             <h2>Intelligence before action</h2>
             <p>
-              AFI Resolve validates synthetic document packages, reconciles
+              AFI Resolve validates document packages, reconciles
               evidence, coordinates corrections and routes eligible submissions
               to Operations. The original transaction recovery workflow remains
               available in the Legacy Recovery Demo.
@@ -2024,7 +2024,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
             <span>Team AFI</span>
             <span>OCBC Ignite Challenge 2026</span>
             <span>
-              Independent synthetic demonstration · Not connected to OCBC
+              Independent demo · Not connected to OCBC
               banking systems
             </span>
           </div>
@@ -2049,7 +2049,7 @@ export function SettingsPage({ demoOnly = false }: { demoOnly?: boolean }) {
           </span>
           <h2 id="reset-title">Reset this demo workspace?</h2>
           <p>
-            Current synthetic records and cases will be replaced. Historical
+            Current demo records and cases will be replaced. Historical
             audit events remain available.
           </p>
           <label>

@@ -999,7 +999,7 @@ export function ExceptionDetail() {
             <span>Environment</span>
             <strong>
               <span className="mini-dot" />
-              Synthetic records
+              Demo records
             </strong>
           </div>
         </div>

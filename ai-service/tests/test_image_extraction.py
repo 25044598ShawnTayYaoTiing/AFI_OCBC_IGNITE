@@ -20,7 +20,7 @@ def image_bytes(fmt='PNG', size=(640, 800)):
 def visual(page_count=1, **changes):
     return d.VisualExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False,
         fields=[d.ModelEvidenceField(field='customer_name', value='Alex Tan', page=1, supporting_text='Customer Name: Alex Tan')],
-        **{'pages': [TEXT] * page_count, 'quality': 'READABLE', 'synthetic_label_visible': True, **changes})
+        **{'pages': [TEXT] * page_count, 'quality': 'READABLE', **changes})
 
 
 @pytest.mark.parametrize('fmt,mime', [('PNG', 'image/png'), ('JPEG', 'image/jpeg')])
@@ -50,12 +50,18 @@ def test_group_preserves_order_and_page_citations(monkeypatch):
     assert result.requires_review
 
 
-@pytest.mark.parametrize('quality', ['BLURRY', 'CROPPED', 'INCOMPLETE', 'UNREADABLE'])
-def test_quality_requests_clearer_upload(monkeypatch, quality):
+@pytest.mark.parametrize('quality', ['BLURRY', 'CROPPED', 'INCOMPLETE'])
+def test_partially_readable_image_keeps_grounded_evidence(monkeypatch, quality):
     monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: visual(quality=quality))
+    result = d.extract_visual('image', [], 1, SETTINGS)
+    assert result.requires_review and result.fields
+
+
+def test_image_without_readable_content_is_rejected(monkeypatch):
+    monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: visual(quality='UNREADABLE', pages=['']))
     with pytest.raises(HTTPException) as error:
         d.extract_visual('image', [], 1, SETTINGS)
-    assert error.value.detail['code'] == 'IMAGE_' + quality
+    assert error.value.detail['code'] == 'IMAGE_UNREADABLE'
 
 
 @pytest.mark.parametrize('raw', [b'<svg onload="alert(1)"/>', b'\x89PNG\r\n\x1a\ntruncated', image_bytes('GIF')])
@@ -93,9 +99,8 @@ def test_vision_cannot_invent_fields_or_citations(monkeypatch):
     proposed = visual()
     proposed.fields[0].supporting_text = 'Customer Name: Invented Person'
     monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: proposed)
-    with pytest.raises(HTTPException) as error:
-        d.extract_visual('image', [], 1, SETTINGS)
-    assert error.value.detail['code'] == 'EXTRACTION_FAILED'
+    result = d.extract_visual('image', [], 1, SETTINGS)
+    assert result.requires_review and not result.fields
 
 
 def test_one_unverified_visual_citation_does_not_discard_grounded_fields(monkeypatch):
@@ -115,29 +120,29 @@ def test_visual_upload_requires_configured_ai():
     assert error.value.detail['code'] == 'AI_NOT_CONFIGURED'
 
 
-def test_thumbnail_gets_specific_resolution_error():
+def test_small_image_reaches_vision(monkeypatch):
     raw = image_bytes(size=(120, 150))
-    with pytest.raises(HTTPException) as error:
-        d.extract(d.ExtractRequest(document_id='small', images_base64=[base64.b64encode(raw).decode()]), SETTINGS)
-    assert error.value.detail['code'] == 'IMAGE_TOO_SMALL'
+    monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: visual())
+    result = d.extract(d.ExtractRequest(document_id='small', images_base64=[base64.b64encode(raw).decode()]), SETTINGS)
+    assert result.fields[0].value == 'Alex Tan'
 
 
-def test_readable_non_document_is_not_reported_as_a_synthetic_label_problem(monkeypatch):
-    proposed = visual(synthetic_label_visible=False)
+def test_unmarked_readable_image_with_uncertain_classification_is_retained(monkeypatch):
+    proposed = visual(pages=['Customer Name: Alex Tan'], quality='CROPPED')
     proposed.document_type = 'UNKNOWN'
     monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: proposed)
-    with pytest.raises(HTTPException) as error:
-        d.extract_visual('graphic', [], 1, SETTINGS)
-    assert error.value.detail['code'] == 'UNSUPPORTED_DOCUMENT'
+    result = d.extract_visual('image', [], 1, SETTINGS)
+    assert result.document_type == 'UNKNOWN'
+    assert result.requires_review
+    assert result.fields[0].value == 'Alex Tan'
 
 
-def test_no_fields_has_its_own_error(monkeypatch):
+def test_no_verified_fields_is_retained_for_review(monkeypatch):
     proposed = visual()
     proposed.fields = []
     monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: proposed)
-    with pytest.raises(HTTPException) as error:
-        d.extract_visual('graphic', [], 1, SETTINGS)
-    assert error.value.detail['code'] == 'NO_DOCUMENT_FIELDS'
+    result = d.extract_visual('image', [], 1, SETTINGS)
+    assert result.requires_review and not result.fields
 
 
 def test_repeated_page_headers_do_not_duplicate_fields(monkeypatch):

@@ -31,8 +31,6 @@ def decode_images(encoded_pages):
                 with Image.open(io.BytesIO(raw)) as image:
                     if image.format not in ('JPEG', 'PNG') or image.width * image.height > 25_000_000 or getattr(image, 'n_frames', 1) != 1:
                         raise ValueError('Unsupported image')
-                    if min(image.size) < 200:
-                        raise HTTPException(422, {'code': 'IMAGE_TOO_SMALL', 'message': 'Upload the original full-page photo or screenshot, at least 200 pixels on each side; thumbnails are too small.'})
                     mime = 'image/jpeg' if image.format == 'JPEG' else 'image/png'
                     image.verify()
                 with Image.open(io.BytesIO(raw)) as image:

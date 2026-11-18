@@ -274,7 +274,7 @@ export default function App() {
             <div className="topbar-right">
               <span className="demo-tag">
                 <span />
-                Synthetic demo
+                Demo
               </span>
               <span className="topbar-divider" />
               <div

@@ -13,7 +13,7 @@ export function AddressVerificationPanel({ detail, onInspect }: { detail: Detail
         {item.result.selected && <div className="address-record"><strong>OneMap record: {item.result.selected.address}</strong><small>Postal code: {item.result.selected.postalCode} · {item.result.selected.latitude}, {item.result.selected.longitude}</small></div>}
         {!!item.result.candidates.length && !item.result.selected && <details className="disclosure"><summary>Compare returned OneMap records</summary>{item.result.candidates.map(candidate => <p key={candidate.id}>{candidate.address}</p>)}</details>}
         <p className="source-evidence">{item.evidence.supporting_text || 'No source quote recorded.'}</p>
-        <div className="provenance-line"><span>{item.result.source === 'SYNTHETIC_DEMO' ? 'Synthetic demo only — no live verification' : item.result.source === 'ONEMAP_LIVE' ? 'Live OneMap lookup' : 'No live confirmation'} · {dateTime(item.result.checkedAt)} SGT</span><button className="text-link" onClick={() => onInspect(item.evidence)}>Open cited PDF{item.evidence.page_number ? ` · page ${item.evidence.page_number}` : ''}</button></div>
+        <div className="provenance-line"><span>{item.result.source === 'SYNTHETIC_DEMO' ? 'Demo only — no live verification' : item.result.source === 'ONEMAP_LIVE' ? 'Live OneMap lookup' : 'No live confirmation'} · {dateTime(item.result.checkedAt)} SGT</span><button className="text-link" onClick={() => onInspect(item.evidence)}>Open cited PDF{item.evidence.page_number ? ` · page ${item.evidence.page_number}` : ''}</button></div>
         <small>Unit number, occupancy and supporting-document sufficiency are outside this check.</small>
       </article>)}
     </div>

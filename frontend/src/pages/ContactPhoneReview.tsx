@@ -57,7 +57,7 @@ export function ContactPhoneReview({
       >
         <p>
           Email authorisation does not prove ownership of a new phone number.
-          Record this only after completing the separate synthetic verification
+          Record this only after completing the separate verification
           procedure. No SMS provider is connected.
         </p>
         <label>

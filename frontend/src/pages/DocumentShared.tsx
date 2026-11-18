@@ -181,7 +181,7 @@ export function PdfPreview({
         >
           {convertedFromImages ? 'Open full PDF' : 'Open original document'}
         </a>
-        <a className="text-link" href={url} download={`synthetic-document.${mime === "image/png" ? "png" : mime === "image/jpeg" ? "jpg" : "pdf"}`}>
+        <a className="text-link" href={url} download={`document.${mime === "image/png" ? "png" : mime === "image/jpeg" ? "jpg" : "pdf"}`}>
           <Download size={15} />
           {convertedFromImages ? 'Download PDF' : 'Download original'}
         </a>

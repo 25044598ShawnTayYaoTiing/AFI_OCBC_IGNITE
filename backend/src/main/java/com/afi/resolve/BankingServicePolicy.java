@@ -53,7 +53,7 @@ final class BankingServicePolicy {
                 "SERVICE_REQUEST",
                 "ATTACHMENT",
                 "",
-                "Upload one synthetic banking service request or complete its digital eForm."),
+                "Upload a banking service request or complete its digital eForm."),
             List.of(
                 "SERVICE_NAME",
                 "Customer name required",
@@ -67,7 +67,7 @@ final class BankingServicePolicy {
                 "SERVICE_REQUEST",
                 "CASE_REFERENCE",
                 "customer_reference",
-                "Use the authenticated customer's existing synthetic reference."),
+                "Use the authenticated customer's existing reference."),
             List.of(
                 "SERVICE_AUTHORISATION",
                 "Customer authorisation required",
@@ -294,7 +294,7 @@ final class BankingServicePolicy {
                     "method",
                     "SYNTHETIC_CUSTOMER_PROFILE",
                     "supporting_text",
-                    "Authorised synthetic core-banking profile (not Singpass): " + existingVal));
+                    "Authorised customer profile: " + existingVal));
         }
         pass =
             switch (category) {
@@ -372,7 +372,7 @@ final class BankingServicePolicy {
                   "method",
                   "SYNTHETIC_CUSTOMER_PROFILE",
                   "supporting_text",
-                  "Current synthetic "
+                  "Current "
                       + baselineKey.replace('_', ' ')
                       + "; it must not be overwritten based on majority agreement."));
         }

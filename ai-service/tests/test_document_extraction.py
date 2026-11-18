@@ -60,7 +60,8 @@ def test_incomplete_values_are_observations_not_values(placeholder):
 def test_rejects_invented_citations_and_pages(support, page):
     model = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False,
         fields=[d.ModelEvidenceField(field='customer_name', value='Alex', page=page, supporting_text=support)])
-    with pytest.raises(ValueError): d.normalise(model, ['Customer Name: Alex'])
+    fields, _ = d.normalise(model, ['Customer Name: Alex'])
+    assert not fields and model.requires_review
 
 
 def test_closed_schema_rejects_unknown_fields():
@@ -107,7 +108,8 @@ def test_service_tax_identifiers_are_not_customer_references():
 def test_duplicate_fields_require_rejection():
     field = d.ModelEvidenceField(field='customer_name', value='Alex', page=1, supporting_text='Customer Name: Alex')
     model = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False, fields=[field, field])
-    with pytest.raises(ValueError): d.normalise(model, ['Customer Name: Alex'])
+    fields, _ = d.normalise(model, ['Customer Name: Alex'])
+    assert not fields and model.requires_review
 
 
 def test_varied_synthetic_marker_layout_and_reference(monkeypatch):
@@ -131,18 +133,8 @@ def test_invalid_pdf_is_distinct():
     assert error.value.detail['code'] == 'INVALID_PDF'
 
 
-def test_unsupported_document_does_not_call_gemini(monkeypatch):
-    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(is_encrypted=False, trailer={'/Root': {}},
-        pages=[TextPage('Synthetic demonstration invoice\nAmount: 100')]))
-    monkeypatch.setattr(d, 'generate', lambda *a: pytest.fail('Unsupported document reached Gemini'))
-    with pytest.raises(HTTPException) as error:
-        d.extract(d.ExtractRequest(document_id='test', pdf_base64=base64.b64encode(b'%PDF-test').decode()),
-            Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
-    assert error.value.detail['code'] == 'UNSUPPORTED_DOCUMENT'
-
-
 def test_native_electricity_bill_is_supported_with_a_billing_address(monkeypatch):
-    page = 'Electricity Bill\nSYNTHETIC DEMO DATA\nBilling Address: 12 Sample Lane'
+    page = 'Monthly usage summary\nBilling Address: 12 Sample Lane'
     monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(
         is_encrypted=False, trailer={'/Root': {}}, pages=[TextPage(page)]))
     monkeypatch.setattr(d, 'generate', lambda *args: d.ModelExtraction(
@@ -186,20 +178,24 @@ def test_http_extraction_still_requires_service_authentication(client):
     assert response.status_code == 401
 
 
-@pytest.mark.parametrize('failure,status,code', [(ValueError('unverified'), 422, 'EXTRACTION_FAILED'),
-                                               (RuntimeError('unavailable'), 503, 'AI_SERVICE_ERROR')])
-def test_schema_failure_and_provider_failure_are_distinct(monkeypatch, failure, status, code):
-    page = 'Synthetic demo data\nClient Details\nClient ID\nDEMO-1042'
+@pytest.mark.parametrize('failure', [ValueError('unverified'), RuntimeError('unavailable')])
+def test_schema_failure_and_provider_failure_are_distinct(monkeypatch, failure):
+    page = 'Client Details\nClient ID\nDEMO-1042'
     monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(is_encrypted=False, trailer={'/Root': {}},
         pages=[TextPage(page)]))
     def fail(*args):
         raise failure
     monkeypatch.setattr(d, 'generate', fail)
-    with pytest.raises(HTTPException) as error:
-        d.extract(d.ExtractRequest(document_id='test', pdf_base64=base64.b64encode(b'%PDF-test').decode()),
-            Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
-    assert error.value.status_code == status
-    assert error.value.detail['code'] == code
+    request = d.ExtractRequest(document_id='test', pdf_base64=base64.b64encode(b'%PDF-test').decode())
+    settings = Settings(service_key='test', gemini_api_key='test', gemini_model='test')
+    if isinstance(failure, ValueError):
+        result = d.extract(request, settings)
+        assert result.document_type == 'UNKNOWN' and result.requires_review and not result.fields
+    else:
+        with pytest.raises(HTTPException) as error:
+            d.extract(request, settings)
+        assert error.value.status_code == 503
+        assert error.value.detail['code'] == 'AI_SERVICE_ERROR'
 
 
 @pytest.mark.parametrize('field,value,source', [
@@ -210,8 +206,8 @@ def test_schema_failure_and_provider_failure_are_distinct(monkeypatch, failure, 
 def test_rejects_values_cited_from_the_wrong_field(field, value, source):
     proposed = d.ModelExtraction(document_type='ACCOUNT_APPLICATION', requires_review=False,
         fields=[d.ModelEvidenceField(field=field, value=value, page=1, supporting_text=source)])
-    with pytest.raises(ValueError):
-        d.normalise(proposed, [source])
+    fields, _ = d.normalise(proposed, [source])
+    assert not fields and proposed.requires_review
 
 
 def test_discards_advisory_observation_citing_unrelated_field():
@@ -261,8 +257,8 @@ def test_new_address_cannot_be_cited_from_the_registered_address_label():
     proposed = d.ModelExtraction(document_type='CUSTOMER_INFORMATION', requires_review=False,
         fields=[d.ModelEvidenceField(field='new_mailing_address', value='1 Old Road Singapore 123456', page=1,
             supporting_text='Existing Mailing Address: 1 Old Road Singapore 123456')])
-    with pytest.raises(ValueError):
-        d.normalise(proposed, [source])
+    fields, _ = d.normalise(proposed, [source])
+    assert not fields and proposed.requires_review
 
 
 def test_new_address_and_separate_postal_code_retain_their_own_citations():
