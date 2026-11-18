@@ -38,155 +38,84 @@ export function RiskInvestigation({
     }
   }
   return (
-    <Panel title="Case risk and decision explanation">
+    <Panel
+      title="Exception risk assessment"
+      subtitle={`Evaluated ${dateTime(assessment.assessedAt)} · Revision ${detail.submission.revision}`}
+      action={
+        <span
+          className={`inline-risk-tag risk-tag-${assessment.level.toLowerCase()}`}
+        >
+          {assessment.level} ({assessment.score}/100)
+        </span>
+      }
+    >
       <div className="panel-body">
         <div className="risk-summary">
-          <strong>
-            {assessment.score}
-            <small>/100</small>
-          </strong>
-          <div>
+          <div className="risk-score-box">
+            <strong>
+              {assessment.score}
+              <small>/100</small>
+            </strong>
+          </div>
+          <div className="risk-summary-copy">
             <h3>
-              {assessment.level} exception risk
-              {detail.submission.risk_hold ? " / On hold" : ""}
+              {label(assessment.level)} exception risk
+              {detail.submission.risk_hold ? " · Investigation hold active" : ""}
             </h3>
             <p>
-              Hackathon demonstration policy. Blocking requirements apply
-              independently of this score.
+              {assessment.blockingFindings} blocking policy{" "}
+              {assessment.blockingFindings === 1 ? "finding" : "findings"} ·{" "}
+              {assessment.correctionAttempts} customer resubmission{" "}
+              {assessment.correctionAttempts === 1 ? "cycle" : "cycles"}.
             </p>
-            <small>
-              Evaluated {dateTime(assessment.assessedAt)} / Revision{" "}
-              {detail.submission.revision}
-            </small>
           </div>
         </div>
-        <details>
-          <summary>Risk contributions and evidence</summary>
-          {assessment.contributions.length ? (
-            <ul>
-              {assessment.contributions.map((item) => (
-                <li key={item.issue}>
-                  <strong>
-                    +{item.weight} {label(item.issue)}
-                  </strong>
-                  <p>{item.explanation}</p>
-                  <small>
-                    {item.ruleId} / Policy version {item.policyVersion}
-                  </small>
-                  {item.evidence.map((evidence, index) => (
-                    <blockquote key={index}>
-                      {evidence.field_name}: {evidence.field_value}
-                      <small>
-                        {" "}
-                        {evidence.filename ||
-                          evidence.method ||
-                          "Backend evidence"}{" "}
-                        /{" "}
-                        {evidence.page_number
-                          ? `page ${evidence.page_number}`
-                          : "No PDF page"}
-                      </small>
-                    </blockquote>
-                  ))}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p>No weighted exception findings were recorded.</p>
-          )}
-        </details>
-        <ol className="decision-trace">
-          <li>
-            <strong>Extract and classify</strong>
-            {detail.documents.map((document) => (
-              <p key={document.id}>
-                {document.filename} / {document.extraction.method} /{" "}
-                {document.extraction.requires_review
-                  ? "Review required"
-                  : "Extraction recorded"}
-              </p>
-            ))}
-          </li>
-          <li>
-            <strong>Validate and reconcile</strong>
-            <p>
-              {detail.checks.filter((check) => check.passed).length} of{" "}
-              {detail.checks.length} checks satisfied.{" "}
-              {assessment.blockingFindings} blocking findings.
-            </p>
-            <details>
-              <summary>Rule results and source evidence</summary>
-              {detail.checks.map((check) => (
-                <article key={check.check_key}>
-                  <h4>
-                    {check.outcome || (check.passed ? "PASS" : "FAIL")} /{" "}
-                    {check.name}
-                  </h4>
-                  <small>
-                    {check.category || "CGI"} / {check.check_key} / version{" "}
-                    {check.rule_version || "historical"}
-                  </small>
-                  <p>{check.corrective_action}</p>
-                  {check.evidence.map((e, index) => (
-                    <p key={index}>
-                      {e.field_name}: {e.field_value} /{" "}
-                      {e.filename || e.method || "Backend policy"}
-                      {e.page_number ? ` / page ${e.page_number}` : ""}
-                    </p>
-                  ))}
-                </article>
-              ))}
-            </details>
-          </li>
-          <li>
-            <strong>Investigation history</strong>
-            {detail.investigations.length ? (
-              detail.investigations.map((investigation, index) => (
-                <div key={index}>
-                  {investigation.revision !== detail.submission.revision && (
-                    <p className="context-note">
-                      <strong>Earlier submission revision.</strong> This
-                      investigation used revision {investigation.revision}; the
-                      current submission is revision{" "}
-                      {detail.submission.revision}. Its recommendations apply to
-                      the earlier package. Use the current validation results
-                      and case status for this review.
-                    </p>
-                  )}
-                  <p>
-                    {investigation.method} /{" "}
-                    {investigation.model || "No model reported"} /{" "}
-                    {dateTime(investigation.completed_at)}
-                  </p>
-                  {investigation.recommendations.map((item) => (
-                    <p key={item.exception_id}>
-                      {item.explanation} Recommendation recorded at the time:{" "}
-                      {item.recommended_action}
-                    </p>
-                  ))}
+        {assessment.contributions.length > 0 && (
+          <div className="risk-contributions-grid">
+            {assessment.contributions.map((item) => (
+              <div className="risk-contribution-card" key={item.issue}>
+                <div className="risk-contribution-top">
+                  <strong>{label(item.issue)}</strong>
+                  <span className="risk-weight-pill">+{item.weight} pts</span>
                 </div>
-              ))
-            ) : (
-              <p>
-                No AI investigation recorded for this case. Contact verification
-                uses deterministic checks.
-              </p>
-            )}
-          </li>
-          <li>
-            <strong>Resolve and independently verify</strong>
-            {detail.automation.map((attempt) => (
-              <p key={attempt.id}>
-                {attempt.action_type} / {attempt.status} /{" "}
-                {dateTime(attempt.completed_at || attempt.created_at)}
-              </p>
+                <p>{item.explanation}</p>
+              </div>
             ))}
-            <p>
-              Recorded backend decision: {label(detail.submission.status)}.
-              Customer correction attempts: {assessment.correctionAttempts}.
-            </p>
-          </li>
-        </ol>
+          </div>
+        )}
+        <details className="disclosure">
+          <summary>Technical risk &amp; rule trace</summary>
+          <div className="disclosure-content">
+            <ol className="decision-trace">
+              <li>
+                <strong>Document extraction</strong>
+                {detail.documents.map((document) => (
+                  <p key={document.id}>
+                    {document.filename} · {label(document.extraction.method)} ·{" "}
+                    {document.extraction.requires_review
+                      ? "Reviewer confirmation required"
+                      : "Verified"}
+                  </p>
+                ))}
+              </li>
+              <li>
+                <strong>Policy validation</strong>
+                <p>
+                  {detail.checks.filter((check) => check.passed).length} of{" "}
+                  {detail.checks.length} checks passed (
+                  {assessment.blockingFindings} blocking).
+                </p>
+              </li>
+              <li>
+                <strong>Resolution status</strong>
+                <p>
+                  Current state: {label(detail.submission.status)}. Correction
+                  attempts: {assessment.correctionAttempts}.
+                </p>
+              </li>
+            </ol>
+          </div>
+        </details>
         {showActions &&
           (detail.submission.risk_hold ||
             detail.tasks.some(

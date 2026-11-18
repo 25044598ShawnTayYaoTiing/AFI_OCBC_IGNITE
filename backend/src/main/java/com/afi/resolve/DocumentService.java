@@ -279,9 +279,12 @@ public class DocumentService {
   List<Map<String, Object>> documents(String id, boolean repository) {
     return s.db.queryForList(
         "SELECT d.*,v.id AS"
-            + " version_id,v.filename,v.sha256,v.size_bytes,v.extraction_json,v.created_at FROM"
+            + " version_id,v.filename,v.sha256,v.size_bytes,v.extraction_json,v.created_at,"
+            + " e.reviewed_by AS evidence_reviewed_by,e.reviewed_at AS evidence_reviewed_at FROM"
             + " submission_documents d JOIN document_versions v ON v.document_id=d.id AND"
-            + " v.version=d.current_version WHERE d.submission_id=? AND d.repository_only=? ORDER"
+            + " v.version=d.current_version LEFT JOIN document_evidence_reviews e ON e.version_id=v.id"
+            + " AND e.sha256=v.sha256"
+            + " WHERE d.submission_id=? AND d.repository_only=? ORDER"
             + " BY d.id",
         id,
         repository);
@@ -1041,6 +1044,55 @@ public class DocumentService {
   }
 
   @Transactional
+  public Object reviewDocumentEvidence(
+      String id, String versionId, int revision, String note, Authentication actor) {
+    if (!reviewer(actor))
+      throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
+    var c = access(id, actor, true);
+    editable(c);
+    if (!Objects.equals(c.get("revision"), revision))
+      throw new ApiException(409, "STALE_REVIEW", "Reload the current case before recording evidence review");
+    var document =
+        documents(id, false).stream()
+            .filter(d -> versionId.equals(d.get("version_id")))
+            .findFirst()
+            .orElseThrow(() -> new ApiException(409, "STALE_REVIEW", "Review the current document version"));
+    if (document.get("evidence_reviewed_by") != null) return detail(id, actor);
+    var extraction = s.readMap((String) document.get("extraction_json"));
+    if (!Boolean.TRUE.equals(extraction.get("requires_review"))
+        || "UNKNOWN".equals(document.get("document_type"))
+        || !(extraction.get("fields") instanceof List<?> fields)
+        || fields.isEmpty())
+      throw new ApiException(409, "EVIDENCE_NOT_REVIEWABLE", "Use a supported document with readable fields");
+    if (extraction.get("observations") instanceof List<?> observations
+        && observations.stream().anyMatch(item -> item instanceof Map<?, ?> observation
+            && "UNCERTAIN".equals(observation.get("issue_type"))))
+      throw new ApiException(409, "EVIDENCE_CONFLICT", "Resolve the uncertain source fields before recording review");
+    String uploader = s.db.queryForObject(
+        "SELECT uploaded_by FROM document_versions WHERE id=?", String.class, versionId);
+    if (actor.getName().equals(uploader))
+      throw new ApiException(403, "INDEPENDENT_REVIEW_REQUIRED", "Another reviewer must inspect this upload");
+    if (note == null || note.trim().length() < 12 || note.trim().length() > 1000)
+      throw new ApiException(400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12 to 1000 characters");
+    if (!storageVerified(document))
+      throw new ApiException(409, "EVIDENCE_INTEGRITY", "The original document could not be verified");
+    s.db.update("INSERT INTO document_evidence_reviews(version_id,sha256,reviewed_by,reviewed_at) VALUES(?,?,?,?)",
+        versionId, document.get("sha256"), actor.getName(), Store.now());
+    s.db.update("UPDATE document_submissions SET requires_rm_approval=TRUE,approved_revision=NULL WHERE id=?", id);
+    event(id, actor, "EVIDENCE_REVIEWED",
+        map("versionId", versionId, "sha256", document.get("sha256"), "revision", revision, "note", note.trim()));
+    validateInternal(id, actor);
+    if (s.db.queryForObject(
+        "SELECT COUNT(*) FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id"
+            + " WHERE e.submission_id=? AND e.status='OPEN' AND r.condition_type='CLASSIFICATION'",
+        Integer.class, id) == 0) {
+      orchestrator.run(this, id, actor);
+    }
+    syncCustomer(id);
+    return detail(id, actor);
+  }
+
+  @Transactional
   public Object approveForOperations(String id, int revision, Authentication a) {
     var c = access(id, a, true);
     if (!reviewer(a))
@@ -1445,8 +1497,9 @@ public class DocumentService {
             docs.stream()
                 .filter(
                     d ->
-                        Boolean.TRUE.equals(
-                                s.readMap((String) d.get("extraction_json")).get("requires_review"))
+                        (d.get("evidence_reviewed_by") == null
+                            && Boolean.TRUE.equals(
+                                s.readMap((String) d.get("extraction_json")).get("requires_review")))
                             || "UNKNOWN".equals(d.get("document_type")))
                 .map(
                     d ->
@@ -1805,6 +1858,29 @@ public class DocumentService {
             s.readMap((String) d.get("extraction_json")).get("requires_review"));
   }
 
+  boolean attachmentEvidencePasses(List<Map<String, Object>> checks) {
+    return checks.stream().anyMatch(check -> "ATTACH_SUPPORTING_DOCUMENT".equals(check.get("rule_key"))
+            && Boolean.TRUE.equals(check.get("passed")))
+        && checks.stream()
+            .filter(check -> Set.of("SERVICE_SUPPORT", "REF_SUPPORTING").contains(check.get("rule_key")))
+            .allMatch(check -> Boolean.TRUE.equals(check.get("passed")));
+  }
+
+  List<Map<String, Object>> evaluateAttachment(
+      String id, List<Map<String, Object>> currentDocuments, Map<String, Object> candidate) {
+    var predicted = new ArrayList<>(currentDocuments);
+    predicted.add(candidate);
+    return evaluate(id, predicted);
+  }
+
+  boolean attachmentIntroducesNoFailures(
+      List<Map<String, Object>> current, List<Map<String, Object>> predicted) {
+    var existing = current.stream().filter(check -> Boolean.FALSE.equals(check.get("passed")))
+        .map(check -> check.get("check_key")).collect(java.util.stream.Collectors.toSet());
+    return predicted.stream().filter(check -> Boolean.FALSE.equals(check.get("passed")))
+        .allMatch(check -> existing.contains(check.get("check_key")));
+  }
+
   @Transactional
   public Object resolve(String id, String key, Authentication a) {
     var result = resolveWithPreflight(id, key, a, null);
@@ -1833,8 +1909,10 @@ public class DocumentService {
       return s.readMap((String) previous.getFirst().get("result_json"));
     }
     editable(c);
+    var currentDocuments = documents(id, false);
+    var currentChecks = evaluate(id, currentDocuments);
     boolean missing =
-        evaluate(id).stream()
+        currentChecks.stream()
             .anyMatch(
                 ch ->
                     ch.get("rule_key").equals("ATTACH_SUPPORTING_DOCUMENT")
@@ -1844,8 +1922,11 @@ public class DocumentService {
           409,
           "NO_ELIGIBLE_EXCEPTION",
           "No missing supporting-document exception is eligible for this approved action");
+    if (proposed == null) proposed = (Map<String, Object>) preflight(id, a);
+    Object proposedId = proposed.get("candidateDocumentId");
     var candidate =
         documents(id, true).stream()
+            .filter(d -> Objects.equals(proposedId, d.get("id")))
             .filter(d -> repositoryEligible(c, d))
             .findFirst()
             .orElseThrow(
@@ -1855,13 +1936,17 @@ public class DocumentService {
                         "NO_AUTHORISED_SOURCE",
                         "No authorised, valid supporting document verified against this case"
                             + " reference"));
-    if (proposed == null) proposed = (Map<String, Object>) preflight(id, a);
     PolicyService.requireDocumentSimulation(proposed, c, ruleSet(), candidate);
     PolicyService.requireDocumentAction(
         "ATTACH_VERIFIED_DOCUMENT", repositoryEligible(c, candidate));
     if (!storageVerified(candidate))
       throw new ApiException(
           409, "SOURCE_UNVERIFIED", "Repository bytes do not match the authorised version");
+    var currentProjection = evaluateAttachment(id, currentDocuments, candidate);
+    if (!attachmentEvidencePasses(currentProjection)
+        || !attachmentIntroducesNoFailures(currentChecks, currentProjection))
+      throw new ApiException(409, "UNSAFE_DOCUMENT_SIMULATION",
+          "Current supporting evidence no longer satisfies the request");
     event(
         id,
         a,
@@ -1914,14 +1999,7 @@ public class DocumentService {
         Objects.equals(persisted.get("version_id"), candidate.get("version_id"))
             && repositoryEligible(c, persisted)
             && storageVerified(persisted)
-            && evaluate(id).stream()
-                .anyMatch(
-                    ch ->
-                        "ATTACH_SUPPORTING_DOCUMENT".equals(ch.get("rule_key"))
-                            && Boolean.TRUE.equals(ch.get("passed")))
-            && evaluate(id).stream()
-                .filter(ch -> "REF_SUPPORTING".equals(ch.get("rule_key")))
-                .allMatch(ch -> Boolean.TRUE.equals(ch.get("passed")));
+            && attachmentEvidencePasses(evaluate(id));
     if (!verified)
       throw new ApiException(
           409,
@@ -1969,7 +2047,8 @@ public class DocumentService {
   @Transactional
   public Object preflight(String id, Authentication a) {
     var c = access(id, a, true);
-    var checks = evaluate(id);
+    var currentDocuments = documents(id, false);
+    var checks = evaluate(id, currentDocuments);
     long passed = checks.stream().filter(ch -> Boolean.TRUE.equals(ch.get("passed"))).count();
     long blocking = checks.stream().filter(PolicyService::blockingDocumentCheck).count();
     boolean attachment =
@@ -1978,48 +2057,36 @@ public class DocumentService {
                 ch ->
                     ch.get("rule_key").equals("ATTACH_SUPPORTING_DOCUMENT")
                         && Boolean.FALSE.equals(ch.get("passed")));
-    boolean eligible =
-        attachment && documents(id, true).stream().anyMatch(d -> repositoryEligible(c, d));
-    var predictedDocuments = new ArrayList<>(documents(id, false));
-    if (eligible)
-      predictedDocuments.add(
-          documents(id, true).stream()
-              .filter(d -> repositoryEligible(c, d))
-              .findFirst()
-              .orElseThrow());
-    var predictedChecks = evaluate(id, predictedDocuments);
-    var candidate = eligible ? predictedDocuments.getLast() : null;
-    var previouslyPassed =
-        checks.stream()
-            .filter(ch -> Boolean.TRUE.equals(ch.get("passed")))
-            .map(ch -> ch.get("check_key"))
-            .toList();
-    var existingFailures =
-        checks.stream()
-            .filter(ch -> Boolean.FALSE.equals(ch.get("passed")))
-            .map(ch -> ch.get("check_key"))
-            .toList();
-    boolean noRegressions =
-        predictedChecks.stream()
-            .filter(ch -> Boolean.FALSE.equals(ch.get("passed")))
-            .noneMatch(
-                ch ->
-                    previouslyPassed.contains(ch.get("check_key"))
-                        || !existingFailures.contains(ch.get("check_key")));
+    List<Map<String, Object>> predictedChecks = checks;
+    Map<String, Object> candidate = null;
+    boolean supportingEvidencePasses = false;
+    if (attachment) {
+      for (var source : documents(id, true)) {
+        if (!repositoryEligible(c, source)) continue;
+        var projection = evaluateAttachment(id, currentDocuments, source);
+        boolean safe = attachmentEvidencePasses(projection)
+            && attachmentIntroducesNoFailures(checks, projection);
+        if (candidate == null || safe) {
+          candidate = source;
+          predictedChecks = projection;
+        }
+        if (safe) {
+          supportingEvidencePasses = true;
+          break;
+        }
+      }
+    }
+    boolean eligible = candidate != null;
+    boolean noRegressions = attachmentIntroducesNoFailures(checks, predictedChecks);
     boolean safeAttachment =
         eligible
             && currentRevisionValidated(c)
-            && noRegressions
+            && supportingEvidencePasses
             && checks.stream()
                 .noneMatch(
                     ch ->
                         "CLASSIFICATION".equals(ch.get("condition_type"))
-                            && Boolean.FALSE.equals(ch.get("passed")))
-            && predictedChecks.stream()
-                .anyMatch(
-                    ch ->
-                        "ATTACH_SUPPORTING_DOCUMENT".equals(ch.get("rule_key"))
-                            && Boolean.TRUE.equals(ch.get("passed")));
+                            && Boolean.FALSE.equals(ch.get("passed")));
     long outstanding =
         s.db.queryForObject(
             "SELECT COUNT(*) FROM document_exceptions WHERE submission_id=? AND status='OPEN'",

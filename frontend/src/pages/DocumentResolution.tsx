@@ -22,64 +22,85 @@ export function CorrectionTasks({
 }) {
   return (
     <Panel
-      title="Correction tasks"
+      title="Correction tasks &amp; ownership"
+      subtitle="Track required customer or Resolution Management actions for open findings."
       action={
         !["OPERATIONS", "CANCELLED"].includes(detail.submission.status) && (
           <button className="button secondary" onClick={onUpload}>
-            Replace a document
+            Replace or add document
           </button>
         )
       }
     >
-      {detail.tasks.length ? (
-        <div className="task-list">
-          {detail.tasks.map((task) => (
-            <article key={task.id}>
-              <div className="task-heading">
-                <h3>{task.description}</h3>
-                <Badge value={task.status} />
-              </div>
-              {detail.exceptions.find(
+      <div className="panel-body">
+        {detail.tasks.length ? (
+          <div className="task-list">
+            {detail.tasks.map((task) => {
+              const relatedFinding = detail.exceptions.find(
                 (item) => item.id === task.exception_id,
-              ) && (
-                <p className="content-label">
-                  {issueCategory(
-                    detail.exceptions.find(
-                      (item) => item.id === task.exception_id,
-                    )!,
-                  )}
-                </p>
-              )}
-              <p>{task.corrective_action}</p>
-              <div className="task-meta">
-                <span>Assigned to {label(task.assigned_role)}</span>
-                <span>
-                  {task.resolved_at
-                    ? `Completed ${dateTime(task.resolved_at)}`
-                    : `Created ${dateTime(task.created_at)}`}
-                </span>
-              </div>
-              <Disclosure title="Task details">
-                <dl className="metadata">
-                  <div>
-                    <dt>Reference</dt>
-                    <dd>{task.id}</dd>
+              );
+              return (
+                <article className="task-card" key={task.id}>
+                  <div className="task-heading">
+                    <div>
+                      {relatedFinding && (
+                        <span className="task-category-tag">
+                          {issueCategory(relatedFinding)}
+                        </span>
+                      )}
+                      <h3>{task.description}</h3>
+                    </div>
+                    <div className="task-badges">
+                      {task.priority && (
+                        <Badge
+                          value={task.priority}
+                          text={`${label(task.priority)} priority`}
+                        />
+                      )}
+                      <Badge value={task.status} />
+                    </div>
                   </div>
-                  <div>
-                    <dt>Priority</dt>
-                    <dd>{label(task.priority)}</dd>
+                  <div className="task-action-callout">
+                    <span className="task-action-label">Required action</span>
+                    <p>{task.corrective_action}</p>
                   </div>
-                </dl>
-              </Disclosure>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <Empty
-          title="No corrections requested"
-          description="Tasks appear when a form needs customer or Resolution Management input."
-        />
-      )}
+                  <div className="task-meta">
+                    <div className="task-meta-item">
+                      <span className="task-meta-label">Assigned to</span>
+                      <strong>{label(task.assigned_role)}</strong>
+                    </div>
+                    <div className="task-meta-item">
+                      <span className="task-meta-label">
+                        {task.resolved_at ? "Completed" : "Created"}
+                      </span>
+                      <strong>
+                        {dateTime(task.resolved_at || task.created_at)} SGT
+                      </strong>
+                    </div>
+                  </div>
+                  <Disclosure title="Technical details">
+                    <dl className="metadata">
+                      <div>
+                        <dt>Task ID</dt>
+                        <dd className="mono">{task.id}</dd>
+                      </div>
+                      <div>
+                        <dt>Finding reference</dt>
+                        <dd className="mono">{task.exception_id}</dd>
+                      </div>
+                    </dl>
+                  </Disclosure>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <Empty
+            title="No corrections requested"
+            description="Tasks appear when a form needs customer or Resolution Management input."
+          />
+        )}
+      </div>
     </Panel>
   );
 }
@@ -89,11 +110,13 @@ export function InvestigationExplanation({
   finding,
   detail,
   onInspect,
+  inline = false,
 }: {
   investigation?: Investigation;
   finding: Finding;
   detail?: Detail;
   onInspect?: (field: Field) => void;
+  inline?: boolean;
 }) {
   const recommendation = investigation?.recommendations.find(
     (item) => item.exception_id === finding.id,
@@ -104,7 +127,7 @@ export function InvestigationExplanation({
   if (!investigation || !recommendation)
     return (
       <p className="context-note">
-        No investigation is recorded for this finding. The policy result above
+        No AI investigation is recorded for this finding. The policy result
         remains authoritative.
       </p>
     );
@@ -126,146 +149,127 @@ export function InvestigationExplanation({
         new Set(group.rows.map((row) => row.document_id).filter(Boolean)).size >
         1,
     );
+  const content = (
+    <div className="investigation-report">
+      <div className="provenance-line">
+        <Badge value={investigation.method} />
+        <Badge
+          value={
+            recommendation.human_review_required
+              ? "HUMAN_INTERVENTION"
+              : "POLICY_CONTROLLED"
+          }
+          text={label(recommendation.recommended_action)}
+        />
+        <span className="muted small">
+          {live ? investigation.model || "Gemini" : "Rule-based analysis"} ·
+          Revision {investigation.revision}
+        </span>
+      </div>
+      {historical && (
+        <p className="context-note">
+          <strong>Historical analysis.</strong>{" "}
+          {stale
+            ? "The package or rules changed since this run."
+            : "This issue has since been resolved."}
+        </p>
+      )}
+      <div className="investigation-summary-block">
+        <h4>Analysis summary</h4>
+        <p>{recommendation.explanation}</p>
+      </div>
+      {cited.length > 0 && (
+        <div className="investigation-evidence-section">
+          <h4>Cited source evidence ({cited.length})</h4>
+          <div className="investigation-citations">
+            {cited.map((e, index) => {
+              const doc = detail?.documents.find(
+                (doc) =>
+                  doc.id === e.document_id &&
+                  doc.versions.some((v) => v.id === e.version_id),
+              );
+              return (
+                <article className="citation-card" key={e.evidence_id}>
+                  <div className="citation-card-top">
+                    <span className="citation-field">{label(e.field)}</span>
+                    <small>
+                      {doc?.filename || "System record"}
+                      {e.page ? ` · p${e.page}` : ""}
+                    </small>
+                  </div>
+                  <strong className="citation-value">
+                    {e.value || "Not confirmed"}
+                  </strong>
+                  <p className="citation-quote">
+                    {e.supporting_text || "No supporting text recorded."}
+                  </p>
+                  {doc && onInspect && (
+                    <button
+                      className="text-link"
+                      onClick={() =>
+                        onInspect({
+                          document_id: doc.id,
+                          version_id: e.version_id || doc.version_id,
+                          filename: doc.filename,
+                          field_name: e.field,
+                          field_value: e.value,
+                          page_number: e.page,
+                          supporting_text: e.supporting_text,
+                        })
+                      }
+                    >
+                      Open source document ({index + 1})
+                    </button>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {comparisons.length > 0 && (
+        <div className="investigation-comparison-block">
+          <h4>Cross-document discrepancy</h4>
+          {comparisons.map((group) => (
+            <div className="discrepancy-group" key={group.field}>
+              <span className="citation-field">{label(group.field)}</span>
+              <ul>
+                {group.rows.map((row) => (
+                  <li key={row.evidence_id}>
+                    <span>
+                      {detail?.documents.find(
+                        (doc) => doc.id === row.document_id,
+                      )?.filename || "Source document"}
+                      {row.page ? ` (p${row.page})` : ""}:
+                    </span>{" "}
+                    <strong>{row.value || "Not confirmed"}</strong>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="task-action-callout">
+        <span className="task-action-label">Recommended next step</span>
+        <p>
+          {finding.status === "RESOLVED"
+            ? "Resolved and verified. No further correction required for this finding."
+            : finding.corrective_action}
+        </p>
+      </div>
+    </div>
+  );
+  if (inline) return content;
   return (
     <Disclosure
       title={
         live
-          ? "Gemini investigation | advisory"
-          : "Rule-based explanation | AI unavailable"
+          ? "AI investigation analysis (advisory)"
+          : "Rule-based explanation"
       }
     >
-      <div className="investigation-report">
-        <div className="provenance-line">
-          <Badge value={investigation.method} />
-          <span>
-            {live
-              ? investigation.model || "Gemini"
-              : "No model-generated analysis"}{" "}
-            | Revision {investigation.revision}
-          </span>
-        </div>
-        {historical && (
-          <p className="context-note">
-            <strong>Historical investigation.</strong>{" "}
-            {stale
-              ? "The package or rules changed. This explanation must not be used as current approval."
-              : "This issue has since been resolved; the recommendation describes its earlier state."}
-          </p>
-        )}
-        {detail && !investigation.rule_set && (
-          <p className="context-note">
-            The rule-set snapshot was not recorded for this older investigation.
-            Verify against the current policy checks.
-          </p>
-        )}
-        <section>
-          <h4>Investigation result</h4>
-          <p>{recommendation.explanation}</p>
-        </section>
-        <section>
-          <h4>Evidence supplied to the investigation</h4>
-          {cited.length ? (
-            <div className="investigation-citations">
-              {cited.map((e, index) => {
-                const doc = detail?.documents.find(
-                  (doc) =>
-                    doc.id === e.document_id &&
-                    doc.versions.some((v) => v.id === e.version_id),
-                );
-                return (
-                  <article key={e.evidence_id}>
-                    <strong>
-                      {label(e.field)}: {e.value || "Not confirmed"}
-                    </strong>
-                    <p>{e.supporting_text || "No supporting text recorded."}</p>
-                    <small>
-                      {doc?.filename || "Source record"} |{" "}
-                      {e.page ? "page " + e.page : "Page not recorded"}
-                    </small>
-                    {doc && onInspect && (
-                      <button
-                        className="text-link"
-                        onClick={() =>
-                          onInspect({
-                            document_id: doc.id,
-                            version_id: e.version_id || doc.version_id,
-                            filename: doc.filename,
-                            field_name: e.field,
-                            field_value: e.value,
-                            page_number: e.page,
-                            supporting_text: e.supporting_text,
-                          })
-                        }
-                      >
-                        View cited source {index + 1}
-                      </button>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <p>
-              No source citations were supplied. This does not establish that a
-              document is missing.
-            </p>
-          )}
-        </section>
-        <section>
-          <h4>Cross-document comparison</h4>
-          {comparisons.length ? (
-            comparisons.map((group) => (
-              <div key={group.field}>
-                <strong>{label(group.field)}</strong>
-                <p>
-                  Recorded source values, without selecting a correct value:
-                </p>
-                <ul>
-                  {group.rows.map((row) => (
-                    <li key={row.evidence_id}>
-                      {detail?.documents.find(
-                        (doc) => doc.id === row.document_id,
-                      )?.filename || "Source document"}
-                      : <strong>{row.value || "Not confirmed"}</strong>
-                      {row.page ? " (page " + row.page + ")" : ""}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))
-          ) : (
-            <p>
-              No comparable field is cited across multiple documents for this
-              finding. No cross-document conclusion is available.
-            </p>
-          )}
-        </section>
-        <section>
-          <h4>Required next step | policy</h4>
-          <p>
-            {finding.status === "RESOLVED"
-              ? "No further correction for this resolved finding. Check the current case status."
-              : finding.corrective_action}
-          </p>
-          <small>
-            {recommendation.human_review_required
-              ? "Human review was required by the recorded policy input."
-              : "Any attachment still requires backend authorisation and independent verification."}
-          </small>
-        </section>
-        <section className="context-note">
-          <h4>Limitations</h4>
-          <p>
-            {live
-              ? "Gemini explains the supplied findings and citations. It does not independently approve the application or establish facts beyond those sources."
-              : "A deterministic explanation was used; no live AI investigation was completed."}{" "}
-            Spring Boot rules control validation, allowed actions and handover.
-          </p>
-          {investigation.fallback_reason && (
-            <small>Availability: {label(investigation.fallback_reason)}</small>
-          )}
-        </section>
-      </div>
+      {content}
     </Disclosure>
   );
 }
@@ -464,16 +468,44 @@ export function AutonomyEvidence({
     .reverse();
   return (
     <div className="page-stack">
-      <Panel
-        title="Automatic resolution"
-        subtitle={
-          detail.automationEnabled
-            ? "Eligible administrative corrections run automatically under approved rules."
-            : "Automatic resolution is disabled in this environment."
-        }
-      >
-        <div className="panel-body">
-          {attempts.length ? (
+      <div className="automation-status-strip">
+        <div className="automation-status-summary">
+          <strong>
+            {open.length
+              ? `${open.length} ${open.length === 1 ? "issue requires" : "issues require"} attention`
+              : validated
+                ? "All intake requirements satisfied"
+                : "Package requires validation"}
+          </strong>
+          <p>
+            {open.length
+              ? "Customer declarations, conflicting details and uncertain evidence require a corrected document or human review."
+              : validated
+                ? "Verified checks have passed for this revision."
+                : "Recheck the package to confirm its current requirements."}
+          </p>
+        </div>
+        <div className="automation-status-badges">
+          <Badge
+            value={
+              detail.automationEnabled ? "POLICY_CONTROLLED" : "MANUAL_REVIEW"
+            }
+            text={
+              detail.automationEnabled
+                ? "Auto-attachment enabled"
+                : "Automation disabled"
+            }
+          />
+          {investigation && <Badge value={investigation.method} />}
+        </div>
+      </div>
+
+      {attempts.length > 0 && (
+        <Panel
+          title="Automated attachment outcomes"
+          subtitle="Policy-controlled supporting document retrieval from the authorised case repository."
+        >
+          <div className="panel-body">
             <div className="automation-results">
               {attempts.map((attempt) => (
                 <AutomationResult
@@ -483,40 +515,22 @@ export function AutonomyEvidence({
                 />
               ))}
             </div>
-          ) : (
-            <p className="muted">
-              No automatic actions have been attempted for this package.
-            </p>
-          )}
-          <div className="context-note">
-            <strong>
-              {open.length
-                ? `${open.length} ${open.length === 1 ? "issue still needs" : "issues still need"} attention`
-                : validated
-                  ? "No remaining correction tasks"
-                  : "Current package needs validation"}
-            </strong>
-            <p>
-              {open.length
-                ? "Customer declarations, conflicting details and uncertain evidence require a corrected document or human review."
-                : validated
-                  ? "The recorded intake requirements have been satisfied."
-                  : "Recheck the package to confirm its current requirements and next steps."}
-            </p>
           </div>
-        </div>
-      </Panel>
+        </Panel>
+      )}
+
       <Panel
-        title="Investigation evidence"
+        title="AI investigation findings"
+        subtitle={
+          investigation
+            ? `${investigation.model || "Rule-based analysis"} · Revision ${investigation.revision} (Advisory — backend policy controls decisions)`
+            : "Automated root-cause and evidence analysis for detected exceptions."
+        }
         action={investigation && <Badge value={investigation.method} />}
       >
         <div className="panel-body">
           {investigation ? (
-            <>
-              <p className="muted">
-                {investigation.model || "Approved rule analysis"} / source
-                revision {investigation.revision}
-              </p>
+            <div className="investigation-cards-list">
               {investigation.recommendations.map((recommendation) => (
                 <RecommendationView
                   key={recommendation.exception_id}
@@ -527,22 +541,24 @@ export function AutonomyEvidence({
                 />
               ))}
               {investigation.fallback_reason && (
-                <Disclosure title="Fallback details">
-                  <p>{label(investigation.fallback_reason)}</p>
+                <Disclosure title="Technical fallback details">
+                  <p className="muted small">
+                    Fallback reason: {label(investigation.fallback_reason)}
+                  </p>
                 </Disclosure>
               )}
-            </>
+            </div>
           ) : (
-            <Empty
-              title="No investigation recorded"
-              description="An investigation starts when validation detects an issue."
-            />
+            <p className="muted">
+              No investigation recorded for this package. Investigations run
+              automatically when validation detects an exception.
+            </p>
           )}
         </div>
       </Panel>
       <Panel
         title="Resolution timeline"
-        subtitle="Only recorded stages are shown."
+        subtitle="Chronological progression of detection, investigation, verification and routing."
       >
         <AuditList items={timeline} />
       </Panel>
@@ -562,37 +578,45 @@ function AutomationResult({
   );
   const verified = attempt.status === "VERIFIED";
   return (
-    <article className="automation-result">
+    <article className="automation-result task-card">
       <div className="task-heading">
-        <h3>{finding?.name || "Missing supporting document"}</h3>
+        <div>
+          <span className="task-category-tag">
+            {label(attempt.action_type)}
+          </span>
+          <h3>{finding?.name || "Missing supporting document"}</h3>
+        </div>
         <Badge value={attempt.status} />
       </div>
       <p>
         {verified
-          ? "The authorised supporting document was attached and independently verified."
+          ? "The authorised supporting document was attached from the repository and independently verified."
           : attempt.status === "BLOCKED"
-            ? "The action was not eligible. No automatic correction was completed."
-            : "The attempt did not complete verification. Review the recorded result."}
+            ? "The action was blocked by preflight policy checks. No automatic change was made."
+            : "The attempt did not pass verification and was safely rolled back."}
       </p>
-      <small>{dateTime(attempt.completed_at || attempt.created_at)} SGT</small>
-      <Disclosure title="Execution details">
-        <p>{detailText(attempt.result_json)}</p>
+      <div className="task-meta">
+        <div className="task-meta-item">
+          <span className="task-meta-label">Recorded</span>
+          <strong>
+            {dateTime(attempt.completed_at || attempt.created_at)} SGT
+          </strong>
+        </div>
+        <div className="task-meta-item">
+          <span className="task-meta-label">Revision</span>
+          <strong>Revision {attempt.revision}</strong>
+        </div>
+      </div>
+      <Disclosure title="Technical details">
+        <p className="small mono">{detailText(attempt.result_json)}</p>
         <dl className="metadata">
           <div>
-            <dt>Action</dt>
-            <dd>{label(attempt.action_type)}</dd>
+            <dt>Attempt ID</dt>
+            <dd className="mono">{attempt.id}</dd>
           </div>
           <div>
-            <dt>Attempt</dt>
-            <dd>{attempt.id}</dd>
-          </div>
-          <div>
-            <dt>Preflight</dt>
-            <dd>{attempt.simulation_id || "Not run"}</dd>
-          </div>
-          <div>
-            <dt>Source revision</dt>
-            <dd>{attempt.revision}</dd>
+            <dt>Preflight ID</dt>
+            <dd className="mono">{attempt.simulation_id || "Not run"}</dd>
           </div>
         </dl>
       </Disclosure>
@@ -615,19 +639,23 @@ function RecommendationView({
     (item) => item.id === recommendation.exception_id,
   );
   return (
-    <article className="investigation-item">
-      <h3>{finding?.name || label(recommendation.recommended_action)}</h3>
+    <article className="investigation-card">
+      <div className="investigation-card-header">
+        <h3>{finding?.name || label(recommendation.recommended_action)}</h3>
+        {finding && <Badge value={finding.status} />}
+      </div>
       {finding ? (
         <InvestigationExplanation
           investigation={investigation}
           finding={finding}
           detail={detail}
           onInspect={onInspect}
+          inline
         />
       ) : (
         <p className="context-note">
-          This investigation refers to an earlier finding. Its current outcome
-          is not available in this view.
+          This investigation refers to an earlier finding from revision{" "}
+          {investigation.revision}.
         </p>
       )}
     </article>

@@ -1,8 +1,10 @@
 """Build reusable, fictional evidence for service request regression runs."""
 import argparse
+from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
+from pypdf import PdfReader, PdfWriter
 
 from service_request_e2e import pdf
 
@@ -43,6 +45,35 @@ def generate(output):
     (output / '08-address-proof.pdf').write_bytes(pdf([
         'Supporting Document - Proof of address', 'SYNTHETIC DEMO DATA', *address,
         'Statement Date: 2026-11-15']))
+    for kind, category in [('Mailing', 'ADDRESS_CHANGE'), ('Residential', 'RESIDENTIAL_ADDRESS_CHANGE')]:
+        (output / f'08-{kind.lower()}-address-request.pdf').write_bytes(pdf([
+            'Banking Service Request', 'SYNTHETIC - NOT AN OFFICIAL BANK FORM',
+            *address[:2], 'Identity Number: DEMO-ID-SYN-DEMO-008', f'Request Type: {category}',
+            f'Existing {kind} Address: 8 Fictional Gardens',
+            f'New {kind} Address: 1 Marina Boulevard #05-01',
+            f'New {kind} Postal Code: 018989',
+            'Declaration Date: 2026-11-18', 'Signature Indicator: Present',
+        ]))
+    (output / '08-residential-address-proof.pdf').write_bytes(pdf([
+        'Supporting Document - Proof of address', 'SYNTHETIC DEMO DATA', *address[:2],
+        'Residential Address: 1 Marina Boulevard #05-01', 'Residential Postal Code: 018989',
+        'Statement Date: 2026-11-15',
+    ]))
+    (output / '08-table-address-proof.pdf').write_bytes(pdf([
+        'Supporting Document - Proof of address', 'SYNTHETIC DEMO DATA',
+        'Customer Full Name    Fictional Customer 8',
+        'Customer Reference    SYN-DEMO-008',
+        'Mailing Address    1 Marina Boulevard #05-01    Postal Code    018989',
+    ]))
+    page('Banking Service Request', [
+        *address[:2],
+        'Identity Number: DEMO-ID-SYN-DEMO-008',
+        'Request Type: ADDRESS_CHANGE',
+        'New Mailing Address: 1 Marina Boulevard #05-01',
+        'New Mailing Postal Code: 018989',
+        'Declaration Date: 2026-11-18',
+        'Signature Indicator: Present',
+    ]).save(output / '08-mailing-address-request-scan.pdf', 'PDF')
     page('Telecommunications bill', [*contact, 'Statement Date: 2024-01-05']).save(
         output / '09-telecom-outdated.jpg', quality=92)
     page('Contact details evidence', contact[:2]).save(output / '09-contact-missing.png')
@@ -57,6 +88,26 @@ def generate(output):
     (output / '10-tax-declaration.pdf').write_bytes(pdf([
         'Tax Residency Declaration', 'SYNTHETIC DEMO DATA', *tax,
         'Declaration Date: 2026-11-18']))
+
+    # Tool-labelled negative PDF fixtures (synthetic data only).
+    base_pdf = pdf([
+        'Supporting Document - Proof of address', 'SYNTHETIC DEMO DATA', *address,
+        'Tool-generated negative fixture: synthetic validation test'])
+    encrypted_writer = PdfWriter()
+    encrypted_writer.append_pages_from_reader(PdfReader(BytesIO(base_pdf)))
+    encrypted_writer.encrypt('synthetic-demo-password')
+    with (output / '08-address-proof-encrypted.pdf').open('wb') as handle:
+        encrypted_writer.write(handle)
+
+    long_reader = PdfReader(BytesIO(base_pdf))
+    long_writer = PdfWriter()
+    for _ in range(31):
+        long_writer.add_page(long_reader.pages[0])
+    with (output / '08-address-proof-31pages.pdf').open('wb') as handle:
+        long_writer.write(handle)
+
+    (output / '08-address-proof-truncated.pdf').write_bytes(
+        base_pdf[:max(16, len(base_pdf) // 2)])
 
 
 if __name__ == '__main__':

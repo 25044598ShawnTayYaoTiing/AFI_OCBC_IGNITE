@@ -30,45 +30,28 @@ export function PolicyFindingSummary({
   );
   return (
     <div className="policy-finding">
-      <span className="authority-label">POLICY RESULT | SPRING BOOT</span>
       <dl className="finding-facts">
         <div>
-          <dt>What failed and why</dt>
+          <dt>Finding</dt>
           <dd>{issue.description || issue.name}</dd>
         </div>
         <div>
-          <dt>Applied rule</dt>
-          <dd>
-            {issue.name}
-            {issue.rule_version || check?.rule_version
-              ? " | version " + (issue.rule_version || check?.rule_version)
-              : ""}
-            {issue.rule_description && <small>{issue.rule_description}</small>}
-          </dd>
-        </div>
-        <div>
-          <dt>Who acts next</dt>
+          <dt>Owner</dt>
           <dd>
             {issue.status === "RESOLVED"
               ? "Completed"
               : task
                 ? label(task.assigned_role)
-                : "No task assignment recorded; case owner to coordinate"}
+                : "Case owner"}
           </dd>
         </div>
-        {issue.condition_type === "ATTACHMENT" && (
-          <div>
-            <dt>Required document</dt>
-            <dd>
-              {label(issue.document_type)}
-              <small>
-                {issue.document_type === "SUPPORTING_DOCUMENT"
-                  ? "Use the document type named in the rule or correction instruction. If neither specifies a subtype, ask a policy reviewer to clarify."
-                  : issue.corrective_action}
-              </small>
-            </dd>
-          </div>
-        )}
+        <div>
+          <dt>Rule reference</dt>
+          <dd className="mono small">
+            {issue.check_key} (v{issue.rule_version || check?.rule_version || 1}
+            )
+          </dd>
+        </div>
       </dl>
     </div>
   );

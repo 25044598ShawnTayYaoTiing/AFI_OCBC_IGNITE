@@ -62,108 +62,141 @@ export function SubmissionTable({
       <table className="submission-table">
         <thead>
           <tr>
-            <th scope="col">Customer</th>
+            <th scope="col">Customer &amp; request</th>
             <th scope="col">Reference</th>
-            <th scope="col">Source</th>
+            <th scope="col">Channel</th>
             <th scope="col">Status</th>
-            <th scope="col">Checks / severity</th>
+            <th scope="col">Policy checks</th>
             <th scope="col">Next action</th>
-            <th scope="col">Created</th>
+            <th scope="col">Submitted</th>
             <th scope="col">
               <span className="sr-only">Open submission</span>
             </th>
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => (
-            <tr key={item.id}>
-              <td>
-                <Link
-                  className="record-link"
-                  to={`/submissions/${item.id}?tab=${tab}`}
-                >
-                  {item.customer_name}
-                </Link>
-                <small className="secondary-line">
-                  {item.risk_level
-                    ? `${item.risk_level} ${item.risk_score}/100 / `
-                    : ""}
-                  {label(item.category)} /{" "}
-                  {["reviewer", "operator"].includes(
-                    item.owner_name?.toLowerCase(),
-                  )
-                    ? "Resolution Management"
-                    : item.owner_name}
-                </small>
-              </td>
-              <td>
-                <span className="reference">{item.customer_reference}</span>
-              </td>
-              <td>
-                {item.submission_source === "CUSTOMER_PORTAL"
-                  ? item.capture_method === "DIGITAL_EFORM"
-                    ? "Digital eForm"
-                    : "Customer PDF"
-                  : "Staff PDF archive"}
-              </td>
-              <td>
-                <Badge value={item.status} />
-              </td>
-              <td>
-                <strong>
-                  {item.validated_revision === item.revision &&
-                  item.checks_total
-                    ? `${item.checks_passed ?? 0}/${item.checks_total} passed`
-                    : "Not confirmed"}
-                </strong>
-                <small className="secondary-line">
-                  {item.open_severities?.length
-                    ? item.open_severities.map(label).join(", ")
-                    : "No open severity recorded"}
-                </small>
-              </td>
-              <td>
-                <strong>
-                  {nextCaseAction(item, item.open_exceptions ?? 0)}
-                </strong>
-                <span className="secondary-line">
-                  {item.open_exceptions
-                    ? `${item.open_exceptions} open ${item.open_exceptions === 1 ? "issue" : "issues"}`
-                    : item.status === "OPERATIONS"
-                      ? "Intake complete"
-                      : item.validated_revision !== item.revision
-                        ? "Awaiting current checks"
-                        : "No open findings"}
-                </span>
-                <small className="secondary-line">
-                  {item.verified_automations
-                    ? `${item.verified_automations} automatic action verified`
-                    : item.ai_method
-                      ? provenance(item.ai_method)
-                      : "Awaiting analysis"}
-                </small>
-              </td>
-              <td className="nowrap">{dateTime(item.created_at)}</td>
-              <td>
-                <Link
-                  className="row-action"
-                  aria-label={`Review ${item.customer_name}`}
-                  to={`/submissions/${item.id}?tab=${tab}`}
-                >
-                  <ArrowRight size={16} />
-                </Link>
-              </td>
-            </tr>
-          ))}
+          {items.map((item) => {
+            const currentValidated =
+              item.validated_revision === item.revision && !!item.checks_total;
+            const passRatio =
+              currentValidated && item.checks_total
+                ? Math.round(((item.checks_passed ?? 0) / item.checks_total) * 100)
+                : 0;
+            return (
+              <tr key={item.id}>
+                <td>
+                  <Link
+                    className="record-link"
+                    to={`/submissions/${item.id}?tab=${tab}`}
+                  >
+                    {item.customer_name}
+                  </Link>
+                  <div className="table-submeta">
+                    <span>{label(item.category)}</span>
+                    {item.risk_level && (
+                      <span
+                        className={`inline-risk-tag risk-tag-${item.risk_level.toLowerCase()}`}
+                      >
+                        {label(item.risk_level)} ({item.risk_score ?? 0})
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td>
+                  <span className="reference">{item.customer_reference}</span>
+                </td>
+                <td>
+                  <span className="channel-label">
+                    {item.submission_source === "CUSTOMER_PORTAL"
+                      ? item.capture_method === "DIGITAL_EFORM"
+                        ? "Digital declaration"
+                        : "Customer PDF"
+                      : "Staff upload"}
+                  </span>
+                </td>
+                <td>
+                  <div className="status-cell-badges">
+                    <Badge value={item.status} />
+                    {item.risk_hold && <Badge value="ON_HOLD" text="On hold" />}
+                  </div>
+                </td>
+                <td>
+                  {currentValidated ? (
+                    <div className="checks-cell">
+                      <div className="checks-cell-top">
+                        <strong>
+                          {item.checks_passed ?? 0}/{item.checks_total}
+                        </strong>
+                        <span>passed</span>
+                      </div>
+                      <div className="mini-check-bar" aria-hidden="true">
+                        <div
+                          className={
+                            passRatio === 100 ? "tone-success" : "tone-warning"
+                          }
+                          style={{ width: `${passRatio}%` }}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <span className="muted small">Recheck needed</span>
+                  )}
+                </td>
+                <td>
+                  <strong className="table-next-action">
+                    {nextCaseAction(item, item.open_exceptions ?? 0)}
+                  </strong>
+                  <small className="secondary-line">
+                    {item.open_exceptions
+                      ? `${item.open_exceptions} open ${item.open_exceptions === 1 ? "finding" : "findings"}`
+                      : item.status === "OPERATIONS"
+                        ? "Handed over to Operations"
+                        : item.validated_revision !== item.revision
+                          ? "Awaiting validation"
+                          : "Ready for reviewer decision"}
+                    {item.verified_automations
+                      ? ` · ${item.verified_automations} auto-resolved`
+                      : ""}
+                  </small>
+                </td>
+                <td className="nowrap small muted">{dateTime(item.created_at)}</td>
+                <td>
+                  <Link
+                    className="row-action"
+                    aria-label={`Review ${item.customer_name}`}
+                    to={`/submissions/${item.id}?tab=${tab}`}
+                  >
+                    <ArrowRight size={16} />
+                  </Link>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
+const statusToneMap: Record<string, string> = {
+  OPERATIONS: "success",
+  READY: "success",
+  RESOLUTION_MANAGEMENT: "info",
+  HUMAN_REVIEW: "info",
+  PENDING_VALIDATION: "warning",
+  CORRECTION_REQUIRED: "warning",
+  ON_HOLD: "danger",
+  DRAFT: "neutral",
+  CANCELLED: "neutral",
+};
+
 export function StatusChart({ metrics }: { metrics: Metrics }) {
-  const entries = Object.entries(metrics.statuses).filter(
-    ([, value]) => value > 0,
+  const entries = Object.entries(metrics.statuses)
+    .filter(([, value]) => value > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const total = Math.max(
+    1,
+    entries.reduce((sum, [, value]) => sum + value, 0),
   );
   const maximum = Math.max(1, ...entries.map(([, value]) => value));
   return (
@@ -171,18 +204,73 @@ export function StatusChart({ metrics }: { metrics: Metrics }) {
       className="status-chart"
       aria-label="Current submission status distribution"
     >
-      <h3>Submission distribution</h3>
-      {entries.map(([status, count]) => (
-        <div key={status} className="chart-row">
-          <span>
-            {status === "OPERATIONS" ? "With Operations" : label(status)}
-          </span>
-          <div className="chart-track" aria-hidden="true">
-            <div style={{ width: `${(count / maximum) * 100}%` }} />
+      <div className="chart-header">
+        <h3>Submission status breakdown</h3>
+        <span>{metrics.totalSubmissions} total</span>
+      </div>
+      {entries.map(([status, count]) => {
+        const tone = statusToneMap[status] || "info";
+        const pct = Math.round((count / total) * 100);
+        return (
+          <div key={status} className="chart-row">
+            <span className="chart-label">
+              <i className={`chart-dot tone-${tone}`} aria-hidden="true" />
+              {status === "OPERATIONS" ? "With Operations" : label(status)}
+            </span>
+            <div className="chart-track" aria-hidden="true">
+              <div
+                className={`chart-fill tone-${tone}`}
+                style={{ width: `${Math.max(6, (count / maximum) * 100)}%` }}
+              />
+            </div>
+            <strong className="chart-value">
+              {count} <small>({pct}%)</small>
+            </strong>
           </div>
-          <strong>{count}</strong>
-        </div>
-      ))}
+        );
+      })}
+    </div>
+  );
+}
+
+export function HorizontalBarChart({
+  items,
+  tone = "accent",
+  ariaLabel,
+}: {
+  items: { label: string; value: number; tone?: string }[];
+  tone?: string;
+  ariaLabel: string;
+}) {
+  const maximum = Math.max(1, ...items.map((item) => item.value));
+  const total = Math.max(
+    1,
+    items.reduce((sum, item) => sum + item.value, 0),
+  );
+  return (
+    <div className="status-chart" aria-label={ariaLabel}>
+      {items.map((item) => {
+        const barTone = item.tone || tone;
+        const pct = Math.round((item.value / total) * 100);
+        return (
+          <div key={item.label} className="chart-row">
+            <span className="chart-label" title={item.label}>
+              {item.label}
+            </span>
+            <div className="chart-track" aria-hidden="true">
+              <div
+                className={`chart-fill tone-${barTone}`}
+                style={{
+                  width: `${item.value > 0 ? Math.max(6, (item.value / maximum) * 100) : 0}%`,
+                }}
+              />
+            </div>
+            <strong className="chart-value">
+              {item.value} <small>({pct}%)</small>
+            </strong>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -274,22 +362,96 @@ const eventNames: Record<string, string> = {
   EXCEPTION_DETECTED: "Issue detected",
   AI_INVESTIGATION: "AI investigation completed",
   RESOLUTION_PLANNED: "Attachment planned",
-  PREFLIGHT_PASSED: "Preflight passed",
-  POLICY_APPROVED: "Action authorised",
+  PREFLIGHT_PASSED: "Readiness simulation passed",
+  POLICY_APPROVED: "Action authorised by policy",
   ACTION_EXECUTED: "Supporting document attached",
-  OUTCOME_VERIFIED: "Attachment verified",
+  OUTCOME_VERIFIED: "Attachment independently verified",
   EXCEPTION_RESOLVED: "Issue resolved",
-  AUTOMATION_COMPLETED: "Automatic resolution complete",
+  AUTOMATION_COMPLETED: "Automatic resolution completed",
   AUTOMATION_BLOCKED: "Automatic action blocked",
   AUTOMATION_FAILED: "Automatic action failed",
-  ROUTED: "Sent to Operations",
+  ROUTED: "Handed over to Operations",
   UPLOADED: "Document uploaded",
   REPLACED: "Document replaced",
-  VALIDATED: "Validation completed",
-  PREFLIGHT: "Readiness checked",
+  VALIDATED: "Package validation completed",
+  PREFLIGHT: "Handover readiness checked",
   CREATED: "Submission created",
   ADMINISTRATIVE_ATTACHMENT: "Authorised repository document attached",
+  RESOLUTION_MANAGEMENT_APPROVED: "Approved by Resolution Management",
+  EVIDENCE_REVIEWED: "Document evidence confirmed by reviewer",
+  HOLD_CLEARED: "Investigation hold cleared",
+  CUSTOMER_CORRECTION_AUTHORIZED: "Customer correction authorised",
+  PHONE_VERIFICATION_RECORDED: "Independent phone verification recorded",
+  RISK_ASSESSED: "Exception risk assessed",
 };
+
+function parseDetails(raw: unknown): Record<string, unknown> | null {
+  if (!raw) return null;
+  if (typeof raw === "object" && !Array.isArray(raw))
+    return raw as Record<string, unknown>;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("{")) {
+      try {
+        return JSON.parse(trimmed) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+function formatActor(actor: string) {
+  const lower = actor.toLowerCase();
+  if (lower === "reviewer" || lower === "rules-admin")
+    return `Resolution Management (${actor})`;
+  if (lower.startsWith("user-") || lower.startsWith("customer"))
+    return "Customer Portal";
+  return label(actor);
+}
+
+function timelineTone(key: string) {
+  if (
+    /VERIFIED|RESOLVED|COMPLETED|ROUTED|APPROVED|PASSED|CLEARED|REVIEWED/.test(
+      key,
+    )
+  )
+    return "success";
+  if (/BLOCKED|FAILED|DETECTED|CANCELLED/.test(key)) return "danger";
+  if (/PLANNED|HOLD|ESCALATED/.test(key)) return "warning";
+  return "info";
+}
+
+function humanAuditSummary(key: string, details: Record<string, unknown> | null) {
+  if (!details) return "";
+  const parts: string[] = [];
+  if (typeof details.note === "string" && details.note)
+    parts.push(`"${details.note}"`);
+  if (typeof details.verificationNote === "string" && details.verificationNote)
+    parts.push(`"${details.verificationNote}"`);
+  if (typeof details.reason === "string" && details.reason)
+    parts.push(String(details.reason));
+  if (typeof details.verification === "string" && details.verification)
+    parts.push(String(details.verification));
+  if (typeof details.checks === "number") {
+    const failed =
+      typeof details.failed === "number" ? `, ${details.failed} failed` : "";
+    parts.push(`${details.checks} checks evaluated${failed}`);
+  }
+  if (typeof details.approvedChecks === "number")
+    parts.push(`${details.approvedChecks} checks verified`);
+  if (typeof details.findings === "number")
+    parts.push(`${details.findings} finding(s) analysed`);
+  if (typeof details.level === "string" && typeof details.score === "number")
+    parts.push(`${label(details.level)} risk (${details.score}/100)`);
+  if (typeof details.method === "string" && !key.includes("RISK"))
+    parts.push(provenance(String(details.method)));
+  if (typeof details.revision === "number")
+    parts.push(`Revision ${details.revision}`);
+  return parts.join(" · ");
+}
+
 export function AuditList({
   items,
   compact = false,
@@ -301,27 +463,43 @@ export function AuditList({
     <ol className={`activity-timeline ${compact ? "compact-timeline" : ""}`}>
       {items.map((event) => {
         const key = event.eventType.replace("DOCUMENT_", "");
+        const parsed = parseDetails(event.details);
+        const summary = humanAuditSummary(key, parsed);
+        const tone = timelineTone(key);
         return (
-          <li key={event.id}>
-            <span className="timeline-dot" />
+          <li key={event.id} className="timeline-entry">
+            <span className={`timeline-dot tone-${tone}`} />
             <div className="activity-content">
               <div className="activity-heading">
                 <strong>{eventNames[key] || label(key)}</strong>
                 <time>{dateTime(event.timestamp)} SGT</time>
               </div>
-              <p>{event.actor}</p>
+              <div className="activity-subline">
+                <span className="activity-actor">
+                  {formatActor(event.actor)}
+                </span>
+                {summary && <span className="activity-summary">{summary}</span>}
+              </div>
               {!compact && (
-                <Disclosure title="Event details">
-                  <p className="preserve-lines">{detailText(event.details)}</p>
+                <Disclosure title="Technical details">
+                  <p className="preserve-lines small mono">
+                    {detailText(event.details)}
+                  </p>
                   <dl className="metadata">
                     <div>
-                      <dt>Event</dt>
-                      <dd>{event.id}</dd>
+                      <dt>Event ID</dt>
+                      <dd className="mono">{event.id}</dd>
                     </div>
+                    {event.exceptionId && (
+                      <div>
+                        <dt>Case reference</dt>
+                        <dd className="mono">{event.exceptionId}</dd>
+                      </div>
+                    )}
                     {event.correlationId && (
                       <div>
-                        <dt>Reference</dt>
-                        <dd>{event.correlationId}</dd>
+                        <dt>Correlation ID</dt>
+                        <dd className="mono">{event.correlationId}</dd>
                       </div>
                     )}
                   </dl>
@@ -348,11 +526,11 @@ export function Checklist({
   return (
     <ul className="validation-list">
       {checks.map((check, index) => (
-        <li key={check.id || index}>
-          <span>
+        <li key={check.id || index} className="validation-list-item">
+          <div className="validation-list-main">
             <strong>{check.name}</strong>
-            {!check.passed && <small>{check.corrective_action}</small>}
-          </span>
+            {!check.passed && <p>{check.corrective_action}</p>}
+          </div>
           <Badge value={check.passed ? "PASSED" : "FAILED"} />
         </li>
       ))}

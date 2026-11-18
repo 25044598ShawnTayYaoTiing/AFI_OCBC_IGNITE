@@ -26,6 +26,7 @@ import { Disclosure, MetricStrip, SectionNav } from "../ui";
 import {
   AuditList,
   BASE,
+  HorizontalBarChart,
   message,
   reportNav,
   StatusChart,
@@ -70,33 +71,26 @@ export function DocumentOverview() {
           <span className="eyebrow">
             Resolution Management · Service Operations
           </span>
-          <h1>Every case. A clear way forward.</h1>
+          <h1>Document Exception &amp; Handover Command Centre</h1>
           <p>
-            Investigate cross-source evidence, reconcile customer declarations
-            against core-banking records, and approve verified Operations
-            handovers.
+            Review cross-document evidence, track customer corrections and
+            approve verified packages for Operations handover.
           </p>
-          <div className="vrrp-strip" aria-label="Operating principles">
-            <div className="vrrp-step">
-              <strong>01 · Validate</strong>
-              <span>Deterministic policy &amp; SHA-256 integrity checks</span>
-            </div>
-            <div className="vrrp-step">
-              <strong>02 · Reconcile</strong>
-              <span>3-way comparison across bank profile, eForm &amp; PDFs</span>
-            </div>
-            <div className="vrrp-step">
-              <strong>03 · Resolve</strong>
-              <span>Autonomous verified attachment or guided correction</span>
-            </div>
-            <div className="vrrp-step">
-              <strong>04 · Prevent</strong>
-              <span>Risk-scored holds &amp; Separation-of-Duties rules</span>
-            </div>
+          <div className="masthead-quick-links">
+            <Link className="button primary" to="/submissions?view=ready">
+              Ready for approval ({readyForApproval.length})
+              <ArrowRight size={15} />
+            </Link>
+            <Link className="button secondary" to="/submissions?view=corrections">
+              Customer corrections
+            </Link>
+            <Link className="button secondary" to="/operations">
+              Completed handovers
+            </Link>
           </div>
         </div>
         <Link className="command-focus" to="/exceptions">
-          <span>Intervention queue</span>
+          <span>Active intervention queue</span>
           <strong>
             {submissions.loading || submissions.error ? "—" : attention.length}
           </strong>
@@ -106,7 +100,7 @@ export function DocumentOverview() {
               : "Review open findings & corrections"}
           </small>
           <span>
-            Open priority cases
+            Open priority queue
             <ArrowRight size={18} />
           </span>
         </Link>
@@ -122,27 +116,31 @@ export function DocumentOverview() {
       <MetricStrip
         items={[
           {
-            label: "Need attention",
+            label: "Requires attention",
             value:
               submissions.loading || submissions.error
                 ? "--"
                 : attention.length,
             note: `${readyForApproval.length} ready to approve · ${m?.onHold ?? 0} on hold`,
+            tone: attention.length > 0 ? "warning" : "default",
           },
           {
             label: "Automatically resolved",
             value: value(m?.automaticallyResolved),
-            note: "Verified autonomous attachments",
+            note: "Verified repository attachments",
+            tone: "success",
           },
           {
-            label: "With Operations",
+            label: "Handed to Operations",
             value: value(m?.successfullyRouted),
-            note: "Validated & approved handovers",
+            note: "Validated & approved packages",
+            tone: "accent",
           },
           {
             label: "Total submissions",
             value: value(m?.totalSubmissions),
-            note: `${m ? m.statuses.PENDING_VALIDATION || 0 : 0} pending validation`,
+            note: `${m ? m.statuses.PENDING_VALIDATION || 0 : 0} awaiting validation`,
+            tone: "default",
           },
         ]}
       />
@@ -155,7 +153,7 @@ export function DocumentOverview() {
             to="/submissions"
             className={`risk-pill risk-pill-${level.toLowerCase()}`}
           >
-            <span>{level} risk</span>
+            <span>{label(level)} risk</span>
             <strong>
               {metrics.loading || metrics.error
                 ? "--"
@@ -175,8 +173,8 @@ export function DocumentOverview() {
 
       <div className="content-columns command-primary-grid">
         <Panel
-          title="Priority cases · immediate action required"
-          subtitle="Sorted by hold status and exception risk score."
+          title="Priority cases requiring action"
+          subtitle="Ordered by hold status and exception risk score."
           action={
             <Link className="text-link" to="/exceptions">
               View all ({attention.length}) <ArrowRight size={14} />
@@ -207,12 +205,13 @@ export function DocumentOverview() {
                         </span>
                       </div>
                       <p className="queue-next-action">
+                        <span className="next-action-indicator">Next:</span>{" "}
                         {nextCaseAction(item, item.open_exceptions ?? 0)}
                       </p>
                       <small className="priority-case-meta">
                         {item.open_exceptions
                           ? `${item.open_exceptions} open ${item.open_exceptions === 1 ? "finding" : "findings"}`
-                          : "0 open findings — ready for RM approval"}{" "}
+                          : "All checks passed — awaiting RM approval"}{" "}
                         · Revision {item.revision}
                       </small>
                     </div>
@@ -223,7 +222,7 @@ export function DocumentOverview() {
                       {item.risk_level && (
                         <Badge
                           value={item.risk_level}
-                          text={`${item.risk_level} · ${item.risk_score ?? 0}`}
+                          text={`${label(item.risk_level)} · ${item.risk_score ?? 0}`}
                         />
                       )}
                       <Badge value={item.status} />
@@ -242,29 +241,29 @@ export function DocumentOverview() {
         </Panel>
         <Panel
           title="Automation &amp; pipeline outcomes"
-          subtitle="Real-time telemetry from backend policy checks and autonomous actions."
+          subtitle="Live metrics from policy validation and autonomous resolution."
           action={
             <Link className="text-link" to="/reports">
-              View reports <ArrowRight size={14} />
+              Analytics &amp; reports <ArrowRight size={14} />
             </Link>
           }
         >
           <div className="panel-body">
             <div className="automation-kpi-grid">
               <div className="automation-kpi-card tone-success">
-                <span>Autonomous resolutions</span>
+                <span>Auto-resolved</span>
                 <strong>{value(m?.automaticallyResolved)}</strong>
-                <small>Verified repository attachments</small>
+                <small>Verified attachments</small>
               </div>
               <div className="automation-kpi-card tone-warning">
-                <span>Human review required</span>
+                <span>Human review</span>
                 <strong>{value(m?.humanInterventionRequired)}</strong>
-                <small>Customer corrections &amp; RM decisions</small>
+                <small>Corrections &amp; RM review</small>
               </div>
               <div className="automation-kpi-card tone-danger">
-                <span>Blocked by policy</span>
+                <span>Policy blocked</span>
                 <strong>{value(m?.failedOrBlockedAutomation)}</strong>
-                <small>Prevented unsafe automation</small>
+                <small>Unsafe actions prevented</small>
               </div>
             </div>
             {!metrics.error && m && m.totalSubmissions > 0 && (
@@ -275,9 +274,10 @@ export function DocumentOverview() {
       </div>
       <Panel
         title="Recent submissions"
+        subtitle="Latest customer requests and document packages across channels."
         action={
           <Link className="text-link" to="/submissions">
-            View all <ArrowRight size={14} />
+            All submissions <ArrowRight size={14} />
           </Link>
         }
       >
@@ -286,14 +286,14 @@ export function DocumentOverview() {
           loading={submissions.loading}
           retry={() => void submissions.refresh()}
         >
-          <SubmissionTable items={items.slice(0, 5)} />
+          <SubmissionTable items={items.slice(0, 6)} />
         </ResourceState>
       </Panel>
       <Panel
-        title="Recent activity"
+        title="Recent audit activity"
         action={
           <Link className="text-link" to="/audit">
-            Audit history
+            Full audit log <ArrowRight size={14} />
           </Link>
         }
       >
@@ -608,11 +608,44 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
 export function DocumentReports() {
   const result = useResource<Metrics>(`${BASE}/analytics`);
   const m = result.data;
+  const issueItems = m
+    ? Object.entries(m.recurringErrors)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, count], index) => ({
+          label: name,
+          value: count,
+          tone: index < 2 ? "danger" : index < 5 ? "warning" : "info",
+        }))
+    : [];
+  const riskItems = m?.riskCounts
+    ? [
+        {
+          label: "High risk",
+          value: m.riskCounts.HIGH ?? 0,
+          tone: "danger",
+        },
+        {
+          label: "Medium risk",
+          value: m.riskCounts.MEDIUM ?? 0,
+          tone: "warning",
+        },
+        {
+          label: "Low risk",
+          value: m.riskCounts.LOW ?? 0,
+          tone: "success",
+        },
+        {
+          label: "Unassessed",
+          value: m.riskCounts.UNASSESSED ?? 0,
+          tone: "neutral",
+        },
+      ].filter((item) => item.value > 0)
+    : [];
   return (
     <div className="page-stack">
       <PageHeader
-        title="Reports"
-        description="Measured outcomes from your accessible submission history."
+        title="Reports &amp; analytics"
+        description="Measured outcomes and exception frequency across your accessible submission history."
       />
       <SectionNav label="Reports views" items={reportNav} />
       {result.error ? (
@@ -626,33 +659,43 @@ export function DocumentReports() {
               {
                 label: "Automatically resolved",
                 value: m.automaticallyResolved,
+                note: "Verified autonomous attachments",
+                tone: "success",
               },
-              { label: "Replacement cycles", value: m.resubmissionCycles },
+              {
+                label: "Replacement cycles",
+                value: m.resubmissionCycles,
+                note: "Document re-uploads recorded",
+                tone: "default",
+              },
               {
                 label: "Average correction time",
                 value:
                   m.averageCorrectionSeconds === null
                     ? "Not measured"
                     : `${Math.round(m.averageCorrectionSeconds)}s`,
+                note: `${m.measuredCorrectionTasks} resolved tasks measured`,
+                tone: "accent",
               },
               {
                 label: "Human intervention",
                 value: m.humanInterventionRequired,
+                note: `${m.onHold ?? 0} currently on hold`,
+                tone: m.humanInterventionRequired > 0 ? "warning" : "default",
               },
             ]}
           />
           <div className="content-columns">
-            <Panel title="Common submission issues">
+            <Panel
+              title="Common submission issues"
+              subtitle="Frequency of policy findings across submitted packages."
+            >
               <div className="panel-body">
-                {Object.entries(m.recurringErrors).length ? (
-                  Object.entries(m.recurringErrors)
-                    .sort((a, b) => b[1] - a[1])
-                    .map(([name, count]) => (
-                      <div className="report-issue" key={name}>
-                        <span>{name}</span>
-                        <strong>{count}</strong>
-                      </div>
-                    ))
+                {issueItems.length ? (
+                  <HorizontalBarChart
+                    items={issueItems}
+                    ariaLabel="Common submission issues distribution"
+                  />
                 ) : (
                   <Empty title="No exception history yet" />
                 )}
@@ -662,18 +705,33 @@ export function DocumentReports() {
                 </p>
               </div>
             </Panel>
-            <Panel title="Submission status">
+            <Panel
+              title="Submission status &amp; risk posture"
+              subtitle="Distribution of current case states and exception risk tiers."
+            >
               <div className="panel-body">
                 <StatusChart metrics={m} />
+                {riskItems.length > 0 && (
+                  <div className="report-subchart">
+                    <div className="chart-header">
+                      <h3>Exception risk distribution</h3>
+                      <span>{m.onHold ?? 0} on hold</span>
+                    </div>
+                    <HorizontalBarChart
+                      items={riskItems}
+                      ariaLabel="Exception risk distribution"
+                    />
+                  </div>
+                )}
               </div>
             </Panel>
           </div>
-          {Object.keys(m.recurringErrors).length > 0 && (
+          {issueItems.length > 0 && (
             <Panel title="Prevention opportunities">
               <div className="panel-body">
                 <p>
-                  Consider an RM reminder for frequently missed requirements
-                  before forms are submitted.
+                  Consider an RM pre-submission checklist reminder for the top
+                  recurring requirements above before forms are submitted.
                 </p>
                 <p className="muted">
                   Recommendations require human review and do not change
@@ -697,7 +755,7 @@ export function DocumentReports() {
                 </dd>
               </div>
             </dl>
-            <p>
+            <p className="muted">
               Validation turnaround includes time waiting for customer
               corrections. It is not extraction latency or a performance
               benchmark.

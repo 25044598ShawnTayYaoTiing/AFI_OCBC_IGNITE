@@ -32,6 +32,19 @@ export function CaseComparison({
         filename: field.filename || doc.filename,
       })),
     );
+  const category = detail.submission.category;
+  const addressKind =
+    category === "ADDRESS_CHANGE" ? "mailing"
+      : category === "RESIDENTIAL_ADDRESS_CHANGE" ? "residential" : null;
+  function comparisonKey(field: Field) {
+    const key = field.field_name;
+    if (!addressKind) return key;
+    if (key === "new_mailing_address" || key === "new_residential_address") {
+      return key.slice(4);
+    }
+    return key === `${addressKind}_postal_code` || key === `new_${addressKind}_postal_code`
+      ? "postal_code" : key;
+  }
   const priorities: Record<string, string[]> = {
     ADDRESS_CHANGE: ["mailing_address", "postal_code"],
     RESIDENTIAL_ADDRESS_CHANGE: ["residential_address", "postal_code"],
@@ -45,24 +58,25 @@ export function CaseComparison({
   };
   const primary = [
     ...new Set([
-      ...(priorities[detail.submission.category] || []),
+      ...(priorities[category] || []),
       "customer_name",
       "identity_number",
     ]),
   ];
   const rest = [
     ...new Set(
-      [...profile, ...declarations, ...supporting].map(
-        (field) => field.field_name,
-      ),
+      [...profile, ...declarations, ...supporting].map(comparisonKey),
     ),
   ].filter((key) => !primary.includes(key));
   function cell(fields: Field[], key: string) {
     const found = fields
-      .filter((field) => field.field_name === key)
+      .filter((field) => comparisonKey(field) === key)
       .filter(
         (field, index, all) =>
-          all.findIndex((other) => other.field_value === field.field_value) ===
+          all.findIndex((other) => other.field_value === field.field_value &&
+            other.document_id === field.document_id &&
+            other.version_id === field.version_id &&
+            other.page_number === field.page_number) ===
           index,
       );
     return found.length ? (

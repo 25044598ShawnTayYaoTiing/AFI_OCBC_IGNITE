@@ -152,6 +152,36 @@ final class BankingServicePolicy {
         : "";
   }
 
+  List<Map<String, Object>> addressValues(
+      List<Map<String, Object>> docs, String category, String field) {
+    return addressLabels(category, field).stream()
+        .flatMap(label -> workflow.fields(docs, label).stream())
+        .toList();
+  }
+
+  static String requestedAddressField(String category) {
+    return "RESIDENTIAL_ADDRESS_CHANGE".equals(category) ? "residential_address" : "mailing_address";
+  }
+
+  static List<String> addressLabels(String category, String field) {
+    if (!Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(category)) {
+      return List.of(field);
+    }
+    String postal = requestedAddressField(category).replace("_address", "_postal_code");
+    return switch (field) {
+      case "mailing_address", "residential_address" -> List.of("new_" + field, field);
+      case "postal_code" -> List.of("new_" + postal, postal, field);
+      default -> List.of(field);
+    };
+  }
+
+  String addressValue(List<Map<String, Object>> docs, String category, String field) {
+    var values = addressValues(requestDocs(docs), category, field);
+    if (values.isEmpty()) return "";
+    String first = Objects.toString(values.getFirst().get("field_value"), "").trim();
+    return values.stream().allMatch(item -> same(first, item.get("field_value"))) ? first : "";
+  }
+
   boolean same(Object a, Object b) {
     return workflow.normal(a).equals(workflow.normal(b));
   }
@@ -189,6 +219,12 @@ final class BankingServicePolicy {
             "customer_reference",
             "mailing_address",
             "residential_address",
+            "new_mailing_address",
+            "new_residential_address",
+            "new_mailing_postal_code",
+            "new_residential_postal_code",
+            "mailing_postal_code",
+            "residential_postal_code",
             "postal_code",
             "email",
             "mobile",
@@ -208,8 +244,8 @@ final class BankingServicePolicy {
                   || !value(docs, "source_of_funds").isBlank();
       case "SERVICE_POSTAL" ->
           pass =
-              value(docs, "postal_code").isBlank()
-                  || value(docs, "postal_code").matches("[0-9]{6}");
+              addressValues(requestDocs(docs), category, "postal_code").stream()
+                  .allMatch(item -> Objects.toString(item.get("field_value"), "").trim().matches("[0-9]{6}"));
       case "SERVICE_CONFLICTS" ->
           pass =
               List.of(
@@ -224,7 +260,7 @@ final class BankingServicePolicy {
                   .stream()
                   .allMatch(
                       field ->
-                          workflow.fields(requestDocs(docs), field).stream()
+                          addressValues(requestDocs(docs), category, field).stream()
                                   .map(item -> workflow.normal(item.get("field_value")))
                                   .distinct()
                                   .count()
@@ -262,23 +298,11 @@ final class BankingServicePolicy {
         }
         pass =
             switch (category) {
-              case "ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE" ->
-                  !value(
-                              docs,
-                              category.equals("RESIDENTIAL_ADDRESS_CHANGE")
-                                  ? "residential_address"
-                                  : "mailing_address")
-                          .isBlank()
-                      && !same(
-                          value(
-                              docs,
-                              category.equals("RESIDENTIAL_ADDRESS_CHANGE")
-                                  ? "residential_address"
-                                  : "mailing_address"),
-                          profile.get(
-                              category.equals("RESIDENTIAL_ADDRESS_CHANGE")
-                                  ? "residential_address"
-                                  : "mailing_address"));
+              case "ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE" -> {
+                String field = requestedAddressField(category);
+                String requested = addressValue(docs, category, field);
+                yield !requested.isBlank() && !same(requested, profile.get(field));
+              }
               case "CONTACT_UPDATE" -> {
                 String email = value(docs, "email"), mobile = value(docs, "mobile");
                 boolean emailValid =
@@ -310,30 +334,27 @@ final class BankingServicePolicy {
               docs.stream()
                   .filter(d -> "SUPPORTING_DOCUMENT".equals(d.get("document_type")))
                   .toList();
-          var expectedFields =
-              Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(category)
-                  ? List.of(
-                      category.equals("RESIDENTIAL_ADDRESS_CHANGE")
-                          ? "residential_address"
-                          : "mailing_address")
-                  : List.of("foreign_tax_country", "tax_identifier");
+          boolean addressChange = Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(category);
+          var expectedFields = addressChange ? List.of(requestedAddressField(category))
+              : List.of("foreign_tax_country", "tax_identifier");
           pass = !support.isEmpty();
           for (String field : expectedFields) {
-            var actual = workflow.fields(support, field);
+            var actual = addressChange ? addressValues(support, category, field) : workflow.fields(support, field);
+            String requested = addressChange ? addressValue(docs, category, field) : value(docs, field);
             evidence.addAll(actual);
             pass &=
-                !actual.isEmpty()
+                !requested.isBlank() && !actual.isEmpty()
                     && actual.stream()
-                        .allMatch(f -> same(f.get("field_value"), value(docs, field)));
+                        .allMatch(f -> same(f.get("field_value"), requested));
           }
-          if (Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(category)
-              && !value(docs, "postal_code").isBlank()) {
-            var supportPostal = workflow.fields(support, "postal_code");
+          String requestedPostal = addressChange ? addressValue(docs, category, "postal_code") : "";
+          if (!requestedPostal.isBlank()) {
+            var supportPostal = addressValues(support, category, "postal_code");
             if (!supportPostal.isEmpty()) {
               evidence.addAll(supportPostal);
               pass &=
                   supportPostal.stream()
-                      .allMatch(f -> same(f.get("field_value"), value(docs, "postal_code")));
+                      .allMatch(f -> same(f.get("field_value"), requestedPostal));
             }
           }
           String baselineKey =
@@ -391,7 +412,7 @@ final class BankingServicePolicy {
           case "SERVICE_CONTACT_VERIFIED", "SERVICE_PHONE_REVIEW" ->
               category.equals("CONTACT_UPDATE");
           case "SERVICE_SUPPORT" -> supportRequired(c, docs);
-          case "SERVICE_POSTAL" -> !value(docs, "postal_code").isBlank();
+          case "SERVICE_POSTAL" -> !addressValues(requestDocs(docs), category, "postal_code").isEmpty();
           case "SERVICE_FUNDS" ->
               category.equals("ADDITIONAL_ACCOUNT")
                   && value(docs, "account_type").equals("CURRENT");

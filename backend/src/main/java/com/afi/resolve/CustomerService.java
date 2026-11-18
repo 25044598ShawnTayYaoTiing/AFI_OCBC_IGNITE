@@ -153,6 +153,15 @@ public class CustomerService {
         c.get("customer_name"),
         "customerReference",
         c.get("customer_reference"),
+        "repositoryEvidenceAvailable",
+        c.get("repository_submission_id") != null
+            && s.db.queryForObject(
+                "SELECT COUNT(*) FROM submission_documents d JOIN document_submissions s"
+                    + " ON s.id=d.submission_id WHERE s.id=? AND s.owner_name=? AND d.repository_only=TRUE"
+                    + " AND d.authorised=TRUE AND d.document_type='SUPPORTING_DOCUMENT'"
+                    + " AND d.verified_reference=? AND d.valid_until>=?",
+                Integer.class, c.get("repository_submission_id"), c.get("relationship_manager"),
+                c.get("customer_reference"), java.time.LocalDate.now(java.time.ZoneOffset.UTC)) > 0,
         "bankingProfile",
         new CustomerProfiles(s).dto((String) c.get("id")));
   }
@@ -474,7 +483,6 @@ public class CustomerService {
               (String) c.get("relationship_manager"),
               (String) c.get("id"),
               a);
-      copyRepository(c, id, a);
       notifications.publish(
           id, "SUBMISSION_RECEIVED", "received", "Your document application has been received.");
     }
@@ -488,8 +496,11 @@ public class CustomerService {
                             .equals(s.readMap((String) d.get("extraction_json")).get("method"))))
       throw new ApiException(
           409, "EDIT_EFORM", "Edit the digital declaration instead of replacing its receipt");
-    if (combineImages) documents.upload(id, files, replace, a, true);
-    else documents.upload(id, files, replace, a);
+    documents.uploadInternal(id, files, replace, a, !initial, combineImages);
+    if (initial) {
+      copyRepository(c, id, a);
+      documents.validate(id, a);
+    }
     if (!initial)
       notifications.publish(
           id,
@@ -525,10 +536,15 @@ public class CustomerService {
     var sourceCase =
         s.db.queryForList("SELECT * FROM document_submissions WHERE id=?", source).getFirst();
     var target = s.db.queryForList("SELECT * FROM document_submissions WHERE id=?", id).getFirst();
+    var current = documents.documents(id, false);
+    if (documents.evaluate(id, current).stream().noneMatch(
+        check -> "ATTACH_SUPPORTING_DOCUMENT".equals(check.get("rule_key"))
+            && Boolean.FALSE.equals(check.get("passed")))) return;
     for (var d : documents.documents(source, true)) {
       if (!Objects.equals(sourceCase.get("owner_name"), customer.get("relationship_manager"))
           || !documents.repositoryEligible(target, d)
-          || !documents.storageVerified(d)) continue;
+          || !documents.storageVerified(d)
+          || !documents.attachmentEvidencePasses(documents.evaluateAttachment(id, current, d))) continue;
       String doc = s.id("FILE"), version = s.id("VER");
       String oldKey =
           s.db.queryForObject(

@@ -107,6 +107,57 @@ class DocumentUploadTransactionTest {
   }
 
   @Test
+  void independentEvidenceReviewAppliesOnlyToTheVerifiedCurrentVersion() throws Exception {
+    String id = createCase("SYN-VERSION-REVIEW");
+    var objects = new HashMap<String, byte[]>();
+    doAnswer(call -> { objects.put(call.getArgument(0), call.getArgument(1)); return null; })
+        .when(storage).put(anyString(), any(byte[].class));
+    when(storage.read(anyString())).thenAnswer(call -> objects.get(call.getArgument(0)));
+    doAnswer(call -> {
+      var result = store.json.createObjectNode();
+      result.put("document_id", (String) call.getArgument(1));
+      result.put("document_type", "CUSTOMER_INFORMATION");
+      result.put("method", "GEMINI");
+      result.put("requires_review", true);
+      result.putArray("fields").addObject().put("field", "customer_name")
+          .put("value", "Synthetic customer").put("page", 1)
+          .put("supporting_text", "Customer Name: Synthetic customer");
+      return result;
+    }).when(documents).extraction(any(byte[].class), anyString());
+    documents.upload(id, List.of(image("original.png", 4)), null, actor);
+    var doc = documents.documents(id, false).getFirst();
+    String version = (String) doc.get("version_id");
+    int revision = ((Number) documents.access(id, actor, false).get("revision")).intValue();
+    String endpoint = "/api/documents/submissions/" + id + "/versions/" + version + "/review-evidence";
+    String note = "Compared the document type and customer name with the original.";
+    String request = store.json(Map.of("revision", revision, "note", note));
+    mvc.perform(post(endpoint).with(user("operator").roles("OPERATOR"))
+        .contentType("application/json").content(request)).andExpect(status().isForbidden());
+    mvc.perform(post(endpoint).with(user("reviewer").roles("REVIEWER"))
+        .contentType("application/json").content(request)).andExpect(status().isForbidden());
+    mvc.perform(post(endpoint).with(user("second-reviewer").roles("REVIEWER"))
+        .contentType("application/json").content(store.json(Map.of("revision", revision - 1, "note", note))))
+        .andExpect(status().isConflict());
+    var original = objects.entrySet().iterator().next();
+    byte[] originalBytes = original.getValue();
+    original.setValue(new byte[] {1, 2, 3});
+    mvc.perform(post(endpoint).with(user("second-reviewer").roles("REVIEWER"))
+        .contentType("application/json").content(request)).andExpect(status().isConflict());
+    original.setValue(originalBytes);
+    mvc.perform(post(endpoint).with(user("second-reviewer").roles("REVIEWER"))
+        .contentType("application/json").content(request)).andExpect(status().isOk());
+    assertThat(documents.documents(id, false).getFirst().get("evidence_reviewed_by"))
+        .isEqualTo("second-reviewer");
+    assertThat(documents.evaluate(id)).filteredOn(check -> "CLASSIFICATION".equals(check.get("condition_type")))
+        .isNotEmpty().allMatch(check -> Boolean.TRUE.equals(check.get("passed")));
+    assertThat(documents.access(id, actor, false).get("status")).isNotEqualTo("OPERATIONS");
+    documents.upload(id, List.of(image("replacement.png", 5)), (String) doc.get("id"), actor);
+    assertThat(documents.documents(id, false).getFirst().get("evidence_reviewed_by")).isNull();
+    assertThat(documents.evaluate(id)).anyMatch(check -> "CLASSIFICATION".equals(check.get("condition_type"))
+        && Boolean.FALSE.equals(check.get("passed")));
+  }
+
+  @Test
   void forgedImagesAreRejectedBeforeExtractionOrStorage() {
     assertThatThrownBy(() -> DocumentContent.validate("screenshot.png", "<svg/>".getBytes(StandardCharsets.US_ASCII)))
         .isInstanceOf(ApiException.class);

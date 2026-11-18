@@ -49,6 +49,7 @@ export interface Version {
 export interface Doc {
   id: string;
   version_id: string;
+  evidence_reviewed_by?: string | null;
   filename: string;
   document_type: string;
   current_version: number;

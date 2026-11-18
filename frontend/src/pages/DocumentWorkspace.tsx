@@ -45,6 +45,7 @@ export function DocumentWorkspace() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [evidenceReviewNote, setEvidenceReviewNote] = useState("");
   const [progress, setProgress] = useState(0);
   const [selected, setSelected] = useState("");
   const [version, setVersion] = useState("");
@@ -106,6 +107,35 @@ export function DocumentWorkspace() {
   const locked = ["OPERATIONS", "CANCELLED"].includes(
     data?.submission.status || "",
   );
+  const uploadedByReviewer = doc?.versions.some(
+    (item) => item.id === doc.version_id && item.uploaded_by === session?.username,
+  );
+  useEffect(() => {
+    setEvidenceReviewNote("");
+  }, [id, doc?.version_id, version]);
+
+  async function recordEvidenceReview() {
+    if (!doc || !data || mutation.current) return;
+    mutation.current = true;
+    setBusy("review-evidence");
+    setError("");
+    setNotice("");
+    try {
+      await post(`${BASE}/submissions/${id}/versions/${doc.version_id}/review-evidence`, {
+        revision: data.submission.revision,
+        note: evidenceReviewNote.trim(),
+      });
+      await result.refresh();
+      setEvidenceReviewNote("");
+      setNotice("Evidence review recorded. Check the updated case before approving.");
+    } catch (failure) {
+      setError(message(failure));
+    } finally {
+      mutation.current = false;
+      setBusy("");
+    }
+  }
+
   async function run(action: string, note?: string): Promise<boolean> {
     if (mutation.current) return false;
     mutation.current = true;
@@ -314,60 +344,51 @@ export function DocumentWorkspace() {
                   <div>
                     <h2>Request at a glance</h2>
                     <p>
-                      Compare what the customer declared with recorded evidence.
+                      {state.current
+                        ? `${data.checks.filter((check) => check.passed).length} of ${data.checks.length} policy checks passed across ${data.documents.length} submitted ${data.documents.length === 1 ? "document" : "documents"}.`
+                        : "Compare customer declarations with stored bank records and supporting evidence."}
                     </p>
                   </div>
-                  <button
-                    className="button secondary"
-                    onClick={() => setParams({ tab: "review" })}
-                  >
-                    Inspect documents <ArrowRight size={15} />
-                  </button>
+                  <div className="header-actions">
+                    {state.open.length > 0 && (
+                      <button
+                        className="button secondary"
+                        onClick={() => setParams({ tab: "exceptions" })}
+                      >
+                        Review findings ({state.open.length})
+                      </button>
+                    )}
+                    <button
+                      className="button secondary"
+                      onClick={() => setParams({ tab: "review" })}
+                    >
+                      Inspect documents <ArrowRight size={15} />
+                    </button>
+                  </div>
                 </div>
                 <CaseComparison detail={data} onInspect={inspect} />
                 {!!data.addressVerifications?.length && (
-                  <Disclosure title="Address verification and OneMap evidence">
-                    <AddressVerificationPanel
-                      detail={data}
-                      onInspect={inspect}
-                    />
-                  </Disclosure>
+                  <AddressVerificationPanel
+                    detail={data}
+                    onInspect={inspect}
+                  />
                 )}
-                <div className="verification-summary">
-                  <h3>What has been checked?</h3>
-                  <p>
-                    {state.current
-                      ? `${data.checks.filter((check) => check.passed).length} of ${data.checks.length} policy checks passed for this revision.`
-                      : "Validation is not confirmed for this revision."}{" "}
-                    {data.documents.length} submitted{" "}
-                    {data.documents.length === 1 ? "document" : "documents"}.{" "}
-                    {state.open.length
-                      ? "Open findings need attention before approval."
-                      : "Use the decision panel to review eligibility."}
-                  </p>
-                  <button
-                    className="text-link"
-                    onClick={() => setParams({ tab: "exceptions" })}
-                  >
-                    Review findings <ArrowRight size={14} />
-                  </button>
-                </div>
-                <Disclosure title="All policy checks and results">
+                <Disclosure
+                  title={`All policy checks (${data.checks.filter((check) => check.passed).length}/${data.checks.length} passed) & case metadata`}
+                >
                   <Checklist checks={data.checks} />
-                </Disclosure>
-                <Disclosure title="Case reference and ownership">
                   <dl className="metadata">
                     <div>
-                      <dt>Case reference</dt>
-                      <dd>{data.submission.id}</dd>
+                      <dt>Case ID</dt>
+                      <dd className="mono">{data.submission.id}</dd>
                     </div>
                     <div>
-                      <dt>Assigned case owner</dt>
+                      <dt>Assigned owner</dt>
                       <dd>{data.submission.owner_name}</dd>
                     </div>
                     <div>
-                      <dt>Rule set</dt>
-                      <dd>{data.ruleSet}</dd>
+                      <dt>Active rule set</dt>
+                      <dd className="mono small">{data.ruleSet}</dd>
                     </div>
                   </dl>
                 </Disclosure>
@@ -484,7 +505,33 @@ export function DocumentWorkspace() {
                             version; check each citation before acting.
                           </Notice>
                         )}
-                        {doc.extraction.requires_review && <Notice>Extraction requires human review. Compare the visible original with the extracted fields. A successful extraction does not verify document authenticity.</Notice>}
+                        {(!version || version === doc.version_id) && doc.extraction.requires_review && (
+                          <Notice>
+                            {doc.evidence_reviewed_by
+                              ? `Evidence review recorded by ${doc.evidence_reviewed_by}.`
+                              : "Compare the original with the document type and each extracted field before recording review."}
+                          </Notice>
+                        )}
+                        {!locked && isReviewer(session) && (!version || version === doc.version_id)
+                          && doc.extraction.requires_review && !doc.evidence_reviewed_by
+                          && doc.document_type !== "UNKNOWN" && doc.fields.length > 0
+                          && !doc.extraction.observations?.some((item) => item.issue_type === "UNCERTAIN") && (
+                          uploadedByReviewer ? (
+                            <Notice>Another reviewer must inspect this upload.</Notice>
+                          ) : <div className="review-note">
+                            <p>Confirm that the extracted values match what you can read in the original.</p>
+                            <label>
+                              Evidence review note
+                              <textarea value={evidenceReviewNote} rows={3} maxLength={1000}
+                                disabled={!!busy} onChange={(event) => setEvidenceReviewNote(event.target.value)} />
+                            </label>
+                            <button type="button" className="button secondary"
+                              disabled={!!busy || evidenceReviewNote.trim().length < 12}
+                              onClick={() => void recordEvidenceReview()}>
+                              Confirm document type and extracted fields
+                            </button>
+                          </div>
+                        )}
                         <PdfPreview
                           caseId={id}
                           versionId={version || doc.version_id}
@@ -717,45 +764,27 @@ export function DocumentWorkspace() {
                       ))}
                   </div>
                 )}
-                <Disclosure
-                  title="Correction tasks and ownership"
-                  open={tab === "corrections"}
-                >
-                  <CorrectionTasks
-                    detail={data}
-                    onUpload={() => setParams({ tab: "review" })}
-                  />
-                </Disclosure>
-                <Disclosure title="All policy checks and results">
-                  <Checklist checks={data.checks} />
-                </Disclosure>
-                <Disclosure title="Address verification and OneMap evidence">
+                <CorrectionTasks
+                  detail={data}
+                  onUpload={() => setParams({ tab: "review" })}
+                />
+                {!!data.addressVerifications?.length && (
                   <AddressVerificationPanel detail={data} onInspect={inspect} />
-                  {!data.addressVerifications?.length && (
-                    <p>
-                      No address verification evidence was returned for this
-                      case.
-                    </p>
-                  )}
+                )}
+                <Disclosure
+                  title={`All policy checks (${data.checks.filter((check) => check.passed).length}/${data.checks.length} passed)`}
+                >
+                  <Checklist checks={data.checks} />
                 </Disclosure>
               </>
             )}
             {tab === "automation" && (
               <>
-                <p className="context-note">
-                  AI recommendations are advisory. Backend validation determines
-                  eligibility and records authorised actions.
-                </p>
-                <Disclosure title="Risk score, contributions and decision trace">
-                  <RiskInvestigation
-                    detail={data}
-                    onUpdate={() => void result.refresh()}
-                    showActions={false}
-                  />
-                  {!data.riskAssessment && (
-                    <p>No numerical risk assessment has been returned.</p>
-                  )}
-                </Disclosure>
+                <RiskInvestigation
+                  detail={data}
+                  onUpdate={() => void result.refresh()}
+                  showActions={false}
+                />
                 <AutonomyEvidence detail={data} onInspect={inspect} />
               </>
             )}

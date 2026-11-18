@@ -259,40 +259,7 @@ export function CaseIssues({
                 </p>
               </div>
             )}
-            <Disclosure title="Policy details and individual checks">
-              <p>
-                {issue.rule_description ||
-                  "No additional rule description supplied."}
-              </p>
-              {group?.items.map((item) => (
-                <dl className="metadata" key={item.id}>
-                  <div>
-                    <dt>Rule</dt>
-                    <dd>
-                      {item.check_key} · Version{" "}
-                      {item.rule_version ?? "Not supplied"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Severity</dt>
-                    <dd>{label(item.severity)}</dd>
-                  </div>
-                  <div>
-                    <dt>Recorded resolution</dt>
-                    <dd>
-                      {item.resolution_method
-                        ? label(item.resolution_method)
-                        : "Not resolved"}
-                    </dd>
-                  </div>
-                </dl>
-              ))}
-            </Disclosure>
-            <Disclosure title="AI explanation · advisory">
-              <p className="context-note">
-                AI recommendations explain supplied evidence. Backend policy
-                controls the decision.
-              </p>
+            <Disclosure title="AI investigation analysis (advisory)">
               {group?.items.map((item) => (
                 <InvestigationExplanation
                   key={item.id}
@@ -300,7 +267,38 @@ export function CaseIssues({
                   finding={item}
                   detail={detail}
                   onInspect={onInspect}
+                  inline
                 />
+              ))}
+            </Disclosure>
+            <Disclosure title="Technical rule details">
+              <p className="muted small">
+                {issue.rule_description ||
+                  "Deterministic backend intake policy evaluation."}
+              </p>
+              {group?.items.map((item) => (
+                <dl className="metadata" key={item.id}>
+                  <div>
+                    <dt>Check key</dt>
+                    <dd className="mono">{item.check_key}</dd>
+                  </div>
+                  <div>
+                    <dt>Rule version</dt>
+                    <dd>Version {item.rule_version ?? 1}</dd>
+                  </div>
+                  <div>
+                    <dt>Severity</dt>
+                    <dd>{label(item.severity)}</dd>
+                  </div>
+                  <div>
+                    <dt>Resolution method</dt>
+                    <dd>
+                      {item.resolution_method
+                        ? label(item.resolution_method)
+                        : "Pending"}
+                    </dd>
+                  </div>
+                </dl>
               ))}
             </Disclosure>
           </article>
