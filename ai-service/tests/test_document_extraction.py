@@ -65,6 +65,20 @@ def test_existing_customer_service_request_fields_remain_grounded():
     assert all(f.value in f.supporting_text and f.supporting_text in page for f in fields)
 
 
+def test_canonical_service_fields_are_not_reclassified_as_legacy_fields():
+    page = 'Account Type: SAVINGS\nNew Email: new@example.invalid'
+    model = d.ModelExtraction(document_type='SERVICE_REQUEST', requires_review=False, fields=[
+        d.ModelEvidenceField(field='account_type', value='SAVINGS', page=1,
+                             supporting_text='Account Type: SAVINGS'),
+        d.ModelEvidenceField(field='email', value='new@example.invalid', page=1,
+                             supporting_text='New Email: new@example.invalid'),
+    ])
+    fields, _ = d.normalise(model, [page])
+    assert [(field.field, field.value) for field in fields] == [
+        ('account_type', 'SAVINGS'), ('email', 'new@example.invalid'),
+    ]
+
+
 def test_service_tax_identifiers_are_not_customer_references():
     page = 'Foreign Tax Country: Exampleland\nTIN: DEMO-TIN-123\nTax Declaration: Confirmed'
     model = d.ModelExtraction(document_type='SERVICE_REQUEST', requires_review=False, fields=[
@@ -110,6 +124,21 @@ def test_unsupported_document_does_not_call_gemini(monkeypatch):
         d.extract(d.ExtractRequest(document_id='test', pdf_base64=base64.b64encode(b'%PDF-test').decode()),
             Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
     assert error.value.detail['code'] == 'UNSUPPORTED_DOCUMENT'
+
+
+def test_native_electricity_bill_is_supported_with_a_billing_address(monkeypatch):
+    page = 'Electricity Bill\nSYNTHETIC DEMO DATA\nBilling Address: 12 Sample Lane'
+    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(
+        is_encrypted=False, trailer={'/Root': {}}, pages=[TextPage(page)]))
+    monkeypatch.setattr(d, 'generate', lambda *args: d.ModelExtraction(
+        document_type='SUPPORTING_DOCUMENT', requires_review=False, fields=[
+            d.ModelEvidenceField(field='mailing_address', value='12 Sample Lane', page=1,
+                                 supporting_text='Billing Address: 12 Sample Lane'),
+        ]))
+    result = d.extract(d.ExtractRequest(document_id='bill', pdf_base64='JVBERi10ZXN0'),
+                       Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
+    assert result.document_type == 'SUPPORTING_DOCUMENT'
+    assert result.fields[0].value == '12 Sample Lane'
 
 
 def test_signature_annotation_is_normalised_without_inventing_presence():

@@ -678,8 +678,11 @@ public class DocumentService {
             new ApiException(
                 400,
                 code,
-                "The PDF is invalid, encrypted or exceeds 10 MB / 30 pages. No document was"
-                    + " accepted.");
+                "We could not read this PDF. Open it and export a fresh copy, then upload it again.");
+        case "PDF_ENCRYPTED" ->
+            new ApiException(422, code, "Export a password-free copy of this PDF and upload it again.");
+        case "PDF_PAGE_LIMIT" ->
+            new ApiException(422, code, "Upload a PDF containing 1 to 30 pages.");
         case "UNSUPPORTED_FORMAT" ->
             new ApiException(
                 422,
@@ -696,8 +699,8 @@ public class DocumentService {
             new ApiException(
                 422,
                 "EXTRACTION_FAILED",
-                "Extracted fields did not pass schema or source-evidence verification. Retry or"
-                    + " review the PDF text. No document was accepted.");
+                "We could not verify the fields against the document. Upload a clear copy with"
+                    + " visible field labels and values.");
         case "AI_NOT_CONFIGURED" ->
             new ApiException(
                 503,
@@ -722,8 +725,8 @@ public class DocumentService {
       throw new ApiException(
           422,
           "EXTRACTION_FAILED",
-          "Extracted fields did not pass schema or source-evidence verification. No document was"
-              + " accepted.");
+          "We could not verify the fields against the document. Upload a clear copy with visible"
+              + " field labels and values.");
     }
   }
 
@@ -789,7 +792,14 @@ public class DocumentService {
         throw new ApiException(
             409, "DUPLICATE_FILE", "This exact document already exists in the case's document history");
       String docId = replace == null ? s.id("FILE") : replace;
-      var extracted = combineImages ? extractionPayload(bytes, docId, imagePages) : extraction(bytes, docId);
+      JsonNode extracted;
+      try {
+        extracted = combineImages ? extractionPayload(bytes, docId, imagePages) : extraction(bytes, docId);
+      } catch (ApiException error) {
+        if (error.status() >= 500) throw error;
+        String attachment = combineImages ? "Combined image pages" : filename;
+        throw new ApiException(error.status(), error.code(), attachment + " — " + error.getMessage());
+      }
       // The backend also enforces visual review even if an upstream response claims certainty.
       if (combineImages || DocumentContent.type(bytes).startsWith("image/"))
         ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).put("requires_review", true);
@@ -798,8 +808,8 @@ public class DocumentService {
         throw new ApiException(
             409,
             "EDIT_EFORM",
-            "For digital applications edit the declaration in the customer portal; upload"
-                + " supporting PDFs only");
+            filename + " — This is a form. Upload supporting evidence for your service request."
+                + " To change the declaration, edit the request details.");
       int version = 1;
       if (replace != null) {
         var old =

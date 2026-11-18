@@ -34,7 +34,7 @@ def test_actual_image_bytes_use_vision_and_require_review(monkeypatch, fmt, mime
     result = d.extract(d.ExtractRequest(document_id='image', images_base64=[base64.b64encode(raw).decode()]), SETTINGS)
     assert result.fields[0].value == 'Alex Tan'
     assert result.requires_review is True
-    assert 'not independently verified' in result.notes
+    assert 'Human review of the original' in result.notes
 
 
 def test_group_preserves_order_and_page_citations(monkeypatch):
@@ -98,6 +98,17 @@ def test_vision_cannot_invent_fields_or_citations(monkeypatch):
     assert error.value.detail['code'] == 'EXTRACTION_FAILED'
 
 
+def test_one_unverified_visual_citation_does_not_discard_grounded_fields(monkeypatch):
+    proposed = visual()
+    proposed.fields.append(d.ModelEvidenceField(field='postal_code', value='123456', page=1,
+                                               supporting_text='Postal Code: 123456'))
+    monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: proposed)
+    result = d.extract_visual('image', [], 1, SETTINGS)
+    assert result.requires_review
+    assert [(field.field, field.value) for field in result.fields] == [('customer_name', 'Alex Tan')]
+    assert 'Omitted 1 extraction candidate' in result.notes
+
+
 def test_visual_upload_requires_configured_ai():
     with pytest.raises(HTTPException) as error:
         d.extract_visual('image', [], 1, Settings(service_key='test', gemini_api_key='', gemini_model='test'))
@@ -111,3 +122,17 @@ def test_repeated_page_headers_do_not_duplicate_fields(monkeypatch):
     result = d.extract_visual('pages', [], 2, SETTINGS)
     assert len(result.fields) == 1
     assert result.requires_review
+
+
+def test_only_conflicting_readable_evidence_is_held_for_review(monkeypatch):
+    proposed = visual(2)
+    proposed.pages[1] = TEXT.replace('Alex Tan', 'Alex Lee')
+    proposed.fields.append(d.ModelEvidenceField(field='customer_name', value='Alex Lee', page=2,
+                                               supporting_text='Customer Name: Alex Lee'))
+    monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: proposed)
+    result = d.extract_visual('pages', [], 2, SETTINGS)
+    assert result.requires_review
+    assert not result.fields
+    assert [(item.page, item.issue_type) for item in result.observations] == [
+        (1, 'UNCERTAIN'), (2, 'UNCERTAIN'),
+    ]
