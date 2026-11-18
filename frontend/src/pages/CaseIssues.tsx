@@ -1,311 +1,53 @@
-import { useState } from "react";
-import {
-  ArrowRight,
-  FileSearch,
-  CheckCircle2,
-  CircleAlert,
-} from "lucide-react";
+import { ArrowRight, FileSearch } from "lucide-react";
 import type { Detail, Field } from "../document-types";
 import { label } from "../api";
 import { Disclosure } from "../ui";
-import { Empty } from "../components";
 import { groupFindings, issueTitle } from "./DocumentFindings";
-import { InvestigationExplanation } from "./DocumentResolution";
-import { reviewState } from "./review-state";
 
-export function CaseIssues({
-  detail,
-  onInspect,
-  onDocuments,
-  selected,
-  onSelect,
-}: {
+export function CaseIssues({ detail, onInspect, selected, onSelect }: {
   detail: Detail;
   onInspect: (field: Field) => void;
-  onDocuments: () => void;
   selected: string;
   onSelect: (id: string) => void;
 }) {
-  const [showResolved, setShowResolved] = useState(false);
-  const state = reviewState(detail);
-  const groups = groupFindings(
-    detail.exceptions.filter(
-      (issue) => showResolved || issue.status === "OPEN",
-    ),
-  );
-  const group =
-    groups.find((group) =>
-      group.items.some((issue) => issue.id === selected),
-    ) || groups[0];
-  const issue = group?.items[0];
-  const task = detail.tasks.find(
-    (task) =>
-      group?.items.some((issue) => issue.id === task.exception_id) &&
-      task.status !== "RESOLVED",
-  );
-  const evidence = (
-    group?.items.flatMap((issue) => issue.evidence) || []
-  ).filter(
-    (field, index, fields) =>
-      fields.findIndex(
-        (other) =>
-          other.version_id === field.version_id &&
-          other.field_name === field.field_name &&
-          other.field_value === field.field_value,
-      ) === index,
-  );
-  const profile = evidence.filter(
-    (field) => field.method === "SYNTHETIC_CUSTOMER_PROFILE",
-  );
-  const submitted = evidence.filter(
-    (field) => field.method !== "SYNTHETIC_CUSTOMER_PROFILE",
-  );
-  const owner =
-    issue?.status === "CANCELLED"
-      ? "Request cancelled"
-      : issue?.status === "RESOLVED"
-        ? "Completed"
-        : task
-          ? label(task.assigned_role)
-          : "Case owner to coordinate";
+  const groups = groupFindings(detail.exceptions.filter((issue) => issue.status === "OPEN"));
+  const group = groups.find((item) => item.items.some((issue) => issue.id === selected)) || groups[0];
+  if (!group) return null;
+  const issue = group.items[0];
+  const evidence = group.items.flatMap((item) => item.evidence).filter((field, index, all) =>
+    all.findIndex((other) => other.version_id === field.version_id && other.field_name === field.field_name &&
+      other.field_value === field.field_value) === index);
+  const investigation = detail.investigations.find((item) => item.revision === detail.submission.revision);
+  const explanation = investigation?.method === "GEMINI"
+    ? investigation.recommendations.find((item) => item.exception_id === issue.id)?.explanation
+    : undefined;
   return (
-    <section className="case-issues" aria-label="Issues requiring attention">
-      <div className="workspace-section-heading">
-        <div>
-          <h2>Issues requiring attention</h2>
-          <p>
-            {state.current
-              ? "Review the problem, source evidence and required action together."
-              : "Earlier findings are shown for context. Recheck this revision before deciding."}
-          </p>
-        </div>
-        <label className="resolved-toggle">
-          <input
-            type="checkbox"
-            checked={showResolved}
-            onChange={(event) => setShowResolved(event.target.checked)}
-          />
-          Include closed
-        </label>
-      </div>
-      {!issue ? (
-        <div className="review-empty">
-          <CheckCircle2 size={27} />
-          <Empty
-            title={
-              state.current
-                ? "No open issues recorded"
-                : "Current validation needed"
-            }
-            description={
-              state.current
-                ? "Review documents and the decision panel for the next step."
-                : "No findings does not confirm readiness. Run Recheck package."
-            }
-          />
-          <button className="button secondary" onClick={onDocuments}>
-            Review documents
-          </button>
-        </div>
-      ) : (
-        <div className="unified-issues-layout">
-          <nav className="issue-selection" aria-label="Choose an issue">
-            {groups.map((item) => {
-              const first = item.items[0];
-              const assigned = detail.tasks.find(
-                (task) =>
-                  task.exception_id === first.id && task.status !== "RESOLVED",
-              );
-              return (
-                <button
-                  key={item.key}
-                  className={group?.key === item.key ? "selected" : ""}
-                  aria-pressed={group?.key === item.key}
-                  onClick={() => onSelect(first.id)}
-                >
-                  {first.status === "RESOLVED" ? (
-                    <CheckCircle2 size={18} />
-                  ) : (
-                    <CircleAlert size={18} />
-                  )}
-                  <span>
-                    <strong>{issueTitle(first)}</strong>
-                    <small>
-                      {first.status === "CANCELLED"
-                        ? "Cancelled with request"
-                        : first.status === "RESOLVED"
-                          ? "Resolved and verified"
-                          : assigned
-                            ? label(assigned.assigned_role)
-                            : "Case owner"}
-                      {item.items.length > 1
-                        ? ` · ${item.items.length} checks`
-                        : ""}
-                    </small>
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
-          <article className="issue-detail" aria-label="Selected issue">
-            <div className="issue-detail-heading">
-              <span
-                className={`issue-state ${issue.status === "RESOLVED" ? "resolved" : ""}`}
-              >
-                {issue.status === "CANCELLED"
-                  ? "Cancelled with request"
-                  : issue.status === "RESOLVED"
-                    ? "Resolved and verified"
-                    : "Unresolved"}
-              </span>
-              <span className="issue-owner">Next: {owner}</span>
-            </div>
-            <h3>{issueTitle(issue)}</h3>
-            <p>{issue.description || issue.name}</p>
-            <div className="issue-requirement">
-              <h4>Required next action</h4>
-              <p>
-                {issue.status === "CANCELLED"
-                  ? "No further action: the customer cancelled this request. Original findings are retained for history."
-                  : issue.status === "RESOLVED"
-                    ? "The recorded issue has been resolved. Review its history for the completed action."
-                    : issue.corrective_action}
-              </p>
-            </div>
-            <div className="issue-value-comparison">
-              <section>
-                <h4>Expected information</h4>
-                {profile.length ? (
-                  profile.map((field, index) => (
-                    <p key={index}>
-                      <span>{label(field.field_name)}</span>
-                      <strong>{field.field_value || "Not recorded"}</strong>
-                    </p>
-                  ))
-                ) : (
-                  <p>
-                    {issue.condition_type === "ATTACHMENT"
-                      ? `Required document: ${label(issue.document_type || "Document type not specified")}.`
-                      : "Use the requirement above. No separate expected field value was returned."}
-                  </p>
-                )}
-              </section>
-              <section>
-                <h4>Submitted / extracted</h4>
-                {submitted.length ? (
-                  submitted.map((field, index) => (
-                    <p key={index}>
-                      <span>{label(field.field_name)}</span>
-                      <strong>{field.field_value || "Not confirmed"}</strong>
-                    </p>
-                  ))
-                ) : (
-                  <p>
-                    No source value was recorded for this finding. The absence
-                    of a citation alone does not prove a document is missing.
-                  </p>
-                )}
-              </section>
-            </div>
-            {!!submitted.length && (
-              <section className="issue-sources">
-                <h4>Source evidence</h4>
-                {submitted.map((field, index) => (
-                  <div key={index}>
-                    <FileSearch size={17} />
-                    <div>
-                      <strong>
-                        {field.filename || "Recorded evidence"}
-                        {field.page_number
-                          ? ` · Page ${field.page_number}`
-                          : " · Page unconfirmed"}
-                      </strong>
-                      <p>
-                        {field.supporting_text || "No source quote returned."}
-                      </p>
-                      {detail.documents.some(
-                        (document) =>
-                          document.id === field.document_id &&
-                          document.versions.some(
-                            (version) => version.id === field.version_id,
-                          ),
-                      ) && (
-                        <button
-                          className="text-link"
-                          onClick={() => onInspect(field)}
-                        >
-                          Inspect original evidence
-                          <ArrowRight size={14} />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </section>
-            )}
-            {issue.status === "OPEN" && !state.routed && (
-              <div className="issue-action-row">
-                <button className="button secondary" onClick={onDocuments}>
-                  Review or add documents
-                  <ArrowRight size={15} />
-                </button>
-                <p>
-                  {task
-                    ? `Task: ${label(task.status)}. ${owner} owns the next step.`
-                    : "No correction task assignment was returned. The case owner should coordinate."}
-                  {issue.action_type === "ATTACH_VERIFIED_DOCUMENT"
-                    ? " Automated attachment remains subject to backend authorisation and verification."
-                    : ""}
-                </p>
+    <section className="case-issues" aria-label="Open issues">
+      <h2>Open issues</h2>
+      {groups.length > 1 && <div className="demo-issue-options" aria-label="Choose an issue">
+        {groups.map((item) => <button key={item.key} className="button secondary" aria-pressed={item === group}
+          onClick={() => onSelect(item.items[0].id)}>{issueTitle(item.items[0])}</button>)}
+      </div>}
+      <article className="issue-detail">
+        <h3>{issueTitle(issue)}</h3>
+        <p>{issue.corrective_action || issue.description}</p>
+        {!!evidence.length && <section className="issue-sources" aria-label="Supporting evidence">
+          {evidence.map((field, index) => {
+            const document = detail.documents.find((doc) => doc.versions.some((version) => version.id === field.version_id));
+            return <div key={index}>
+              <FileSearch size={17} aria-hidden="true" />
+              <div>
+                <strong>{field.method === "SYNTHETIC_CUSTOMER_PROFILE" ? "On file" : field.filename || "Recorded evidence"}</strong>
+                <p>{label(field.field_name)}: {field.field_value || "Unconfirmed"}</p>
+                {document && <button className="text-link" onClick={() => onInspect(field)}>
+                  View source{field.page_number ? " on page " + field.page_number : ""} <ArrowRight size={14} />
+                </button>}
               </div>
-            )}
-            <Disclosure title="Policy details and individual checks">
-              <p>
-                {issue.rule_description ||
-                  "No additional rule description supplied."}
-              </p>
-              {group?.items.map((item) => (
-                <dl className="metadata" key={item.id}>
-                  <div>
-                    <dt>Rule</dt>
-                    <dd>
-                      {item.check_key} · Version{" "}
-                      {item.rule_version ?? "Not supplied"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Severity</dt>
-                    <dd>{label(item.severity)}</dd>
-                  </div>
-                  <div>
-                    <dt>Recorded resolution</dt>
-                    <dd>
-                      {item.resolution_method
-                        ? label(item.resolution_method)
-                        : "Not resolved"}
-                    </dd>
-                  </div>
-                </dl>
-              ))}
-            </Disclosure>
-            <Disclosure title="AI explanation · advisory">
-              <p className="context-note">
-                AI recommendations explain supplied evidence. Backend policy
-                controls the decision.
-              </p>
-              {group?.items.map((item) => (
-                <InvestigationExplanation
-                  key={item.id}
-                  investigation={detail.investigations?.[0]}
-                  finding={item}
-                  detail={detail}
-                  onInspect={onInspect}
-                />
-              ))}
-            </Disclosure>
-          </article>
-        </div>
-      )}
+            </div>;
+          })}
+        </section>}
+        {explanation && <Disclosure title="AI recommendation"><p>{explanation}</p></Disclosure>}
+      </article>
     </section>
   );
 }

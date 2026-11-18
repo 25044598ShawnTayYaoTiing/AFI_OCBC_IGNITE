@@ -1,5 +1,10 @@
 # Screenshot and image uploads
 
+**PDF conversion update:** New image uploads are now converted server-side into PDF
+before Gemini extraction and RM review. See [automatic conversion](image-to-pdf.md)
+for the current flow; direct image preview below remains a compatibility description
+for historical image versions.
+
 Implemented locally on 17 November 2026. The customer frontend changed in the sibling
 `OCBC_CustomerPortal_push` Git checkout (the newer portal with early evidence uploads
 and draft retention). The older `customer-portal` directory and backup application

@@ -368,8 +368,7 @@ export function SettingsWorkspace() {
               <div className="panel-body">
                 <h3>Validate. Reconcile. Resolve. Prevent.</h3>
                 <p>
-                  Document operations for evidence reconciliation, governed
-                  automatic corrections and verified handover to Operations.
+                  Review service requests, check evidence and send verified cases to Operations.
                 </p>
                 <dl className="summary-list">
                   <div>
@@ -393,6 +392,7 @@ export function SettingsWorkspace() {
                   <Link className="button secondary" to="/demo">
                     Demo environment
                   </Link>
+                  <Link className="text-link" to="/address-requests">Previous address approvals</Link>
                   <Link className="text-link" to="/legacy">
                     Legacy recovery demo
                   </Link>

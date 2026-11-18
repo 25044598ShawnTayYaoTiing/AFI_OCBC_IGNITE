@@ -13,11 +13,11 @@ export function issueRuleKey(issue: Finding) {
 export function issueCategory(issue: Finding) {
   if (issue.status === "RESOLVED")
     return issue.resolution_method === "AUTOMATIC_VERIFIED_ATTACHMENT"
-      ? "Autonomous resolution - verified"
-      : "Resolved by verified revalidation";
+      ? "Resolved automatically and verified"
+      : "Resolved after checking again";
   return issue.action_type === "ATTACH_VERIFIED_DOCUMENT"
-    ? "Policy-controlled automatic action"
-    : "Human-required action";
+    ? "Eligible for automatic resolution"
+    : "Needs a person to review";
 }
 
 export function issueTitle(issue: Finding) {
@@ -26,6 +26,8 @@ export function issueTitle(issue: Finding) {
     return issue.status === "RESOLVED"
       ? "Supporting document verified"
       : "Supporting document missing";
+  if (key === "MATCH_MAILING") return "Mailing addresses differ";
+  if (key === "TAX_DATE") return "Tax declaration needs a date";
   if (key === "SERVICE_SUPPORT")
     return issue.status === "RESOLVED"
       ? "Supporting evidence verified"
@@ -34,9 +36,9 @@ export function issueTitle(issue: Finding) {
     return "Identity must match the stored profile";
   if (key === "PROFILE_NAME")
     return "Customer name must match the stored profile";
-  if (key === "CLASSIFICATION") return "Document extraction needs confirmation";
+  if (key === "CLASSIFICATION") return "Some document details need checking";
   return referenceRules.has(issueRuleKey(issue))
-    ? "Customer reference must match submission"
+    ? "Customer reference differs"
     : issue.name;
 }
 
@@ -60,21 +62,4 @@ export function groupFindings(findings: Finding[]) {
     group.items.push(issue);
   }
   return groups;
-}
-
-export function issueGuidance(
-  issue: Finding,
-  caseReference: string,
-): string | null {
-  if (issue.status !== "OPEN") return null;
-  const rule = issueRuleKey(issue);
-  if (referenceRules.has(rule))
-    return `The case customer reference is ${caseReference}. Compare it with each cited form. If the case is wrong, create a new submission with the verified synthetic customer reference; if a form is wrong, obtain a corrected PDF. Do not infer the correct reference from majority agreement.`;
-  if (rule === "MATCH_MAILING")
-    return "Ask the customer to confirm the mailing address and provide corrected forms where needed. A residential address can legitimately differ; do not choose an address by majority vote.";
-  if (rule === "ATTACH_SUPPORTING_DOCUMENT")
-    return "The required supporting document is missing. Supply the required PDF or arrange an authorised, verified case repository source. Automatic attachment remains subject to preflight and policy checks.";
-  if (rule === "ACCOUNT_SELECTION")
-    return "The active prototype rule requires an explicit selection indicator of Present. Changing this requirement needs Resolution Management approval. If the form already names an account category, ask a Resolution Management approver whether that evidence should satisfy the rule; otherwise request a corrected form with the required indicator. Do not invent an indicator.";
-  return null;
 }

@@ -1,4 +1,3 @@
-import { CheckCircle2 } from "lucide-react";
 import { dateTime, detailText, label } from "../api";
 import type {
   AutomationAttempt,
@@ -635,33 +634,5 @@ function RecommendationView({
 }
 
 export function HandoverHistory({ detail }: { detail: Detail }) {
-  return (
-    <>
-      <Panel title="Operations handover">
-        <div className="panel-body">
-          {detail.routing.length ? (
-            detail.routing.map((route, index) => (
-              <div className="handover-record" key={index}>
-                <CheckCircle2 size={20} />
-                <div>
-                  <strong>Sent to Operations</strong>
-                  <p>{dateTime(route.created_at)} SGT</p>
-                  <Disclosure title="Handover details">
-                    <p>{route.reason}</p>
-                  </Disclosure>
-                </div>
-              </div>
-            ))
-          ) : (
-            <p className="muted">
-              This package has not been sent to Operations yet.
-            </p>
-          )}
-        </div>
-      </Panel>
-      <Panel title="Activity history">
-        <AuditList items={detail.audit} />
-      </Panel>
-    </>
-  );
+  return <Panel title="Case activity"><AuditList items={detail.audit} /></Panel>;
 }

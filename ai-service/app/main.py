@@ -5,13 +5,14 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.config import Settings
 from app.investigation.service import investigate
 from app.schemas import InvestigationRequest, InvestigationResponse, SimulationRequest, SimulationResponse
 from app.simulation.engine import simulate
 from app.documents import ExtractRequest, Extraction, extract
+from app.image_conversion import ImageConversionRequest, convert_images
 from app.document_intelligence import InvestigationRequest as DocumentInvestigationRequest, InvestigationResult as DocumentInvestigationResult, investigate_documents, status as document_ai_status
 
 app = FastAPI(
@@ -57,6 +58,13 @@ def health() -> dict[str, str]:
 @app.post('/documents/extract', response_model=Extraction, dependencies=[Depends(require_service_key)], tags=['documents'])
 def extract_document(request: ExtractRequest, settings: Annotated[Settings, Depends(get_settings)]) -> Extraction:
     return extract(request, settings)
+
+
+@app.post('/documents/convert-images', dependencies=[Depends(require_service_key)], tags=['documents'])
+def convert_image_document(request: ImageConversionRequest):
+    return Response(convert_images(request), media_type='application/pdf',
+        headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
+                 'X-PDF-Page-Count': str(len(request.images_base64))})
 
 
 @app.get('/documents/status', dependencies=[Depends(require_service_key)], tags=['documents'])

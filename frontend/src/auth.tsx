@@ -40,7 +40,7 @@ export function Brand({ compact = false }: { compact?: boolean }) {
         <strong>
           AFI<span className="brand-light"> Resolve</span>
         </strong>
-        <small>VALIDATE. RECONCILE. RESOLVE. PREVENT.</small>
+        <small>Staff workspace</small>
       </span>
     </div>
   );
@@ -78,10 +78,9 @@ export function Login({
       <div className="login-icon">
         <LockKeyhole size={24} />
       </div>
-      <div className="eyebrow">RESOLUTION MANAGEMENT WORKSPACE</div>
       <h1>{modal ? "Switch account" : "Welcome to AFI Resolve"}</h1>
       <p className="muted">
-        Sign in to validate synthetic forms and coordinate document corrections.
+        Review customer requests and resolve issues before sending them to Operations.
       </p>
       <form
         onSubmit={(e: FormEvent) => {

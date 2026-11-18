@@ -1,6 +1,7 @@
 import type { Detail, Field } from "../document-types";
 import { label } from "../api";
 import { Disclosure } from "../ui";
+import { requestedFields } from "./case-facts";
 
 export function CaseComparison({
   detail,
@@ -32,23 +33,8 @@ export function CaseComparison({
         filename: field.filename || doc.filename,
       })),
     );
-  const priorities: Record<string, string[]> = {
-    ADDRESS_CHANGE: ["mailing_address", "postal_code"],
-    RESIDENTIAL_ADDRESS_CHANGE: ["residential_address", "postal_code"],
-    CONTACT_UPDATE: ["email", "mobile"],
-    TAX_RESIDENCY_UPDATE: [
-      "tax_residency",
-      "foreign_tax_country",
-      "tax_identifier",
-    ],
-    ADDITIONAL_ACCOUNT: ["account_type", "currency", "source_of_funds"],
-  };
   const primary = [
-    ...new Set([
-      ...(priorities[detail.submission.category] || []),
-      "customer_name",
-      "identity_number",
-    ]),
+    ...new Set(requestedFields[detail.submission.category] || ["customer_name", "customer_reference"]),
   ];
   const rest = [
     ...new Set(
@@ -88,9 +74,11 @@ export function CaseComparison({
         </div>
       ))
     ) : (
-      <span className="comparison-missing">Not returned</span>
+      <span className="comparison-missing">Not available</span>
     );
   }
+  const primaryWithValues = primary.filter((key) => [...declarations, ...profile, ...supporting].some((field) => field.field_name === key));
+  const supportNotRequired = detail.checks.some((check) => check.check_key === "SERVICE_SUPPORT" && check.outcome === "NOT_APPLICABLE");
   function rows(keys: string[]) {
     return (
       <div className="comparison-table-scroll">
@@ -98,20 +86,30 @@ export function CaseComparison({
           <thead>
             <tr>
               <th>Information</th>
-              <th>Stored bank record</th>
-              <th>Customer declaration</th>
-              <th>Supporting evidence</th>
+              <th>On file</th>
+              <th>Requested</th>
+              <th>In supporting document</th>
+              <th>Comparison</th>
             </tr>
           </thead>
           <tbody>
-            {keys.map((key) => (
+            {keys.map((key) => {
+              const requested = declarations.filter((field) => field.field_name === key);
+              const provided = supporting.filter((field) => field.field_name === key);
+              const uncertain = detail.documents.some((doc) => doc.document_type === "SUPPORTING_DOCUMENT" && doc.extraction.observations?.some((item) => item.field === key));
+              const compare = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
+              const outcome = uncertain ? "Uncertain" : !provided.length ? (supportNotRequired ? "Not required" : "Missing") : !requested.length ? "No request value" :
+                provided.every((field) => requested.some((other) => compare(field.field_value) === compare(other.field_value))) ? "Exact match" : "Values differ";
+              return (
               <tr key={key}>
                 <th scope="row">{label(key)}</th>
                 <td>{cell(profile, key)}</td>
                 <td>{cell(declarations, key)}</td>
                 <td>{cell(supporting, key)}</td>
+                <td><strong>{outcome}</strong></td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -119,11 +117,9 @@ export function CaseComparison({
   }
   return (
     <section className="source-review" aria-label="Evidence comparison">
-      {rows(primary)}
+      {primaryWithValues.length ? rows(primaryWithValues) : <p>No request details are available to compare yet.</p>}
       <p className="comparison-note">
-        Only evidence returned for this case is shown. A requested change may
-        differ from the stored profile; policy checks determine whether the
-        evidence is sufficient.
+        This compares the text as shown. The case outcome accounts for address formats and the rules for this service.
       </p>
       {!!rest.length && (
         <Disclosure

@@ -55,7 +55,7 @@ def test_quality_requests_clearer_upload(monkeypatch, quality):
     monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: visual(quality=quality))
     with pytest.raises(HTTPException) as error:
         d.extract_visual('image', [], 1, SETTINGS)
-    assert error.value.detail['code'] == 'IMAGE_QUALITY'
+    assert error.value.detail['code'] == 'IMAGE_' + quality
 
 
 @pytest.mark.parametrize('raw', [b'<svg onload="alert(1)"/>', b'\x89PNG\r\n\x1a\ntruncated', image_bytes('GIF')])
@@ -113,6 +113,31 @@ def test_visual_upload_requires_configured_ai():
     with pytest.raises(HTTPException) as error:
         d.extract_visual('image', [], 1, Settings(service_key='test', gemini_api_key='', gemini_model='test'))
     assert error.value.detail['code'] == 'AI_NOT_CONFIGURED'
+
+
+def test_thumbnail_gets_specific_resolution_error():
+    raw = image_bytes(size=(120, 150))
+    with pytest.raises(HTTPException) as error:
+        d.extract(d.ExtractRequest(document_id='small', images_base64=[base64.b64encode(raw).decode()]), SETTINGS)
+    assert error.value.detail['code'] == 'IMAGE_TOO_SMALL'
+
+
+def test_readable_non_document_is_not_reported_as_a_synthetic_label_problem(monkeypatch):
+    proposed = visual(synthetic_label_visible=False)
+    proposed.document_type = 'UNKNOWN'
+    monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: proposed)
+    with pytest.raises(HTTPException) as error:
+        d.extract_visual('graphic', [], 1, SETTINGS)
+    assert error.value.detail['code'] == 'UNSUPPORTED_DOCUMENT'
+
+
+def test_no_fields_has_its_own_error(monkeypatch):
+    proposed = visual()
+    proposed.fields = []
+    monkeypatch.setattr(d, 'generate', lambda *args, **kwargs: proposed)
+    with pytest.raises(HTTPException) as error:
+        d.extract_visual('graphic', [], 1, SETTINGS)
+    assert error.value.detail['code'] == 'NO_DOCUMENT_FIELDS'
 
 
 def test_repeated_page_headers_do_not_duplicate_fields(monkeypatch):

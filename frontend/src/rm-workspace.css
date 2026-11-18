@@ -130,7 +130,6 @@ body {
   padding: 20px;
   background: var(--warning-bg);
   border: 1px solid var(--warning-border);
-  border-left: 4px solid var(--warning-text);
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -177,7 +176,7 @@ body {
   padding: 10px 14px;
   border: 0;
   border-radius: 0;
-  border-bottom: 3px solid transparent;
+  border-bottom: 2px solid transparent;
   margin-bottom: -1px;
 }
 .rm-workspace .workspace-tabs > button.active {
@@ -529,7 +528,6 @@ body {
   color: var(--text-secondary);
 }
 .issue-requirement {
-  border-left: 3px solid var(--accent);
   padding: 12px 16px;
   background: var(--accent-soft);
   margin: 20px 0;
@@ -907,3 +905,34 @@ body {
   align-items: center;
   gap: 8px;
 }
+
+
+.demo-case-layout { max-width: 72rem; }
+.demo-summary { display: grid; gap: 1.25rem; }
+.demo-outcome h2 { margin: 0 0 .35rem; font-size: 1.45rem; }
+.demo-outcome p, .demo-case-facts p { margin: 0; }
+.demo-stages { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); list-style: none; padding: 0; margin: 0; border-block: 1px solid var(--border); }
+.demo-stages li { display: grid; align-content: start; gap: .25rem; padding: .8rem; overflow-wrap: anywhere; }
+.demo-stages li[data-complete="true"] { box-shadow: inset 0 -2px var(--primary, #b32535); }
+.demo-stages li span { font-size: .82rem; }
+.demo-case-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+.demo-case-facts h3 { margin: 0 0 .4rem; font-size: 1rem; }
+.demo-case-facts ul { margin: .45rem 0 0; padding-inline-start: 1.15rem; }
+.demo-case-facts p + p { margin-top: .5rem; }
+.demo-decision { display: grid; justify-items: start; gap: .75rem; }
+.demo-decision .review-note { width: min(100%, 36rem); }
+.demo-submission-table .record-link { display: inline-flex; align-items: center; gap: .3rem; }
+@media (max-width: 620px) {
+  .demo-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .demo-case-facts { grid-template-columns: 1fr; gap: 1rem; }
+}
+
+.demo-request-values { display: flex; gap: .75rem 1.25rem; flex-wrap: wrap; margin: 0; }
+.demo-request-values div { min-width: 0; }
+.demo-request-values dt { font-size: .82rem; }
+.demo-request-values dd { margin: .2rem 0 0; font-weight: 600; overflow-wrap: anywhere; }
+
+.demo-issue-options { display: flex; flex-wrap: wrap; gap: .5rem; margin-block: .75rem; }
+.demo-issue-options button[aria-pressed="true"] { border-color: currentColor; font-weight: 700; }
+
+.activity-timeline > .audit-day { padding-block: .5rem; border: 0; font-size: .85rem; }

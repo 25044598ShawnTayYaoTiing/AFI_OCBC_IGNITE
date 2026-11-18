@@ -110,6 +110,16 @@ public class DocumentController {
         .body(bytes);
   }
 
+  @GetMapping("/submissions/{id}/versions/{version}/originals/{page}")
+  public ResponseEntity<byte[]> originalImage(@PathVariable String id, @PathVariable String version,
+      @PathVariable int page, Authentication actor) throws Exception {
+    byte[] bytes = service.originalImage(id, version, page, actor);
+    return ResponseEntity.ok().contentType(MediaType.parseMediaType(DocumentContent.type(bytes)))
+        .cacheControl(CacheControl.noStore()).header("X-Content-Type-Options", "nosniff")
+        .header("Content-Disposition", "inline; filename=\"original-image" + DocumentContent.extension(bytes) + "\"")
+        .body(bytes);
+  }
+
   @PostMapping("/submissions/{id}/validate")
   @PreAuthorize("hasRole('REVIEWER')")
   public Object validate(@PathVariable String id, Authentication a) {

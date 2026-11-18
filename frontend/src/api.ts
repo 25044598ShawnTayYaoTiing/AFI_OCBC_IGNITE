@@ -132,7 +132,7 @@ export async function api<T>(
     });
   } catch {
     throw new ApiError(
-      "Cannot reach the API. Check that the backend is running, then try again.",
+      "Could not connect. Check your connection and try again.",
       0,
     );
   }
@@ -184,7 +184,7 @@ export function post<T>(path: string, body?: unknown): Promise<T> {
 }
 export async function privatePdf(path: string): Promise<Blob> {
   const response = await fetch(path, { headers: credentials ? { Authorization: `Basic ${credentials}` } : {} });
-  if (!response.ok) throw new Error(`Document access failed (${response.status})`);
+  if (!response.ok) throw new Error(`This document could not be opened. Try again.`);
   return response.blob();
 }
 export function uploadPdfs<T>(path: string, files: File[], progress: (value: number) => void): Promise<T> {
@@ -193,7 +193,7 @@ export function uploadPdfs<T>(path: string, files: File[], progress: (value: num
     request.open('POST', path);
     if (credentials) request.setRequestHeader('Authorization', `Basic ${credentials}`);
     request.upload.onprogress = e => { if (e.lengthComputable) progress(Math.round(e.loaded / e.total * 100)); };
-    request.onerror = () => reject(new Error('Upload failed. Check the backend connection.'));
+    request.onerror = () => reject(new Error('The upload was interrupted. Try again.'));
     request.onload = () => {
       try {
         const result = JSON.parse(request.responseText);
@@ -210,7 +210,7 @@ export function uploadPdfs<T>(path: string, files: File[], progress: (value: num
           const category = categories[result.code];
           reject(new ApiError(`${category ? category + ': ' : ''}${result.message || 'Upload failed. Please retry.'}`, request.status));
         }
-      } catch { reject(new Error('Upload failed. Check the PDF size and service availability.')); }
+      } catch { reject(new Error('Could not upload the document. Check the file size and try again.')); }
     };
     const form = new FormData(); files.forEach(file => form.append('files', file)); request.send(form);
   });
