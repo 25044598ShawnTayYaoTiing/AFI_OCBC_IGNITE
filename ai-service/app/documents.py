@@ -12,6 +12,7 @@ from pypdf.generic import IndirectObject
 from google.genai import types
 from app.image_conversion import decode_images
 from app.config import Settings
+from app import document_decisions
 from app.document_intelligence import StrictModel, generate, succeeded, failed, failure_code
 
 DocumentType = Literal['CUSTOMER_INFORMATION', 'ACCOUNT_APPLICATION', 'TAX_RESIDENCY', 'SUPPORTING_DOCUMENT', 'UNKNOWN', 'SERVICE_REQUEST']
@@ -97,6 +98,7 @@ class Extraction(ModelExtraction):
     model: str | None = None
     fallback_reason: str | None = None
     notes: str
+    decision: dict | None = None
 
 
 class VisualExtraction(ModelExtraction):
@@ -152,16 +154,21 @@ def extract_visual(document_id, media, page_count, settings):
         proposed.observations = proposed.observations[:20]
         fields, observations = normalise(proposed, proposed.pages)
         succeeded()
-        notes = ('Visual citations were checked against AI transcription. Human review of the original '
-                 'is required; extraction never establishes authenticity.')
+        notes = ('Visual citations were checked against the transcription. Evidence can be reviewed against '
+                 'the original. Extraction does not establish authenticity.')
         if proposed.quality != 'READABLE':
             notes += ' Some of the document could not be read clearly.'
         if unverified:
             notes += f' Omitted {unverified} extraction candidate(s) with unverifiable citations.'
-        return Extraction(document_id=document_id, document_type=proposed.document_type,
-            fields=fields, observations=observations, requires_review=True, method='GEMINI',
+        result = Extraction(document_id=document_id, document_type=proposed.document_type,
+            fields=fields, observations=observations, requires_review=(proposed.requires_review or not fields
+                or bool(unverified) or proposed.quality != 'READABLE'
+                or any(item.issue_type == 'UNCERTAIN' for item in observations)), method='GEMINI',
             model=settings.gemini_model,
             notes=notes)
+        assessment = document_decisions.assess(
+            [(part.inline_data.data, part.inline_data.mime_type) for part in media], settings)
+        return document_decisions.reconcile(result, assessment, settings.decision_threshold)
     except HTTPException:
         raise
     except Exception as exc:
@@ -395,10 +402,12 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
         succeeded()
         logger.info('PDF extraction verified document_id=%s method=GEMINI type=%s fields=%d observations=%d',
                     request.document_id, proposed.document_type, len(fields), len(observations))
-        return Extraction(document_id=request.document_id, document_type=proposed.document_type,
+        result = Extraction(document_id=request.document_id, document_type=proposed.document_type,
             fields=fields, observations=observations, requires_review=proposed.requires_review or not fields,
             method='GEMINI', model=settings.gemini_model,
             notes='Live Gemini extraction with normalised fields and independently grounded page citations. Approved Spring rules determine validity.')
+        assessment = document_decisions.assess([(raw, 'application/pdf')], settings)
+        return document_decisions.reconcile(result, assessment, settings.decision_threshold)
     except HTTPException:
         raise
     except Exception as exc:

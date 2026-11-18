@@ -7,6 +7,12 @@ from fastapi import HTTPException
 from app import documents as d
 from app.config import Settings
 
+@pytest.fixture(autouse=True)
+def unavailable_decision(monkeypatch):
+    monkeypatch.setattr(d.document_decisions, 'assess',
+                        lambda *args: {'model': 'gemini-decision-1', 'outcome': 'UNAVAILABLE'})
+
+
 SETTINGS = Settings(service_key='test-service-key', gemini_api_key='test-only', gemini_model='test')
 TEXT = 'SYNTHETIC DEMO DATA\nCustomer Information Form\nCustomer Name: Alex Tan'
 
@@ -34,7 +40,7 @@ def test_actual_image_bytes_use_vision_and_require_review(monkeypatch, fmt, mime
     result = d.extract(d.ExtractRequest(document_id='image', images_base64=[base64.b64encode(raw).decode()]), SETTINGS)
     assert result.fields[0].value == 'Alex Tan'
     assert result.requires_review is True
-    assert 'Human review of the original' in result.notes
+    assert 'Evidence can be reviewed against the original' in result.notes
 
 
 def test_group_preserves_order_and_page_citations(monkeypatch):

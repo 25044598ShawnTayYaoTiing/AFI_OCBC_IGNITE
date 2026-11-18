@@ -16,6 +16,12 @@ class TextPage(dict):
 
 
 
+@pytest.fixture(autouse=True)
+def unavailable_decision(monkeypatch):
+    monkeypatch.setattr(d.document_decisions, 'assess',
+                        lambda *args: {'model': 'gemini-decision-1', 'outcome': 'UNAVAILABLE'})
+
+
 @pytest.mark.parametrize("separator", ["\t", "    "])
 def test_labelled_table_cells_are_grounded_without_colons(separator):
     line = separator.join(["Customer Full Name", "Alex Tan", "Postal Code", "018989"])

@@ -428,6 +428,18 @@ export function DocumentWorkspace() {
                     </div>
                     <Panel title="Details read from this document" className="review-sidebar">
                       <div className="panel-body">
+                        {(!version || version === doc.version_id) && doc.extraction.decision && (
+                          <p className="muted">
+                            {doc.extraction.decision.outcome === "UNAVAILABLE"
+                              ? "AI evidence assessment unavailable."
+                              : doc.extraction.decision.outcome === "PASSED"
+                                ? "AI evidence assessment agreed with extraction."
+                                : "AI evidence assessment needs review."}
+                            {doc.extraction.decision.answers?.readable && (
+                              <> Estimated readability {Math.round(doc.extraction.decision.answers.readable.noul * 100)}%.</>
+                            )}
+                          </p>
+                        )}
                         {version && version !== doc.version_id ? (
                           <Notice>
                             Select the current version to see its extracted details.

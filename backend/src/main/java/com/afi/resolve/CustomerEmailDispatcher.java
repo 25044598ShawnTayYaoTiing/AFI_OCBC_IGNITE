@@ -72,8 +72,9 @@ public class CustomerEmailDispatcher {
                     + " status='PENDING' AND notification_id IN (SELECT n.id FROM"
                     + " customer_notifications n JOIN document_submissions c ON"
                     + " c.id=n.submission_id WHERE c.revision<>customer_email_outbox.revision OR"
-                    + " NOT EXISTS (SELECT 1 FROM correction_tasks task WHERE"
-                    + " task.submission_id=c.id AND task.status NOT IN ('RESOLVED','ESCALATED')))",
+                    + " (n.notification_type='OPERATIONS_READY' AND c.status<>'OPERATIONS') OR"
+                    + " (n.notification_type='CORRECTION_REQUIRED' AND NOT EXISTS (SELECT 1 FROM correction_tasks task WHERE"
+                    + " task.submission_id=c.id AND task.status NOT IN ('RESOLVED','ESCALATED'))))",
                 Store.now()));
     tx.executeWithoutResult(
         t ->
@@ -86,7 +87,7 @@ public class CustomerEmailDispatcher {
                 Store.now()));
     for (var row :
         s.db.queryForList(
-            "SELECT o.*,n.submission_id,n.message FROM customer_email_outbox o JOIN"
+            "SELECT o.*,n.submission_id,n.message,n.notification_type FROM customer_email_outbox o JOIN"
                 + " customer_notifications n ON n.id=o.notification_id WHERE o.status='PENDING' AND"
                 + " NOT EXISTS (SELECT 1 FROM document_submissions c WHERE c.id=n.submission_id AND"
                 + " c.risk_hold=TRUE) ORDER BY o.created_at LIMIT 10")) {
@@ -106,7 +107,8 @@ public class CustomerEmailDispatcher {
         var message = new SimpleMailMessage();
         message.setFrom(from);
         message.setTo((String) row.get("recipient"));
-        message.setSubject("AFI Resolve demo: correction requested");
+        message.setSubject("OPERATIONS_READY".equals(row.get("notification_type"))
+            ? "AFI Resolve: request approved for processing" : "AFI Resolve: correction requested");
         message.setText(
             row.get("message")
                 + "\nApplication: "

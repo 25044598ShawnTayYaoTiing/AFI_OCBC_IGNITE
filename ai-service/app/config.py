@@ -18,6 +18,7 @@ class Settings:
     gemini_api_key: str
     gemini_model: str
     gemini_timeout_ms: int = 30_000
+    decision_threshold: float = 0.80
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -26,4 +27,5 @@ class Settings:
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite").strip(),
             gemini_timeout_ms=max(1000, min(60_000, int(os.getenv("GEMINI_TIMEOUT_MS", "30000")))),
+            decision_threshold=max(0.51, min(0.99, float(os.getenv("GEMINI_DECISION_THRESHOLD", "0.80")))),
         )

@@ -182,6 +182,8 @@ public class DigitalFormService {
     var declaredAt = Store.now();
     form = form.declaredAt(declaredAt);
     validateInput(form, legacy);
+    if (id == null && "RESIDENTIAL_ADDRESS_CHANGE".equals(form.requestType()))
+      throw new ApiException(400, "INVALID_FORM", "Choose an available service request.");
     if (existing != null && !form.requestType().equals(existing.get("category")))
       throw new ApiException(
           409, "REQUEST_TYPE_LOCKED", "Create a separate case for a different service request");

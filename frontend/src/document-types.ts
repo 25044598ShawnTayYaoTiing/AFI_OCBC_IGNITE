@@ -59,6 +59,13 @@ export interface Doc {
   extraction: {
     method: string;
     requires_review: boolean;
+    decision?: {
+      outcome: "PASSED" | "UNCERTAIN" | "UNAVAILABLE";
+      answers?: {
+        readable?: { noul: number };
+        classification?: { choice: string; probabilities: Record<string, number> };
+      };
+    } | null;
     converted_from_images?: boolean;
     source_images?: { filename: string; size_bytes: number }[];
     notes: string;

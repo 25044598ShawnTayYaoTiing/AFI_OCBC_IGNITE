@@ -88,6 +88,8 @@ public class DocumentAddressVerifier {
       var check = workflow.check(rule, rule.get("rule_key") + ":" + source.get("document_id"),
           "VERIFIED".equals(verification.get("status")), List.of(evidence));
       check.put("verification_status", verification.get("status"));
+      if (!Boolean.TRUE.equals(check.get("passed")) && !"MISMATCH".equals(verification.get("status")))
+        check.put("outcome", "UNAVAILABLE".equals(verification.get("status")) ? "UNAVAILABLE" : "UNCERTAIN");
       check.put("name", rule.get("name") + ": " + verification.get("message"));
       checks.add(check);
     }

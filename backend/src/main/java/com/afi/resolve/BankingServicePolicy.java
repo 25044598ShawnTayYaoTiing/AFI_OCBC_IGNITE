@@ -129,6 +129,7 @@ final class BankingServicePolicy {
   boolean applicable(Map<String, Object> rule, Map<String, Object> c) {
     boolean service = REQUESTS.contains(c.get("category"));
     String key = (String) rule.get("rule_key");
+    if ("SERVICE_ONEMAP_MAILING".equals(key)) return "ADDRESS_CHANGE".equals(c.get("category"));
     if (!service) return !key.startsWith("SERVICE_");
     return key.startsWith("SERVICE_")
         || Set.of(
@@ -184,6 +185,19 @@ final class BankingServicePolicy {
 
   boolean same(Object a, Object b) {
     return workflow.normal(a).equals(workflow.normal(b));
+  }
+
+  String addressText(Object value) {
+    return workflow.normal(value)
+        .replaceFirst("^block\\s+|^blk\\.?\\s+", "")
+        .replaceAll("\\bunit\\s+(?=\\d+\\s*-)", "#")
+        .replaceAll("#\\s*", "#")
+        .replaceAll("(#\\d+)\\s*-\\s*", "$1-")
+        .replaceAll("\\brd\\b", "road")
+        .replaceAll("\\bave\\b", "avenue")
+        .replaceAll("[,.]", " ")
+        .replaceAll("\\s+", " ")
+        .trim();
   }
 
   boolean foreign(String residency) {
@@ -345,7 +359,9 @@ final class BankingServicePolicy {
             pass &=
                 !requested.isBlank() && !actual.isEmpty()
                     && actual.stream()
-                        .allMatch(f -> same(f.get("field_value"), requested));
+                        .allMatch(f -> addressChange
+                            ? addressText(f.get("field_value")).equals(addressText(requested))
+                            : same(f.get("field_value"), requested));
           }
           String requestedPostal = addressChange ? addressValue(docs, category, "postal_code") : "";
           if (!requestedPostal.isBlank()) {

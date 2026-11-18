@@ -42,7 +42,12 @@ public class CustomerNotifications {
         type,
         message,
         Store.now());
-    if ("CORRECTION_REQUIRED".equals(type)) {
+    boolean firstCorrection = "CORRECTION_REQUIRED".equals(type)
+        && s.db.queryForObject(
+            "SELECT COUNT(*) FROM customer_email_outbox o JOIN customer_notifications n"
+                + " ON n.id=o.notification_id WHERE n.submission_id=? AND n.notification_type='CORRECTION_REQUIRED'",
+            Integer.class, id) == 0;
+    if ("OPERATIONS_READY".equals(type) || firstCorrection) {
       String email =
           s.db.queryForObject(
               "SELECT email FROM customer_profiles WHERE customer_id=?",
@@ -58,7 +63,7 @@ public class CustomerNotifications {
                           Boolean.class,
                           c.get("customer_id")))
                   ? "UNVERIFIED_TEST_ADDRESS"
-                  : email.toLowerCase(Locale.ROOT).endsWith(".invalid")
+                  : (email == null || email.isBlank() || email.toLowerCase(Locale.ROOT).endsWith(".invalid"))
                       ? "NO_DELIVERABLE_ADDRESS"
                       : "PENDING";
       s.db.update(
@@ -109,6 +114,6 @@ public class CustomerNotifications {
           id,
           "OPERATIONS_READY",
           "operations:" + c.get("revision"),
-          "Required checks passed and your application was handed to Operations.");
+          "Your request has been verified and approved for processing.");
   }
 }

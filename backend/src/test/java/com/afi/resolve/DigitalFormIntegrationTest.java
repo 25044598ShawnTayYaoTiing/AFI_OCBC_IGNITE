@@ -39,6 +39,7 @@ class DigitalFormIntegrationTest {
   @Autowired PlatformTransactionManager manager;
   @MockitoBean AiClient ai;
   @MockitoBean DocumentStorage storage;
+  @MockitoBean OneMapClient oneMap;
   @MockitoSpyBean DocumentService documents;
   @MockitoSpyBean CustomerEmailDispatcher mail;
   String token, customer, reference;
@@ -54,6 +55,10 @@ class DigitalFormIntegrationTest {
 
   @BeforeEach
   void customer() throws Exception {
+    when(oneMap.verifyText(anyString())).thenAnswer(call -> new OneMapClient.Verification(
+        "VERIFIED", "ONEMAP_LIVE", "Test address confirmed", call.getArgument(0), "018989",
+        null, List.of(), java.time.Instant.now()));
+
     var storedBytes = new java.util.concurrent.ConcurrentHashMap<String, byte[]>();
     doAnswer(
             call -> {
@@ -256,13 +261,7 @@ class DigitalFormIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     assertThat(fixed.path("corrections").size()).isZero();
-    assertThat(fixed.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
-    assertThat(
-            approve(id, fixed.path("submission").path("revision").asInt())
-                .path("submission")
-                .path("status")
-                .asText())
-        .isEqualTo("OPERATIONS");
+    assertThat(fixed.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
     assertThat(
             s.db.queryForObject(
                 "SELECT mailing_address FROM customer_profiles WHERE customer_id=?",
@@ -337,20 +336,10 @@ class DigitalFormIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     assertThat(confirmed.path("contactVerification").path("emailVerified").asBoolean()).isTrue();
+    assertThat(confirmed.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
     f.put("email", "another@example.test");
     f.put("expectedRevision", confirmed.path("submission").path("revision").asInt());
-    var edited =
-        json(
-            submit("/api/customer/submissions/" + id + "/eform", UUID.randomUUID().toString(), f)
-                .andExpect(status().isOk())
-                .andReturn());
-    assertThat(edited.path("contactVerification").path("emailVerified").asBoolean()).isFalse();
-    mvc.perform(
-            post("/api/documents/submissions/" + id + "/approve")
-                .with(httpBasic("reviewer", "reviewer-demo"))
-                .contentType("application/json")
-                .content(
-                    s.json(map("revision", edited.path("submission").path("revision").asInt()))))
+    submit("/api/customer/submissions/" + id + "/eform", UUID.randomUUID().toString(), f)
         .andExpect(status().isConflict());
   }
 
@@ -420,7 +409,8 @@ class DigitalFormIntegrationTest {
                             "Synthetic authorised phone verification completed in the test"
                                 + " procedure"))))
         .andExpect(status().isOk());
-    assertThat(approve(id, revision).path("submission").path("status").asText())
+    assertThat(s.db.queryForObject(
+        "SELECT status FROM document_submissions WHERE id=?", String.class, id))
         .isEqualTo("OPERATIONS");
   }
 
@@ -442,12 +432,10 @@ class DigitalFormIntegrationTest {
   @org.junit.jupiter.params.provider.CsvSource({
     "ADDRESS_CHANGE,mailing_address,mailing_address,018989,MATCH,PASS",
     "ADDRESS_CHANGE,new_mailing_address,mailing_address,018989,MATCH,PASS",
-    "RESIDENTIAL_ADDRESS_CHANGE,new_residential_address,residential_address,018989,MATCH,PASS",
     "ADDRESS_CHANGE,new_mailing_address,mailing_address,01898,MATCH,SERVICE_POSTAL",
     "ADDRESS_CHANGE,new_mailing_address,mailing_address,018989,CONFLICT_REQUEST,SERVICE_CONFLICTS",
     "ADDRESS_CHANGE,existing_mailing_address,mailing_address,018989,MATCH,SERVICE_DETAILS",
     "ADDRESS_CHANGE,new_mailing_address,new_mailing_address,018989,CONFLICT_SUPPORT,SERVICE_SUPPORT",
-    "RESIDENTIAL_ADDRESS_CHANGE,new_residential_address,existing_residential_address,018989,MATCH,SERVICE_SUPPORT",
   })
   void pdfServiceIntakeUsesTheSelectedRequestTypeAndNotAccountOpeningRules(
       String category, String requestedLabel, String supportingLabel, String postalCode,
@@ -607,7 +595,7 @@ class DigitalFormIntegrationTest {
     assertThat(s.db.queryForList(
         "SELECT status FROM document_automation_attempts WHERE submission_id=?", String.class, acceptedId))
         .contains("VERIFIED");
-    assertThat(accepted.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
+    assertThat(accepted.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
   }
 
   String addRepositoryEvidence(String source, String document, Map<String, String> values) throws Exception {
@@ -761,7 +749,7 @@ class DigitalFormIntegrationTest {
     String id = id(result);
     int revision = result.path("submission").path("revision").asInt();
     assertThat(result.path("submission").path("status").asText())
-        .isEqualTo("RESOLUTION_MANAGEMENT");
+        .isEqualTo("OPERATIONS");
     assertThat(result.path("documents").size()).isEqualTo(1);
     assertThat(result.path("corrections").size()).isZero();
     assertThat(
@@ -776,16 +764,6 @@ class DigitalFormIntegrationTest {
                 .contentType("application/json")
                 .content(s.json(map("revision", revision - 1))))
         .andExpect(status().isConflict());
-    var approved =
-        json(
-            mvc.perform(
-                    post("/api/documents/submissions/" + id + "/approve")
-                        .with(httpBasic("reviewer", "reviewer-demo"))
-                        .contentType("application/json")
-                        .content(s.json(map("revision", revision))))
-                .andExpect(status().isOk())
-                .andReturn());
-    assertThat(approved.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
     assertThat(
             json(submit("/api/customer/eforms", key, f).andExpect(status().isOk()).andReturn())
                 .path("submission")
@@ -887,7 +865,8 @@ class DigitalFormIntegrationTest {
     verify(dispatcher.mail, times(1)).send(any(SimpleMailMessage.class));
     assertThat(
             s.db.queryForObject(
-                "SELECT COUNT(*) FROM customer_email_outbox WHERE status='SENT'", Integer.class))
+                "SELECT COUNT(*) FROM customer_email_outbox o JOIN customer_notifications n ON o.notification_id=n.id"
+                    + " WHERE o.status='SENT' AND n.submission_id=?", Integer.class, id))
         .isEqualTo(1);
     mvc.perform(
             post("/api/customer/submissions/" + id + "/escalate")
@@ -914,7 +893,7 @@ class DigitalFormIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     assertThat(updated.path("submission").path("status").asText())
-        .isEqualTo("RESOLUTION_MANAGEMENT");
+        .isEqualTo("OPERATIONS");
     assertThat(updated.path("corrections").size()).isZero();
     assertThat(
             s.db.queryForObject(
@@ -1005,9 +984,12 @@ class DigitalFormIntegrationTest {
 
   @Test
   void highIdentityRiskPersistsHoldUntilExplicitReviewedClearance() throws Exception {
+    var pendingRequest = form();
+    pendingRequest.put("requestType", "ADDRESS_CHANGE");
+    pendingRequest.put("mailingAddress", "2 Fictional Road");
     var initial =
         json(
-            submit("/api/customer/eforms", UUID.randomUUID().toString(), form())
+            submit("/api/customer/eforms", UUID.randomUUID().toString(), pendingRequest)
                 .andExpect(status().isOk())
                 .andReturn());
     String id = id(initial);
@@ -1080,7 +1062,26 @@ class DigitalFormIntegrationTest {
   }
 
   @Test
-  void additionalSavingsUsesTheSameValidatedApprovalPipeline() throws Exception {
+  void unavailableOneMapDoesNotApproveMailingChange() throws Exception {
+    when(oneMap.verifyText(anyString())).thenAnswer(call -> new OneMapClient.Verification(
+        "UNAVAILABLE", "ONEMAP_UNAVAILABLE", "Unavailable", call.getArgument(0), "",
+        null, List.of(), java.time.Instant.now()));
+    var request = form();
+    request.put("requestType", "ADDRESS_CHANGE");
+    request.put("mailingAddress", "2 Fictional Road");
+    var result = json(submit("/api/customer/eforms", UUID.randomUUID().toString(), request)
+        .andExpect(status().isOk()).andReturn());
+    assertThat(documents.evaluate(id(result))).anySatisfy(check -> {
+      assertThat(check.get("check_key")).isEqualTo("SERVICE_ONEMAP_MAILING");
+      assertThat(check.get("outcome")).isEqualTo("UNAVAILABLE");
+    });
+    assertThat(result.path("submission").path("status").asText()).isNotEqualTo("OPERATIONS");
+  }
+
+  @Test
+  void lowRiskAdditionalSavingsApprovesAutomatically() throws Exception {
+    s.db.update("UPDATE customer_profiles SET email=?,email_verified_test=TRUE WHERE customer_id=?",
+        "approval@example.test", customer);
     var request = form();
     request.put("requestType", "ADDITIONAL_ACCOUNT");
     request.put("accountType", "SAVINGS");
@@ -1090,20 +1091,38 @@ class DigitalFormIntegrationTest {
             submit("/api/customer/eforms", UUID.randomUUID().toString(), request)
                 .andExpect(status().isOk())
                 .andReturn());
-    assertThat(result.path("submission").path("status").asText())
-        .isEqualTo("RESOLUTION_MANAGEMENT");
-    assertThat(
-            approve(id(result), result.path("submission").path("revision").asInt())
-                .path("submission")
-                .path("status")
-                .asText())
-        .isEqualTo("OPERATIONS");
+    assertThat(result.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    assertThat(s.db.queryForObject(
+        "SELECT risk_level FROM document_submissions WHERE id=?", String.class, id(result))).isEqualTo("LOW");
+    assertThat(s.db.queryForObject(
+        "SELECT COUNT(*) FROM case_routing_history WHERE submission_id=?", Integer.class, id(result)))
+        .isEqualTo(1);
+    assertThat(s.db.queryForObject(
+        "SELECT COUNT(*) FROM customer_notifications WHERE submission_id=? AND notification_type='OPERATIONS_READY'",
+        Integer.class, id(result))).isEqualTo(1);
+    s.db.update(
+        "UPDATE customer_email_outbox SET status='PENDING' WHERE notification_id IN"
+            + " (SELECT id FROM customer_notifications WHERE submission_id=? AND notification_type='OPERATIONS_READY')",
+        id(result));
+    var dispatcher = new CustomerEmailDispatcher(
+        s, manager, true, "localhost", 1025, "", "", "demo@example.invalid", false);
+    dispatcher.mail = mock(JavaMailSenderImpl.class);
+    dispatcher.dispatch();
+    dispatcher.dispatch();
+    var sent = org.mockito.ArgumentCaptor.forClass(SimpleMailMessage.class);
+    verify(dispatcher.mail, times(1)).send(sent.capture());
+    assertThat(sent.getValue().getSubject()).contains("approved for processing");
+    assertThat(s.db.queryForObject(
+        "SELECT o.status FROM customer_email_outbox o JOIN customer_notifications n ON o.notification_id=n.id"
+            + " WHERE n.submission_id=? AND n.notification_type='OPERATIONS_READY'", String.class, id(result)))
+        .isEqualTo("SENT");
   }
 
   @Test
   void independentlyDetectedStoredByteMismatchForcesHold() throws Exception {
     var request = form();
-    request.put("requestType", "ADDITIONAL_ACCOUNT");
+    request.put("requestType", "ADDRESS_CHANGE");
+    request.put("mailingAddress", "2 Fictional Road");
     request.put("accountType", "SAVINGS");
     request.put("currency", "SGD");
     var initial =
@@ -1123,7 +1142,7 @@ class DigitalFormIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     assertThat(held.path("submission").path("status").asText()).isEqualTo("ON_HOLD");
-    assertThat(held.path("riskAssessment").path("score").asInt()).isEqualTo(80);
+    assertThat(held.path("riskAssessment").path("score").asInt()).isGreaterThanOrEqualTo(80);
     assertThat(held.path("riskAssessment").toString()).contains("MISMATCH", "MANIPULATION");
     mvc.perform(
             post("/api/documents/submissions/" + id + "/clear-hold")
@@ -1141,7 +1160,8 @@ class DigitalFormIntegrationTest {
 
   @Test
   void cancellationIsOwnedAuditedIdempotentAndTerminal() throws Exception {
-    var request = form(); request.put("requestType", "ADDITIONAL_ACCOUNT");
+    var request = form(); request.put("requestType", "ADDRESS_CHANGE");
+    request.put("mailingAddress", "2 Fictional Road");
     var initial = json(submit("/api/customer/eforms", UUID.randomUUID().toString(), request).andExpect(status().isOk()).andReturn());
     String caseId = id(initial); int revision = initial.path("submission").path("revision").asInt();
     assertThat(initial.path("submission").path("canCancel").asBoolean()).isTrue();
@@ -1170,7 +1190,7 @@ class DigitalFormIntegrationTest {
     var request = form(); request.put("requestType", "ADDITIONAL_ACCOUNT");
     var initial = json(submit("/api/customer/eforms", UUID.randomUUID().toString(), request).andExpect(status().isOk()).andReturn());
     int revision = initial.path("submission").path("revision").asInt();
-    approve(id(initial), revision);
+    assertThat(initial.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
     submit("/api/customer/submissions/" + id(initial) + "/cancel", "operations-cancel-key", map("expectedRevision", revision)).andExpect(status().isConflict());
     mvc.perform(post("/api/customer/submissions/" + id(initial) + "/cancel").with(httpBasic("reviewer", "reviewer-demo")).contentType("application/json").content(s.json(map("expectedRevision", revision)))).andExpect(status().isUnauthorized());
   }
@@ -1190,7 +1210,7 @@ class DigitalFormIntegrationTest {
     var initial=json(mvc.perform(multipartRequest.get().header("Authorization","Bearer "+token).header("Idempotency-Key",key)).andExpect(status().isOk()).andReturn());
     assertThat(initial.path("documents").size()).isEqualTo(2);
     assertThat(initial.path("corrections").size()).isZero();
-    assertThat(initial.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
+    assertThat(initial.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
     var replay=json(mvc.perform(multipartRequest.get().header("Authorization","Bearer "+token).header("Idempotency-Key",key)).andExpect(status().isOk()).andReturn());
     assertThat(id(replay)).isEqualTo(id(initial));
     assertThat(replay.path("documents").size()).isEqualTo(2);

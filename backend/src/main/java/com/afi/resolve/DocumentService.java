@@ -213,6 +213,13 @@ public class DocumentService {
         "customer_name",
         "Request confirmation and corrected forms; majority agreement is not authoritative.");
     seed(
+        "SERVICE_ONEMAP_MAILING",
+        "Requested mailing address verification",
+        "PACKAGE",
+        "ONEMAP_ADDRESS",
+        "mailing_address",
+        "Check the building and postal code, or wait for address verification to become available.");
+    seed(
         "CLASSIFICATION",
         "Extraction needs confirmed evidence",
         "PACKAGE",
@@ -486,6 +493,7 @@ public class DocumentService {
         || name.length() > 160
         || reference == null
         || !reference.matches("(?:SYN|DEMO)-[A-Za-z0-9-]{1,60}")
+        || "RESIDENTIAL_ADDRESS_CHANGE".equals(category)
         || !("ACCOUNT_OPENING".equals(category)
             || BankingServicePolicy.REQUESTS.contains(Objects.toString(category, ""))
                 && customerId != null))
@@ -507,8 +515,6 @@ public class DocumentService {
         customerId,
         customerId == null ? "RM" : "CUSTOMER_PORTAL",
         Store.now());
-    if (customerId != null)
-      s.db.update("UPDATE document_submissions SET requires_rm_approval=TRUE WHERE id=?", id);
     event(id, a, "CREATED", map("category", category, "syntheticOnly", true));
     return id;
   }
@@ -820,7 +826,6 @@ public class DocumentService {
           filename = filename.replaceFirst("(?i)\\.(png|jpe?g)$", "") + ".pdf";
           extracted = extractionRequest(bytes, docId, null, true);
           var metadata = (com.fasterxml.jackson.databind.node.ObjectNode) extracted;
-          metadata.put("requires_review", true);
           metadata.put("converted_from_images", true);
           metadata.put("image_source_sha256", sourceHash);
           metadata.set("source_images", converted.originals());
@@ -838,8 +843,9 @@ public class DocumentService {
         String attachment = combineImages ? "Combined image pages" : filename;
         throw new ApiException(error.status(), error.code(), attachment + " — " + error.getMessage());
       }
-      // The backend also enforces visual review even if an upstream response claims certainty.
-      if (combineImages || fromImages)
+      // Visual approval requires a completed corroborating assessment.
+      if ((combineImages || fromImages)
+          && !"PASSED".equals(extracted.path("decision").path("outcome").asText()))
         ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).put("requires_review", true);
       if ("DIGITAL_EFORM".equals(c.get("capture_method"))
           && !"SUPPORTING_DOCUMENT".equals(extracted.path("document_type").asText())) {
@@ -935,6 +941,9 @@ public class DocumentService {
               hash,
               "method",
               extracted.path("method").asText(),
+              "extractionModel", extracted.path("model").asText(""),
+              "decisionModel", extracted.path("decision").path("model").asText(""),
+              "decisionOutcome", extracted.path("decision").path("outcome").asText(""),
               "convertedFromImages", fromImages,
               "sourcePageCount", fromImages ? converted.originals().size() : 0));
     }
@@ -1180,7 +1189,7 @@ public class DocumentService {
             409,
             "HOLD_NOT_CLEARABLE",
             "Resolve critical evidence findings and reduce current risk before explicit clearance");
-      s.db.update("UPDATE document_submissions SET risk_hold=FALSE WHERE id=?", id);
+      s.db.update("UPDATE document_submissions SET risk_hold=FALSE,requires_rm_approval=TRUE WHERE id=?", id);
       event(id, actor, "HOLD_CLEARED", map("revision", revision, "note", note.trim()));
       validateInternal(id, actor);
     } else {
@@ -1493,7 +1502,22 @@ public class DocumentService {
               .filter(d -> "PACKAGE".equals(type) || type.equals(d.get("document_type")))
               .toList();
       if (condition.equals("ONEMAP_ADDRESS")) {
-        if (addressVerifier != null) checks.addAll(addressVerifier.checks(this, rule, relevant));
+        var addressChecks = addressVerifier == null ? List.<Map<String, Object>>of()
+            : addressVerifier.checks(this, rule, relevant);
+        if ("SERVICE_ONEMAP_MAILING".equals(rule.get("rule_key"))) {
+          boolean verified = !addressChecks.isEmpty()
+              && addressChecks.stream().allMatch(check -> Boolean.TRUE.equals(check.get("passed")));
+          boolean mismatch = addressChecks.stream().anyMatch(check -> "MISMATCH".equals(check.get("verification_status")));
+          boolean unavailable = addressChecks.isEmpty()
+              || addressChecks.stream().anyMatch(check -> "UNAVAILABLE".equals(check.get("verification_status")));
+          var evidence = addressChecks.stream().flatMap(check -> ((List<?>) check.get("evidence")).stream()).toList();
+          var result = check(rule, "SERVICE_ONEMAP_MAILING", verified, evidence);
+          result.put("verification_status", verified ? "VERIFIED" : mismatch ? "MISMATCH" : unavailable ? "UNAVAILABLE" : "INCONCLUSIVE");
+          result.put("outcome", verified ? "PASS" : mismatch ? "FAIL" : unavailable ? "UNAVAILABLE" : "UNCERTAIN");
+          checks.add(result);
+        } else {
+          checks.addAll(addressChecks);
+        }
         continue;
       }
       // Cross-document conflicts already have their own correction request. Compare the agreed
@@ -1636,7 +1660,7 @@ public class DocumentService {
             ? "PASS"
             : "WARNING".equals(rule.get("severity"))
                 ? "WARNING"
-                : "CLASSIFICATION".equals(rule.get("condition_type")) ? "UNVERIFIABLE" : "FAIL",
+                : "CLASSIFICATION".equals(rule.get("condition_type")) ? "UNCERTAIN" : "FAIL",
         "evaluated_at",
         Store.now().toString(),
         "category",
@@ -1672,7 +1696,14 @@ public class DocumentService {
   void validateInternal(String id, Authentication a) {
     var c = access(id, a, true);
     if ("CANCELLED".equals(c.get("status"))) editable(c);
-    if (addressVerifier != null) addressVerifier.refresh(documents(id, false));
+    if (addressVerifier != null) {
+      var addressSources = new ArrayList<>(documents(id, false));
+      if ("ADDRESS_CHANGE".equals(c.get("category"))) {
+        documents(id, true).stream().filter(candidate -> repositoryEligible(c, candidate))
+            .forEach(addressSources::add);
+      }
+      addressVerifier.refresh(addressSources);
+    }
     var checks = evaluate(id);
     var failed = new HashSet<String>();
     s.db.update(
@@ -1784,7 +1815,10 @@ public class DocumentService {
           checks.stream()
               .anyMatch(
                   ch ->
-                      ch.get("check_key").equals(ex.get("check_key"))
+                      (ch.get("check_key").equals(ex.get("check_key"))
+                              || ("ADDRESS_CHANGE".equals(c.get("category"))
+                                  && "SERVICE_ONEMAP_MAILING".equals(ch.get("check_key"))
+                                  && Objects.toString(ex.get("check_key"), "").startsWith("ONEMAP_MAILING:")))
                           && Boolean.TRUE.equals(ch.get("passed")));
       boolean retiredSupportingReference =
           "SUPPORTING_DOCUMENT".equals(ex.get("rule_document_type"))
@@ -2229,12 +2263,18 @@ public class DocumentService {
         || unresolvedBlocking(id) > 0)
       throw new ApiException(
           409, "NOT_READY", "Current package requires validation or human correction");
-    if (Boolean.TRUE.equals(c.get("requires_rm_approval"))
-        && !Objects.equals(c.get("revision"), c.get("approved_revision"))) {
+    boolean approved = Objects.equals(c.get("revision"), c.get("approved_revision"));
+    if (!approved && (!"LOW".equals(c.get("risk_level"))
+        || Boolean.TRUE.equals(c.get("requires_rm_approval")))) {
       s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
       return;
     }
     PolicyService.requireDocumentAction("ROUTE_OPERATIONS", true);
+    if (!approved) {
+      s.db.update("UPDATE document_submissions SET approved_revision=? WHERE id=?", c.get("revision"), id);
+      event(id, a, "AUTOMATICALLY_APPROVED",
+          map("revision", c.get("revision"), "riskScore", c.get("risk_score"), "approvedChecks", checks.size()));
+    }
     s.db.update(
         "UPDATE document_submissions SET status='OPERATIONS',routed_at=? WHERE id=?",
         Store.now(),
