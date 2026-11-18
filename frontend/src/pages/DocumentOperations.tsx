@@ -25,7 +25,6 @@ import { nextCaseAction } from "./case-facts";
 import {
   AuditList,
   BASE,
-  HorizontalBarChart,
   message,
   reportNav,
   StatusChart,
@@ -551,10 +550,22 @@ export function DocumentReports() {
                       <h3>Exception risk tiers</h3>
                       <span>{m.onHold ?? 0} on hold</span>
                     </div>
-                    <HorizontalBarChart
-                      items={riskItems}
-                      ariaLabel="Exception risk distribution"
-                    />
+                    <div
+                      className="report-risk-list"
+                      aria-label="Exception risk distribution"
+                      role="list"
+                    >
+                      {riskItems.map((item) => (
+                        <div
+                          className="report-issue-item"
+                          key={item.label}
+                          role="listitem"
+                        >
+                          <span>{item.label}</span>
+                          <strong>{item.value}</strong>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
