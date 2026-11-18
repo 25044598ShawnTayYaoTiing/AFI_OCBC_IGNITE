@@ -25,6 +25,19 @@ public class CustomerService {
   private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Void>> inFlight =
       new java.util.concurrent.ConcurrentHashMap<>();
 
+  java.util.concurrent.CompletableFuture<Void> startFlight(String flightKey) {
+    var flight = new java.util.concurrent.CompletableFuture<Void>();
+    inFlight.put(flightKey, flight);
+    return flight;
+  }
+
+  void finishFlight(String flightKey, java.util.concurrent.CompletableFuture<Void> flight) {
+    if (flight != null) {
+      flight.complete(null);
+      inFlight.remove(flightKey, flight);
+    }
+  }
+
   public CustomerService(
       Store s,
       DocumentService documents,
@@ -547,9 +560,37 @@ public class CustomerService {
     return detail(id, a);
   }
 
-  private void recoverPendingValidation(String id, boolean allowRepositoryCopy, Authentication a)
+  @FunctionalInterface
+  interface FlightWork {
+    void run() throws Exception;
+  }
+
+  void withFlightLock(String flightKey, FlightWork work) throws Exception {
+    while (true) {
+      var running = inFlight.get(flightKey);
+      if (running != null) {
+        try {
+          running.get(95, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (Exception ignored) {}
+        continue;
+      }
+      var flight = new java.util.concurrent.CompletableFuture<Void>();
+      if (inFlight.putIfAbsent(flightKey, flight) != null) continue;
+      try {
+        work.run();
+        return;
+      } finally {
+        flight.complete(null);
+        inFlight.remove(flightKey, flight);
+      }
+    }
+  }
+
+  void recoverPendingValidation(String id, boolean allowRepositoryCopy, Authentication a)
       throws Exception {
     if (documents.retryPendingExtractions(id, a)) {
+      String currentStatus = Objects.toString(owned(id, a).get("status"), "");
+      if ("OPERATIONS".equals(currentStatus) || "CANCELLED".equals(currentStatus)) return;
       if (allowRepositoryCopy && documents.documents(id, true).isEmpty()) {
         s.inTxChecked(
             () -> {
@@ -560,6 +601,29 @@ public class CustomerService {
       documents.validate(id, a);
     } else {
       documents.recordPendingNotification(id);
+    }
+  }
+
+  private void completeUpload(String id, boolean initial, String key, Authentication a)
+      throws Exception {
+    if (!documents.hasPendingVerification(id)) {
+      if (initial) {
+        s.inTxChecked(
+            () -> {
+              copyRepository(customer(a, false), id, a);
+              return null;
+            });
+      }
+      documents.validate(id, a);
+      if (!initial && !documents.hasPendingVerification(id)) {
+        s.inTxVoid(
+            () ->
+                notifications.publish(
+                    id,
+                    "CORRECTION_RECEIVED",
+                    "received:" + key,
+                    "Your updated documents have been received and checked."));
+      }
     }
   }
 
@@ -721,17 +785,24 @@ public class CustomerService {
     String customerId = (String) prep.get("customerId");
     boolean replayed = Boolean.TRUE.equals(prep.get("replayed"));
     boolean initial = Boolean.TRUE.equals(prep.get("initial"));
+    boolean originalInitial = "/submissions".equals(opKey) || opKey.startsWith("/submissions?requestType=");
     String flightKey = customerId + ":" + key;
     if (replayed) {
-      var running = inFlight.get(flightKey);
-      if (running != null) {
-        try {
-          running.get(95, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (Exception ignored) {}
-      }
-      if (documents.hasPendingVerification(id)) {
-        recoverPendingValidation(id, initial, a);
-      }
+      withFlightLock(
+          flightKey,
+          () -> {
+            var current = owned(id, a);
+            String st = Objects.toString(current.get("status"), "");
+            if ("OPERATIONS".equals(st) || "CANCELLED".equals(st)) return;
+            if (!documents.hasUploadedAttachment(id, replace, files, combineImages)) {
+              documents.uploadInternal(id, files, replace, a, false, combineImages);
+              completeUpload(id, originalInitial, key, a);
+            } else if (documents.hasPendingVerification(id)) {
+              recoverPendingValidation(id, originalInitial, a);
+            } else if ("PENDING_VALIDATION".equals(st)) {
+              completeUpload(id, originalInitial, key, a);
+            }
+          });
       return detail(id, a);
     }
 
@@ -759,25 +830,7 @@ public class CustomerService {
         throw error;
       }
 
-      if (!documents.hasPendingVerification(id)) {
-        if (initial) {
-          s.inTxChecked(
-              () -> {
-                copyRepository(customer(a, false), id, a);
-                return null;
-              });
-        }
-        documents.validate(id, a);
-        if (!initial && !documents.hasPendingVerification(id)) {
-          s.inTxVoid(
-              () ->
-                  notifications.publish(
-                      id,
-                      "CORRECTION_RECEIVED",
-                      "received:" + key,
-                      "Your updated documents have been received and checked."));
-        }
-      }
+      completeUpload(id, initial, key, a);
       return detail(id, a);
     } finally {
       if (flight != null) {

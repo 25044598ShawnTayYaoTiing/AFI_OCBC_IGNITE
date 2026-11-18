@@ -19,9 +19,6 @@ public class DigitalFormService {
   final DocumentService documents;
   final CustomerNotifications notifications;
 
-  private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Void>> inFlight =
-      new java.util.concurrent.ConcurrentHashMap<>();
-
   public DigitalFormService(
       Store s,
       CustomerService customers,
@@ -277,8 +274,7 @@ public class DigitalFormService {
                   fingerprint,
                   id,
                   Store.now());
-              var flight = new java.util.concurrent.CompletableFuture<Void>();
-              inFlight.put(customer.get("id") + ":" + key, flight);
+              var flight = customers.startFlight(customer.get("id") + ":" + key);
               return map(
                   "replayed", false,
                   "submissionId", id,
@@ -293,13 +289,21 @@ public class DigitalFormService {
     boolean initial = Boolean.TRUE.equals(txResult.get("initial"));
     String flightKey = customerId + ":" + key;
     if (replayed) {
-      var running = inFlight.get(flightKey);
-      if (running != null) {
-        try {
-          running.get(95, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (Exception ignored) {}
-      }
-      if (!files.isEmpty() && documents.hasPendingVerification(id)) documents.validate(id, a);
+      customers.withFlightLock(
+          flightKey,
+          () -> {
+            var current = customers.owned(id, a);
+            String st = Objects.toString(current.get("status"), "");
+            if ("OPERATIONS".equals(st) || "CANCELLED".equals(st)) return;
+            if (!files.isEmpty() && !documents.hasUploadedAttachment(id, null, files, combineImages)) {
+              documents.uploadInternal(id, files, null, a, false, combineImages);
+              if (!documents.hasPendingVerification(id)) documents.validate(id, a);
+            } else if (!files.isEmpty() && documents.hasPendingVerification(id)) {
+              customers.recoverPendingValidation(id, false, a);
+            } else if ("PENDING_VALIDATION".equals(st)) {
+              documents.validate(id, a);
+            }
+          });
       return customers.detail(id, a);
     }
     @SuppressWarnings("unchecked")
@@ -323,10 +327,7 @@ public class DigitalFormService {
       }
       return customers.detail(id, a);
     } finally {
-      if (flight != null) {
-        flight.complete(null);
-        inFlight.remove(flightKey, flight);
-      }
+      customers.finishFlight(flightKey, flight);
     }
   }
 

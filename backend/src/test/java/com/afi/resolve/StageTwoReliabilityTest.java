@@ -446,4 +446,169 @@ class StageTwoReliabilityTest {
       server.stop(0);
     }
   }
+
+  @Test
+  void decisionOneUnavailabilityProducesPendingVerificationAndRecovers() throws Exception {
+    AtomicBoolean decisionDown = new AtomicBoolean(true);
+    doAnswer(call -> {
+      var n = extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", decisionDown.get(), map(
+          "customer_name", "Alex Tan",
+          "customer_reference", reference,
+          "mailing_address", "Blk 298B Sengkang East Way #12-345 Singapore 543298"));
+      n.put("method", "GEMINI");
+      var dec = n.putObject("decision");
+      dec.put("model", "gemini-decision-1");
+      dec.put("outcome", decisionDown.get() ? "UNAVAILABLE" : "PASSED");
+      return n;
+    }).when(documents).extraction(any(byte[].class), anyString());
+
+    var initial = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(addressForm("298B Sengkang East Way, #12-345", "543298")).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-d1.pdf", "application/pdf",
+                "%PDF-DECISION-UNAVAILABLE".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isAccepted())
+        .andReturn());
+
+    String submissionId = initial.path("submission").path("id").asText();
+    assertThat(initial.path("submission").path("status").asText()).isEqualTo("PENDING_VALIDATION");
+    assertThat(initial.path("processing").path("pendingVerification").asBoolean()).isTrue();
+    assertThat(initial.path("processing").path("reviewRequired").asBoolean()).isFalse();
+
+    decisionDown.set(false);
+    var retried = json(mvc.perform(
+        post("/api/customer/submissions/" + submissionId + "/retry-validation")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(retried.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    assertThat(retried.path("processing").path("pendingVerification").asBoolean()).isFalse();
+  }
+
+  @Test
+  void interruptedSubmissionResumesMissingAttachmentOnIdempotentRetry() throws Exception {
+    AtomicBoolean failStorageOnce = new AtomicBoolean(true);
+    doAnswer(call -> {
+      if (failStorageOnce.compareAndSet(true, false)) {
+        throw new ApiException(503, "STORAGE_TEMP", "Temporary object store outage");
+      }
+      stored.put(call.getArgument(0), call.getArgument(1));
+      return null;
+    }).when(storage).put(anyString(), any(byte[].class));
+
+    doAnswer(call -> extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+        "customer_name", "Alex Tan",
+        "customer_reference", reference,
+        "mailing_address", "Blk 298B Sengkang East Way #12-345 Singapore 543298")))
+        .when(documents).extraction(any(byte[].class), anyString());
+
+    var form = addressForm("298B Sengkang East Way, #12-345", "543298");
+    String key = UUID.randomUUID().toString();
+    byte[] pdfBytes = "%PDF-INTERRUPTED-RESUME".getBytes(StandardCharsets.US_ASCII);
+
+    // Attempt 1 persists Tx 1 (eform + customer_upload_requests) then is interrupted before attachment DB save
+    mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(form).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-resume.pdf", "application/pdf", pdfBytes))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", key))
+        .andExpect(status().isServiceUnavailable());
+
+    // Retry with the same Idempotency-Key resumes the missing attachment without duplicating the case
+    var resumed = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(form).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-resume.pdf", "application/pdf", pdfBytes))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", key))
+        .andExpect(status().isOk())
+        .andReturn());
+
+    assertThat(resumed.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    assertThat(resumed.path("documents").size()).isEqualTo(2);
+    assertThat(s.db.queryForObject(
+        "SELECT COUNT(*) FROM document_submissions WHERE customer_id=?", Integer.class, customer))
+        .isEqualTo(1);
+  }
+
+  @Test
+  void staleAiExtractionCannotOverwriteNewerDocumentVersion() throws Exception {
+    AtomicBoolean firstAttempt = new AtomicBoolean(true);
+    var v1Started = new java.util.concurrent.CountDownLatch(1);
+    var allowV1Finish = new java.util.concurrent.CountDownLatch(1);
+
+    doAnswer(call -> {
+      String text = new String((byte[]) call.getArgument(0), StandardCharsets.US_ASCII);
+      if (text.contains("STALE-V1")) {
+        if (firstAttempt.compareAndSet(true, false)) {
+          throw new ApiException(503, "AI_SERVICE_ERROR", "Temporary outage on v1");
+        }
+        v1Started.countDown();
+        allowV1Finish.await(10, java.util.concurrent.TimeUnit.SECONDS);
+        return extractedNode((String) call.getArgument(1), "UNKNOWN", true, map(
+            "customer_name", "Wrong Name"));
+      }
+      return extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+          "customer_name", "Alex Tan",
+          "customer_reference", reference,
+          "mailing_address", "Blk 298B Sengkang East Way #12-345 Singapore 543298"));
+    }).when(documents).extraction(any(byte[].class), anyString());
+
+    var initial = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(addressForm("298B Sengkang East Way, #12-345", "543298")).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "v1.pdf", "application/pdf",
+                "%PDF-STALE-V1".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isAccepted())
+        .andReturn());
+
+    String subId = initial.path("submission").path("id").asText();
+    String docId = s.db.queryForObject(
+        "SELECT id FROM submission_documents WHERE submission_id=? AND document_type<>'SERVICE_REQUEST'",
+        String.class, subId);
+
+    var retryFuture = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+      try {
+        return mvc.perform(
+            post("/api/customer/submissions/" + subId + "/retry-validation")
+                .header("Authorization", "Bearer " + token))
+            .andReturn().getResponse().getStatus();
+      } catch (Exception e) {
+        throw new RuntimeException(e);
+      }
+    });
+
+    assertThat(v1Started.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+
+    // Concurrent replacement uploads v2 while v1 AI extraction is still in flight
+    var replaced = json(mvc.perform(
+        multipart("/api/customer/submissions/" + subId + "/documents/" + docId + "/replacement")
+            .file(new MockMultipartFile("files", "v2.pdf", "application/pdf",
+                "%PDF-FRESH-V2".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(replaced.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+
+    allowV1Finish.countDown();
+    assertThat(retryFuture.get(10, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(200);
+
+    var docRow = s.db.queryForMap(
+        "SELECT current_version,document_type FROM submission_documents WHERE id=?", docId);
+    assertThat(((Number) docRow.get("current_version")).intValue()).isEqualTo(2);
+    assertThat(docRow.get("document_type")).isEqualTo("SUPPORTING_DOCUMENT");
+    assertThat(s.db.queryForObject(
+        "SELECT status FROM document_submissions WHERE id=?", String.class, subId))
+        .isEqualTo("OPERATIONS");
+  }
 }

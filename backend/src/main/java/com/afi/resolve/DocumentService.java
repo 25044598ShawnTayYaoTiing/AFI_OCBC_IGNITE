@@ -1058,6 +1058,8 @@ public class DocumentService {
     try {
       s.inTxVoid(
           () -> {
+            var lockedCase = access(id, a, true);
+            editable(lockedCase);
             for (var item : pendingUploads) {
               var pendingMeta = new LinkedHashMap<String, Object>();
               pendingMeta.put("document_id", item.docId());
@@ -1079,6 +1081,21 @@ public class DocumentService {
                 if (item.combineImages()) pendingMeta.put("image_group_sha256", item.groupHash());
               }
               if (item.replacement()) {
+                var currentDoc =
+                    s.db.queryForList(
+                        "SELECT current_version FROM submission_documents WHERE id=? AND"
+                            + " submission_id=? FOR UPDATE",
+                        item.docId(),
+                        id);
+                if (currentDoc.isEmpty()
+                    || !Objects.equals(
+                        ((Number) currentDoc.getFirst().get("current_version")).intValue(),
+                        item.previousVersion())) {
+                  throw new ApiException(
+                      409,
+                      "STALE_DOCUMENT",
+                      "This document was updated concurrently. Reload the case before replacing.");
+                }
                 s.db.update(
                     "UPDATE submission_documents SET current_version=? WHERE id=?",
                     item.version(),
@@ -1160,6 +1177,12 @@ public class DocumentService {
               : (combineImages && !imagePages.isEmpty()
                   ? extractionPayload(item.bytes(), item.docId(), imagePages)
                   : extraction(item.bytes(), item.docId()));
+      if ("UNAVAILABLE".equals(extracted.path("decision").path("outcome").asText(""))) {
+        throw new ApiException(
+            503,
+            "AI_DECISION_UNAVAILABLE",
+            "Document classification assessment is temporarily unavailable; retry verification.");
+      }
       var metadata = (com.fasterxml.jackson.databind.node.ObjectNode) extracted;
       metadata.put("storage_key", item.key());
       metadata.put("combine_images", item.combineImages());
@@ -1198,59 +1221,89 @@ public class DocumentService {
               409, "WRONG_DOCUMENT_TYPE", "Replacement must have the same document classification");
         }
       }
-      s.inTxVoid(
-          () -> {
-            s.db.update(
-                "UPDATE submission_documents SET document_type=? WHERE id=?",
-                nextType,
-                item.docId());
-            s.db.update(
-                "UPDATE document_versions SET extraction_json=? WHERE id=?",
-                metadata.toString(),
-                item.versionId());
-            s.db.update("DELETE FROM extracted_fields WHERE version_id=?", item.versionId());
-            for (var f : extracted.path("fields"))
-              s.db.update(
-                  "INSERT INTO"
-                      + " extracted_fields(id,version_id,field_name,field_value,page_number,"
-                      + "supporting_text,method) VALUES(?,?,?,?,?,?,?)",
-                  s.id("FIELD"),
-                  item.versionId(),
-                  f.path("field").asText(),
-                  f.path("value").asText(),
-                  f.path("page").asInt(),
-                  f.path("supporting_text").asText(),
-                  extracted.path("method").asText());
-            event(
-                id,
-                a,
-                item.replacement() ? "REPLACED" : "UPLOADED",
-                map(
-                    "documentId",
+      String commitOutcome =
+          s.inTx(
+              () -> {
+                var c = access(id, a, true);
+                if ("OPERATIONS".equals(c.get("status")) || "CANCELLED".equals(c.get("status"))) {
+                  return "STALE";
+                }
+                var docRows =
+                    s.db.queryForList(
+                        "SELECT current_version FROM submission_documents WHERE id=? AND"
+                            + " submission_id=? FOR UPDATE",
+                        item.docId(),
+                        id);
+                if (docRows.isEmpty()
+                    || ((Number) docRows.getFirst().get("current_version")).intValue()
+                        != item.version()) {
+                  return "STALE";
+                }
+                var verRows =
+                    s.db.queryForList(
+                        "SELECT extraction_json FROM document_versions WHERE id=? FOR UPDATE",
+                        item.versionId());
+                if (verRows.isEmpty()
+                    || !Boolean.TRUE.equals(
+                        s.readMap(Objects.toString(verRows.getFirst().get("extraction_json"), "{}"))
+                            .get("pending_verification"))) {
+                  return "EXTRACTED";
+                }
+                s.db.update(
+                    "UPDATE submission_documents SET document_type=? WHERE id=? AND"
+                        + " current_version=?",
+                    nextType,
                     item.docId(),
-                    "version",
-                    item.version(),
-                    "sha256",
-                    item.hash(),
-                    "method",
-                    extracted.path("method").asText(),
-                    "extractionModel",
-                    extracted.path("model").asText(""),
-                    "decisionModel",
-                    extracted.path("decision").path("model").asText(""),
-                    "decisionOutcome",
-                    extracted.path("decision").path("outcome").asText(""),
-                    "convertedFromImages",
-                    item.fromImages(),
-                    "sourcePageCount",
-                    item.fromImages() ? item.sourcePageCount() : 0));
-          });
-      return "EXTRACTED";
+                    item.version());
+                s.db.update(
+                    "UPDATE document_versions SET extraction_json=? WHERE id=?",
+                    metadata.toString(),
+                    item.versionId());
+                s.db.update("DELETE FROM extracted_fields WHERE version_id=?", item.versionId());
+                for (var f : extracted.path("fields"))
+                  s.db.update(
+                      "INSERT INTO"
+                          + " extracted_fields(id,version_id,field_name,field_value,page_number,"
+                          + "supporting_text,method) VALUES(?,?,?,?,?,?,?)",
+                      s.id("FIELD"),
+                      item.versionId(),
+                      f.path("field").asText(),
+                      f.path("value").asText(),
+                      f.path("page").asInt(),
+                      f.path("supporting_text").asText(),
+                      extracted.path("method").asText());
+                event(
+                    id,
+                    a,
+                    item.replacement() ? "REPLACED" : "UPLOADED",
+                    map(
+                        "documentId",
+                        item.docId(),
+                        "version",
+                        item.version(),
+                        "sha256",
+                        item.hash(),
+                        "method",
+                        extracted.path("method").asText(),
+                        "extractionModel",
+                        extracted.path("model").asText(""),
+                        "decisionModel",
+                        extracted.path("decision").path("model").asText(""),
+                        "decisionOutcome",
+                        extracted.path("decision").path("outcome").asText(""),
+                        "convertedFromImages",
+                        item.fromImages(),
+                        "sourcePageCount",
+                        item.fromImages() ? item.sourcePageCount() : 0));
+                return "EXTRACTED";
+              });
+      return commitOutcome;
     } catch (ApiException error) {
       if (error.status() >= 500 || isTransientAiFailure(error)) {
         markVersionStillPending(id, item, error.code(), a);
         return "PENDING";
       }
+      if ("STALE_DOCUMENT".equals(error.code())) throw error;
       compensateRejectedUpload(id, item, prevSubmissionStatus);
       if (error.status() == 409) throw error;
       String attachment = combineImages ? "Combined image pages" : item.filename();
@@ -1268,14 +1321,27 @@ public class DocumentService {
       String id, PendingUpload item, String reason, Authentication a) {
     s.inTxVoid(
         () -> {
+          var c = access(id, a, true);
+          if ("OPERATIONS".equals(c.get("status")) || "CANCELLED".equals(c.get("status"))) return;
+          var docRows =
+              s.db.queryForList(
+                  "SELECT current_version FROM submission_documents WHERE id=? AND"
+                      + " submission_id=? FOR UPDATE",
+                  item.docId(),
+                  id);
+          if (docRows.isEmpty()
+              || ((Number) docRows.getFirst().get("current_version")).intValue() != item.version())
+            return;
           var rows =
               s.db.queryForList(
-                  "SELECT extraction_json FROM document_versions WHERE id=?", item.versionId());
+                  "SELECT extraction_json FROM document_versions WHERE id=? FOR UPDATE",
+                  item.versionId());
           var meta =
               rows.isEmpty()
                   ? new LinkedHashMap<String, Object>()
                   : new LinkedHashMap<>(
                       s.readMap(Objects.toString(rows.getFirst().get("extraction_json"), "{}")));
+          if (!rows.isEmpty() && !Boolean.TRUE.equals(meta.get("pending_verification"))) return;
           meta.put("pending_verification", true);
           meta.put("method", "PENDING_VERIFICATION");
           meta.put("pending_reason", reason);
@@ -1300,6 +1366,15 @@ public class DocumentService {
       String id, PendingUpload item, String prevSubmissionStatus) {
     s.inTxVoid(
         () -> {
+          var docRows =
+              s.db.queryForList(
+                  "SELECT current_version FROM submission_documents WHERE id=? AND"
+                      + " submission_id=? FOR UPDATE",
+                  item.docId(),
+                  id);
+          if (docRows.isEmpty()
+              || ((Number) docRows.getFirst().get("current_version")).intValue() != item.version())
+            return;
           s.db.update("DELETE FROM extracted_fields WHERE version_id=?", item.versionId());
           s.db.update("DELETE FROM document_versions WHERE id=?", item.versionId());
           if (item.replacement() && item.previousVersion() != null) {
@@ -1319,6 +1394,54 @@ public class DocumentService {
           }
         });
     cleanupStorageKeys(List.of(item.key()));
+  }
+
+  boolean hasUploadedAttachment(
+      String id, String targetDocId, List<MultipartFile> files, boolean combineImages)
+      throws Exception {
+    if (files == null || files.isEmpty()) return true;
+    var rows =
+        targetDocId != null
+            ? s.db.queryForList(
+                "SELECT v.sha256,v.extraction_json FROM document_versions v JOIN"
+                    + " submission_documents d ON d.id=v.document_id WHERE d.submission_id=? AND"
+                    + " d.id=? AND d.repository_only=FALSE",
+                id,
+                targetDocId)
+            : s.db.queryForList(
+                "SELECT v.sha256,v.extraction_json FROM document_versions v JOIN"
+                    + " submission_documents d ON d.id=v.document_id WHERE d.submission_id=? AND"
+                    + " d.repository_only=FALSE AND d.document_type<>'SERVICE_REQUEST'",
+                id);
+    if (rows.isEmpty()) return false;
+    if (combineImages) {
+      var pages = new ArrayList<String>(files.size());
+      for (var f : files) pages.add(Base64.getEncoder().encodeToString(f.getBytes()));
+      String groupHash = CustomerSessions.hash(s.json(pages));
+      return rows.stream()
+          .anyMatch(
+              row ->
+                  groupHash.equals(
+                      s.readMap(Objects.toString(row.get("extraction_json"), "{}"))
+                          .get("image_group_sha256")));
+    }
+    var digest = MessageDigest.getInstance("SHA-256");
+    for (var f : files) {
+      byte[] bytes = f.getBytes();
+      String fileHash = HexFormat.of().formatHex(digest.digest(bytes));
+      boolean singleImage = DocumentContent.type(bytes).startsWith("image/");
+      boolean found =
+          rows.stream()
+              .anyMatch(
+                  row ->
+                      fileHash.equals(row.get("sha256"))
+                          || (singleImage
+                              && fileHash.equals(
+                                  s.readMap(Objects.toString(row.get("extraction_json"), "{}"))
+                                      .get("image_source_sha256"))));
+      if (!found) return false;
+    }
+    return true;
   }
 
   void recordPendingNotification(String id) {
@@ -1407,7 +1530,7 @@ public class DocumentService {
               a);
       if ("PENDING".equals(outcome)) anyStillPending = true;
     }
-    return !anyStillPending;
+    return !anyStillPending && !hasPendingVerification(id);
   }
 
   void storeOriginal(String key, byte[] bytes) throws Exception {

@@ -23,7 +23,7 @@ jobs:
           cache: maven
       - name: Package and test customer routing and shared upload workflow
         working-directory: backend
-        run: mvn -B '-Dtest=CustomerIntegrationTest,CustomerDemoRetryIntegrationTest#syntheticRetriesAreImmediateButOtherAccountsStillLock,DigitalFormIntegrationTest,CustomerEmailTransportTest,OneMapConfigurationTest,OneMapClientTest' package
+        run: mvn -B '-Dtest=CustomerIntegrationTest,CustomerDemoRetryIntegrationTest#syntheticRetriesAreImmediateButOtherAccountsStillLock,DigitalFormIntegrationTest,CustomerEmailTransportTest,OneMapConfigurationTest,OneMapClientTest,StageTwoReliabilityTest' package
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -54,7 +54,7 @@ jobs:
         working-directory: ai-service
       - name: Essential AI health, authentication and document extraction checks
         working-directory: ai-service
-        run: python -m pytest -q tests/test_foundation.py tests/test_api.py::test_service_key_is_required tests/test_api.py::test_wrong_key_rejected tests/test_document_extraction.py
+        run: python -m pytest -q tests/test_foundation.py tests/test_api.py::test_service_key_is_required tests/test_api.py::test_wrong_key_rejected tests/test_document_extraction.py tests/test_document_decisions.py tests/test_document_investigation.py
       - run: python scripts/ci/validate_compose.py
       - run: python -m unittest discover -s scripts/demo -p test_provision_test_accounts.py
       - run: python -m unittest discover -s scripts/aws -p 'test_*.py'
