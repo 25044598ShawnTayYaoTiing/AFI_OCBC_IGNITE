@@ -20,7 +20,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.util.LinkedMultiValueMap;
 
-/** Opt-in real HTTP Customer API -> FastAPI -> Gemini -> validation -> private original preview. */
+/** Opt-in real HTTP Customer API -> conversion -> Gemini PDF extraction -> validation -> RM PDF. */
 @EnabledIfSystemProperty(named = "image.test.ai-url", matches = "http://127\\.0\\.0\\.1:[0-9]+")
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT, properties = {
   "spring.datasource.url=jdbc:h2:mem:image-e2e;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1",
@@ -40,7 +40,7 @@ class ImageUploadEndToEndTest {
   }
 
   @Test
-  void customerScreenshotIsExtractedValidatedAndHeldForReviewWithOriginalAvailableToRm() throws Exception {
+  void customerImagesBecomeOnePdfWithOrderedReferencesAndPrivateAuditOriginals() throws Exception {
     var staff = http.withBasicAuth("reviewer", "reviewer-demo");
     var provision = staff.postForEntity("/api/documents/customers", Map.of(
       "username", "image-e2e-customer", "password", "image-e2e-password", "customerName", "Alex Tan",
@@ -62,8 +62,19 @@ class ImageUploadEndToEndTest {
     graphics.dispose();
     var output = new ByteArrayOutputStream(); ImageIO.write(image, "png", output);
     byte[] original = output.toByteArray();
+    graphics = image.createGraphics();
+    graphics.setColor(Color.WHITE); graphics.fillRect(0, 0, 1200, 1600);
+    graphics.setColor(Color.BLACK); graphics.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, 30));
+    graphics.drawString("SYNTHETIC - NOT AN OFFICIAL BANK FORM", 55, 100);
+    graphics.drawString("CUSTOMER INFORMATION FORM - PAGE 2", 55, 200);
+    graphics.drawString("Identity Number: DEMO-ID-SYN-IMAGE-E2E", 55, 300);
+    graphics.dispose();
+    output.reset(); ImageIO.write(image, "png", output);
+    byte[] second = output.toByteArray();
     var body = new LinkedMultiValueMap<String, Object>();
     body.add("files", new ByteArrayResource(original) { public String getFilename() { return "customer-screenshot.png"; } });
+    body.add("files", new ByteArrayResource(second) { public String getFilename() { return "customer-page-two.png"; } });
+    body.add("combineImages", "true");
     var headers = new HttpHeaders(); headers.setBearerAuth(token); headers.setContentType(MediaType.MULTIPART_FORM_DATA);
     headers.set("Idempotency-Key", "image-e2e-request");
     var uploaded = http.postForEntity("/api/customer/submissions", new HttpEntity<>(body, headers), JsonNode.class);
@@ -76,13 +87,25 @@ class ImageUploadEndToEndTest {
     assertThat(detail.path("tasks").size()).isPositive();
     assertThat(document.path("extraction").path("method").asText()).isEqualTo("GEMINI");
     assertThat(document.path("extraction").path("requires_review").asBoolean()).isTrue();
+    assertThat(document.path("extraction").path("converted_from_images").asBoolean()).isTrue();
+    assertThat(document.path("extraction").path("conversion_page_count").asInt()).isEqualTo(2);
+    assertThat(document.path("filename").asText()).isEqualTo("customer-screenshot.pdf");
     assertThat(document.path("fields").findValuesAsText("field_value")).contains("Alex Tan", "SYN-IMAGE-E2E");
+    assertThat(document.path("fields").findValuesAsText("field_value")).contains("DEMO-ID-SYN-IMAGE-E2E");
+    for (var field : document.path("fields"))
+      if ("identity_number".equals(field.path("field_name").asText())) assertThat(field.path("page_number").asInt()).isEqualTo(2);
     assertThat(store.db.queryForObject("SELECT COUNT(*) FROM validation_results WHERE submission_id=?", Integer.class, id)).isPositive();
     assertThat(store.db.queryForObject("SELECT COUNT(*) FROM case_routing_history WHERE submission_id=?", Integer.class, id)).isZero();
     String preview = "/api/documents/submissions/" + id + "/versions/" + document.path("version_id").asText() + "/pdf";
     var response = staff.getForEntity(preview, byte[].class);
-    assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.IMAGE_PNG);
-    assertThat(response.getBody()).isEqualTo(original);
+    assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PDF);
+    assertThat(new String(response.getBody(), 0, 5, java.nio.charset.StandardCharsets.US_ASCII)).isEqualTo("%PDF-");
+    String originals = "/api/documents/submissions/" + id + "/versions/" + document.path("version_id").asText() + "/originals/";
+    assertThat(staff.getForEntity(originals + "1", byte[].class).getBody()).isEqualTo(original);
+    assertThat(staff.getForEntity(originals + "2", byte[].class).getBody()).isEqualTo(second);
+    assertThat(http.getForEntity(originals + "1", byte[].class).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    String artifact = System.getProperty("image.test.output", "");
+    if (!artifact.isBlank()) Files.write(Path.of(artifact), response.getBody());
     assertThat(http.getForEntity(preview, byte[].class).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
   }
 }

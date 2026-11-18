@@ -6,9 +6,9 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ArrowRight, UploadCloud } from "lucide-react";
 import { label, post, uploadPdfs, useResource } from "../api";
 import type { Detail, Field } from "../document-types";
-import { Badge, Empty, ErrorBox, Loading, Notice, Panel } from "../components";
+import { Empty, ErrorBox, Loading, Notice, Panel } from "../components";
 import { Disclosure, Tabs, TabPanel } from "../ui";
-import { BASE, Checklist, message, PdfPreview } from "./DocumentShared";
+import { BASE, message, PdfPreview } from "./DocumentShared";
 import {
   AutonomyEvidence,
   CorrectionTasks,
@@ -21,121 +21,50 @@ import { CaseDecisionPanel } from "./CaseDecisionPanel";
 import { CaseIssues } from "./CaseIssues";
 import { reviewState } from "./review-state";
 import { useAuth, isReviewer } from "../auth";
-import { DocumentIssueReview, issueAction } from "./DocumentIssueReview";
-import { groupFindings, issueTitle } from "./DocumentFindings";
 export function DocumentWorkspace() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
-  const requestedTab = params.get("tab") || "overview";
-  const tab = [
-    "overview",
-    "review",
-    "exceptions",
-    "corrections",
-    "automation",
-    "preflight",
-    "history",
-  ].includes(requestedTab)
-    ? requestedTab
-    : "overview";
+  const requestedTab = params.get("tab");
+  const tab = requestedTab === "history" ? "history" : requestedTab === "review" ? "review" : "overview";
+  const openDetails = requestedTab === "preflight" || requestedTab === "automation" || requestedTab === "exceptions" || requestedTab === "corrections";
   const { session } = useAuth();
   const mutation = useRef(false);
-  const activeTab = tab === "corrections" ? "exceptions" : tab;
   const result = useResource<Detail>(`${BASE}/submissions/${id}`, 15000);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [evidenceReviewNote, setEvidenceReviewNote] = useState("");
   const [progress, setProgress] = useState(0);
   const [selected, setSelected] = useState("");
   const [version, setVersion] = useState("");
   const [finding, setFinding] = useState("");
-  const [compare, setCompare] = useState(false);
   const [previewPage, setPreviewPage] = useState(1);
-  const [reviewPane, setReviewPane] = useState("issues");
   const preview = useRef<HTMLDivElement>(null);
-  const issueSummary = useRef<HTMLDivElement>(null);
   const [previewRequest, setPreviewRequest] = useState(0);
   useEffect(() => {
     if (!previewRequest || !preview.current) return;
     const top = preview.current.getBoundingClientRect().top + window.scrollY;
     window.scrollTo({
-      top: Math.max(0, top - (issueSummary.current?.offsetHeight || 0) - 16),
+      top: Math.max(0, top - 16),
       behavior: "instant",
     });
     preview.current.querySelector("select")?.focus({ preventScroll: true });
   }, [previewRequest]);
   const fileInput = useRef<HTMLInputElement>(null);
-  const addInput = useRef<HTMLInputElement>(null);
   const [replacement, setReplacement] = useState<string>();
   useEffect(() => {
     setSelected("");
     setVersion("");
     setFinding("");
-    setCompare(false);
     setError("");
     setNotice("");
     setPreviewPage(1);
-    setReviewPane("issues");
   }, [id]);
   const data = result.data;
   const open = data?.exceptions.filter((item) => item.status === "OPEN") || [];
-  const relevant = selected
-    ? [
-        ...(data?.exceptions.filter((item) =>
-          item.evidence.some((field) => field.document_id === selected),
-        ) || []),
-        ...(data?.exceptions.filter((item) => !item.evidence.length) || []),
-      ]
-    : data?.exceptions || [];
-  const chosen =
-    data?.exceptions.find((item) => item.id === finding) ||
-    relevant.find((item) => item.status === "OPEN") ||
-    relevant[0];
-  const doc =
-    data?.documents.find((item) => item.id === selected) ||
-    data?.documents.find((item) =>
-      chosen?.evidence.some((field) => field.document_id === item.id),
-    ) ||
-    data?.documents[0];
-  const groups = groupFindings(data?.exceptions || []);
-  const chosenGroup = groups.find((group) =>
-    group.items.some((item) => item.id === chosen?.id),
-  );
-  const relatedIssues = chosenGroup?.items || (chosen ? [chosen] : []);
-  const selectedEvidence = relatedIssues.flatMap((item) => item.evidence);
+  const doc = data?.documents.find((item) => item.id === selected) || data?.documents[0];
   const locked = ["OPERATIONS", "CANCELLED"].includes(
     data?.submission.status || "",
   );
-  const uploadedByReviewer = doc?.versions.some(
-    (item) => item.id === doc.version_id && item.uploaded_by === session?.username,
-  );
-  useEffect(() => {
-    setEvidenceReviewNote("");
-  }, [id, doc?.version_id, version]);
-
-  async function recordEvidenceReview() {
-    if (!doc || !data || mutation.current) return;
-    mutation.current = true;
-    setBusy("review-evidence");
-    setError("");
-    setNotice("");
-    try {
-      await post(`${BASE}/submissions/${id}/versions/${doc.version_id}/review-evidence`, {
-        revision: data.submission.revision,
-        note: evidenceReviewNote.trim(),
-      });
-      await result.refresh();
-      setEvidenceReviewNote("");
-      setNotice("Evidence review recorded. Check the updated case before approving.");
-    } catch (failure) {
-      setError(message(failure));
-    } finally {
-      mutation.current = false;
-      setBusy("");
-    }
-  }
-
   async function run(action: string, note?: string): Promise<boolean> {
     if (mutation.current) return false;
     mutation.current = true;
@@ -152,14 +81,14 @@ export function DocumentWorkspace() {
       await result.refresh();
       setNotice(
         action === "preflight"
-          ? "Readiness snapshot saved."
+          ? "Safety check completed."
           : action === "approve"
-            ? "Approval and Operations handover recorded."
+            ? "Request sent to Operations."
             : action === "clear-hold"
-              ? "Investigation decision recorded. Review the updated case."
+              ? "Review decision saved."
               : action === "authorize-correction"
-                ? "Customer correction authorised for this revision."
-                : "Validation complete. Review the updated result.",
+                ? "Correction request approved."
+                : "Request checked.",
       );
       if (action === "preflight") setParams({ tab: "preflight" });
       return true;
@@ -199,7 +128,7 @@ export function DocumentWorkspace() {
       setVersion("");
       await result.refresh();
       setNotice(
-        "Documents received. Review the validation and resolution results below.",
+        "Documents received. Open Case Overview to see the results.",
       );
     } catch (error) {
       setError(message(error));
@@ -210,25 +139,16 @@ export function DocumentWorkspace() {
     }
   }
   function inspect(field: Field) {
-    const sourceIssue = relatedIssues.find((item) =>
-      item.evidence.some(
-        (source) =>
-          source.document_id === field.document_id &&
-          source.version_id === field.version_id,
-      ),
-    );
-    if (sourceIssue) setFinding(sourceIssue.id);
     setPreviewRequest((value) => value + 1);
     setSelected(field.document_id);
     setVersion(field.version_id || "");
     setPreviewPage(field.page_number || 1);
     setParams({ tab: "review" });
-    setReviewPane("issues");
   }
   function chooseReplacement() {
     if (doc?.extraction.method === "DIGITAL_EFORM") {
       setNotice(
-        "The customer must edit the digital declaration in their portal. Add supporting PDFs using Add documents.",
+        "Ask the customer to update their request details. You can add supporting files here.",
       );
       return;
     }
@@ -251,30 +171,17 @@ export function DocumentWorkspace() {
       <header className="case-context">
         <div>
           <Link className="back-link" to="/submissions">
-            Review queue <ArrowRight size={14} />
+            Cases <ArrowRight size={14} />
           </Link>
-          <span className="case-reference">
-            {data.submission.customer_reference}
-          </span>
         </div>
         <div className="case-title-row">
           <div>
-            <span className="eyebrow">
-              {label(data.submission.category)} ·{" "}
-              {data.submission.capture_method === "DIGITAL_EFORM"
-                ? "Digital declaration"
-                : "PDF submission"}
-            </span>
-            <h1>{data.submission.customer_name}</h1>
-            <p>
-              Assigned to {data.submission.owner_name} · Revision{" "}
-              {data.submission.revision}
-            </p>
+            <h1>{label(data.submission.category)}</h1>
+            <p>{data.submission.customer_name}</p>
           </div>
-          <Badge value={data.submission.status} />
         </div>
       </header>
-      <div className="case-workspace-grid">
+      <div className="demo-case-layout">
         <div className="case-workspace-main">
           {error && <ErrorBox message={error} />}{" "}
           {notice && <Notice success>{notice}</Notice>}
@@ -294,38 +201,25 @@ export function DocumentWorkspace() {
               )}
             </div>
           )}
-          <CaseSummary
-            detail={data}
-            onReview={() =>
-              setParams({ tab: state.open.length ? "exceptions" : "review" })
-            }
-            onReadiness={() =>
-              setParams({ tab: locked ? "history" : "preflight" })
-            }
-          />
           <Tabs
             id="submission-workspace"
             className="section-nav workspace-tabs"
             label="Submission workspace"
-            value={activeTab}
+            value={tab}
             items={[
-              { value: "overview", label: "Overview" },
-              { value: "exceptions", label: "Issues & evidence" },
-              { value: "review", label: "Documents" },
-              { value: "automation", label: "AI & automation" },
-              { value: "preflight", label: "Handover readiness" },
-              { value: "history", label: "History" },
+              { value: "overview", label: "Case Overview" },
+              { value: "review", label: "Documents & Evidence" },
+              { value: "history", label: "Audit Trail" },
             ]}
             onChange={(key) => {
               setParams({ tab: key });
-              setCompare(false);
             }}
           />
           <input
             ref={fileInput}
             hidden
             type="file"
-            aria-label="Upload replacement PDF"
+            aria-label="Upload replacement document"
             accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png"
             disabled={!!busy || locked}
             onChange={(event) => {
@@ -335,67 +229,36 @@ export function DocumentWorkspace() {
           />
           <TabPanel
             id="submission-workspace"
-            value={activeTab}
+            value={tab}
             className="page-stack workspace-panel"
           >
             {tab === "overview" && (
               <div className="overview-sections">
-                <div className="workspace-section-heading">
-                  <div>
-                    <h2>Request at a glance</h2>
-                    <p>
-                      {state.current
-                        ? `${data.checks.filter((check) => check.passed).length} of ${data.checks.length} policy checks passed across ${data.documents.length} submitted ${data.documents.length === 1 ? "document" : "documents"}.`
-                        : "Compare customer declarations with stored bank records and supporting evidence."}
-                    </p>
-                  </div>
-                  <div className="header-actions">
-                    {state.open.length > 0 && (
-                      <button
-                        className="button secondary"
-                        onClick={() => setParams({ tab: "exceptions" })}
-                      >
-                        Review findings ({state.open.length})
-                      </button>
-                    )}
-                    <button
-                      className="button secondary"
-                      onClick={() => setParams({ tab: "review" })}
-                    >
-                      Inspect documents <ArrowRight size={15} />
-                    </button>
-                  </div>
-                </div>
-                <CaseComparison detail={data} onInspect={inspect} />
-                {!!data.addressVerifications?.length && (
-                  <AddressVerificationPanel
-                    detail={data}
-                    onInspect={inspect}
-                  />
+                <CaseSummary detail={data} />
+                <CaseDecisionPanel key={id} detail={data} busy={!!busy} onAction={run} />
+                {state.open.length > 0 && (
+                  <CaseIssues detail={data} selected={finding} onSelect={setFinding} onInspect={inspect} />
                 )}
-                <Disclosure
-                  title={`All policy checks (${data.checks.filter((check) => check.passed).length}/${data.checks.length} passed) & case metadata`}
-                >
-                  <Checklist checks={data.checks} />
-                  <dl className="metadata">
-                    <div>
-                      <dt>Case ID</dt>
-                      <dd className="mono">{data.submission.id}</dd>
-                    </div>
-                    <div>
-                      <dt>Assigned owner</dt>
-                      <dd>{data.submission.owner_name}</dd>
-                    </div>
-                    <div>
-                      <dt>Active rule set</dt>
-                      <dd className="mono small">{data.ruleSet}</dd>
-                    </div>
-                  </dl>
+                {!locked && isReviewer(session) && data.submission.category === "CONTACT_UPDATE" &&
+                  open.some((item) => item.check_key === "SERVICE_PHONE_REVIEW") && (
+                    <ContactPhoneReview id={id} revision={data.submission.revision} onUpdate={() => void result.refresh()} />
+                  )}
+                {state.customerTasks.length > 0 && (
+                  <Disclosure title="Customer corrections" open={requestedTab === "corrections"}>
+                    <CorrectionTasks detail={data} onUpload={() => setParams({ tab: "review" })} />
+                  </Disclosure>
+                )}
+                <Disclosure title="Review details" open={openDetails ? true : undefined}>
+                  {data.riskAssessment && <RiskInvestigation detail={data} onUpdate={() => void result.refresh()} showActions={false} />}
+                  <AutonomyEvidence detail={data} onInspect={inspect} />
+                  {!locked && <PreflightView detail={data} busy={!!busy} onRun={() => void run("preflight")} />}
                 </Disclosure>
               </div>
             )}
             {tab === "review" && (
               <>
+                <CaseComparison detail={data} onInspect={inspect} />
+                {!!data.addressVerifications?.length && <Disclosure title="Address verification"><AddressVerificationPanel detail={data} onInspect={inspect} /></Disclosure>}
                 {!locked && (
                   <div
                     className="upload-area"
@@ -414,7 +277,7 @@ export function DocumentWorkspace() {
                           : "Upload the customer forms"}
                       </strong>
                       <p>
-                        Drop PDFs here, or choose files. Up to 10 MB per PDF.
+                        PDF, JPG or PNG. Up to 10 MB per file.
                       </p>
                     </div>
                     <label
@@ -422,7 +285,6 @@ export function DocumentWorkspace() {
                     >
                       Choose files
                       <input
-                        ref={addInput}
                         className="sr-only"
                         type="file"
                         multiple
@@ -447,12 +309,6 @@ export function DocumentWorkspace() {
                   />
                 ) : (
                   <div className="review-layout">
-                    {chosen && (
-                      <div className="mobile-issue-summary" ref={issueSummary}>
-                        <strong>{issueTitle(chosen)}</strong>
-                        <p>{issueAction(chosen)}</p>
-                      </div>
-                    )}
                     <div className="preview-column" ref={preview}>
                       <Panel className="preview-panel">
                         <div className="document-toolbar">
@@ -475,7 +331,7 @@ export function DocumentWorkspace() {
                               ))}
                             </select>
                           </label>
-                          <select
+                          {doc.versions.length > 1 && <select
                             aria-label="Document version"
                             value={version || doc.version_id}
                             onChange={(event) => setVersion(event.target.value)}
@@ -486,7 +342,7 @@ export function DocumentWorkspace() {
                                 {item.id === doc.version_id ? " (current)" : ""}
                               </option>
                             ))}
-                          </select>
+                          </select>}
                           {!locked &&
                             doc.extraction.method !== "DIGITAL_EFORM" && (
                               <button
@@ -505,306 +361,66 @@ export function DocumentWorkspace() {
                             version; check each citation before acting.
                           </Notice>
                         )}
-                        {(!version || version === doc.version_id) && doc.extraction.requires_review && (
-                          <Notice>
-                            {doc.evidence_reviewed_by
-                              ? `Evidence review recorded by ${doc.evidence_reviewed_by}.`
-                              : "Compare the original with the document type and each extracted field before recording review."}
-                          </Notice>
-                        )}
-                        {!locked && isReviewer(session) && (!version || version === doc.version_id)
-                          && doc.extraction.requires_review && !doc.evidence_reviewed_by
-                          && doc.document_type !== "UNKNOWN" && doc.fields.length > 0
-                          && !doc.extraction.observations?.some((item) => item.issue_type === "UNCERTAIN") && (
-                          uploadedByReviewer ? (
-                            <Notice>Another reviewer must inspect this upload.</Notice>
-                          ) : <div className="review-note">
-                            <p>Confirm that the extracted values match what you can read in the original.</p>
-                            <label>
-                              Evidence review note
-                              <textarea value={evidenceReviewNote} rows={3} maxLength={1000}
-                                disabled={!!busy} onChange={(event) => setEvidenceReviewNote(event.target.value)} />
-                            </label>
-                            <button type="button" className="button secondary"
-                              disabled={!!busy || evidenceReviewNote.trim().length < 12}
-                              onClick={() => void recordEvidenceReview()}>
-                              Confirm document type and extracted fields
-                            </button>
-                          </div>
-                        )}
+                        {doc.extraction.requires_review && <Notice>Check the extracted details against the original document.</Notice>}
                         <PdfPreview
                           caseId={id}
                           versionId={version || doc.version_id}
                           page={previewPage}
                           pageCount={doc.versions.find(item => item.id === (version || doc.version_id))?.source_page_count || 1}
+                          convertedFromImages={doc.versions.find(item => item.id === (version || doc.version_id))?.converted_from_images || false}
                         />
                       </Panel>
                     </div>
-                    <Panel title="Review findings" className="review-sidebar">
-                      <Tabs
-                        id="document-information"
-                        label="Document information"
-                        value={reviewPane}
-                        onChange={setReviewPane}
-                        items={[
-                          { value: "issues", label: "Issues & next steps" },
-                          { value: "fields", label: "Extracted fields" },
-                        ]}
-                      />
-                      <TabPanel
-                        id="document-information"
-                        value={reviewPane}
-                        className="panel-body"
-                      >
-                        {reviewPane === "issues" ? (
-                          <DocumentIssueReview
-                            detail={data}
-                            doc={doc}
-                            issue={chosen}
-                            busy={!!busy}
-                            onChoose={(key) => {
-                              setFinding(key);
-                              const issue = data.exceptions.find(
-                                (item) => item.id === key,
-                              );
-                              const source =
-                                issue?.evidence.find(
-                                  (field) => field.document_id === doc.id,
-                                ) || issue?.evidence[0];
-                              if (source) {
-                                setSelected(source.document_id);
-                                setVersion(source.version_id || "");
-                                setPreviewPage(source.page_number || 1);
-                              }
-                            }}
-                            onInspect={inspect}
-                            onDetails={() => setParams({ tab: "exceptions" })}
-                            onReplace={chooseReplacement}
-                            onAdd={() => addInput.current?.click()}
-                          />
+                    <Panel title="Details read from this document" className="review-sidebar">
+                      <div className="panel-body">
+                        {version && version !== doc.version_id ? (
+                          <Notice>
+                            Select the current version to see its extracted details.
+                          </Notice>
                         ) : (
-                          <>
-                            {chosen && (
-                              <div className="issue-context">
-                                <strong>{issueTitle(chosen)}</strong>
-                                <p>{issueAction(chosen)}</p>
-                              </div>
-                            )}
-                            <div className="provenance-line">
-                              <Badge value={doc.extraction.method} />
-                              <span>Current version {doc.current_version}</span>
-                            </div>
-                            {version && version !== doc.version_id ? (
-                              <Notice>
-                                You're viewing an earlier PDF. Current extracted
-                                values are hidden to avoid mixing document
-                                versions.
-                              </Notice>
-                            ) : (
-                              <dl className="field-list">
-                                {doc.fields.map((field) => (
-                                  <div key={field.field_name}>
-                                    <dt>{label(field.field_name)}</dt>
-                                    <dd>
-                                      {field.field_value}
-                                      <button
-                                        className="text-link"
-                                        onClick={() =>
-                                          inspect({
-                                            ...field,
-                                            document_id: doc.id,
-                                            version_id: doc.version_id,
-                                            filename: doc.filename,
-                                          })
-                                        }
-                                      >
-                                        View source
-                                        {field.page_number
-                                          ? ` | page ${field.page_number}`
-                                          : " | page unconfirmed"}
-                                      </button>
-                                    </dd>
-                                  </div>
-                                ))}
-                              </dl>
-                            )}
-                            {(!version || version === doc.version_id) && (
-                              <Disclosure title="Extraction evidence">
-                                <p>{doc.extraction.notes}</p>
-                                {doc.fields.map((field) => (
-                                  <div
-                                    className="evidence-line"
-                                    key={field.field_name}
+                          <dl className="field-list">
+                            {doc.fields.map((field) => (
+                              <div key={field.field_name}>
+                                <dt>{label(field.field_name)}</dt>
+                                <dd>
+                                  {field.field_value}
+                                  <button
+                                    className="text-link"
+                                    onClick={() =>
+                                      inspect({
+                                        ...field,
+                                        document_id: doc.id,
+                                        version_id: doc.version_id,
+                                        filename: doc.filename,
+                                      })
+                                    }
                                   >
-                                    <strong>
-                                      {label(field.field_name)} / page{" "}
-                                      {field.page_number ?? "unconfirmed"}
-                                    </strong>
-                                    <p>{field.supporting_text}</p>
-                                  </div>
-                                ))}
-                              </Disclosure>
-                            )}
-                          </>
+                                    View source
+                                    {field.page_number
+                                      ? ` | page ${field.page_number}`
+                                      : " | page unconfirmed"}
+                                  </button>
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
                         )}
                         {!!doc.extraction.observations?.length && (
-                          <Disclosure title="AI extraction observations · advisory">
-                            <div className="issue-context">
-                              <strong>
-                                AI observations - not validation findings
-                              </strong>
-                              <p>
-                                Review these against the PDF and applicable
-                                rules; they are not additional validation
-                                results.
-                              </p>
-                              {doc.document_type === "ACCOUNT_APPLICATION" &&
-                                doc.extraction.observations.some(
-                                  (item) => item.field === "declaration_date",
-                                ) &&
-                                !data.checks.some(
-                                  (check) =>
-                                    check.condition_type === "DATE" &&
-                                    check.field_name === "declaration_date" &&
-                                    check.evidence.some(
-                                      (field) => field.document_id === doc.id,
-                                    ),
-                                ) && (
-                                  <p>
-                                    No active mandatory-date check covers this
-                                    account form. Resolution Management can
-                                    propose the account declaration-date
-                                    requirement in Settings; a different
-                                    authorised approver must approve it before
-                                    validation changes.
-                                  </p>
-                                )}
-                              {doc.extraction.observations.map(
-                                (observation, index) => (
-                                  <p
-                                    key={`${observation.field}-${observation.page}-${index}`}
-                                  >
-                                    {label(observation.field)} / page{" "}
-                                    {observation.page}:{" "}
-                                    {observation.supporting_text}
-                                  </p>
-                                ),
-                              )}
-                            </div>
+                          <Disclosure title="Details that need checking">
+                            {doc.extraction.observations.map((observation, index) => (
+                              <p key={index}>{label(observation.field)} (page {observation.page}) · {observation.supporting_text}</p>
+                            ))}
                           </Disclosure>
                         )}
-                      </TabPanel>
+                      </div>
                     </Panel>
                   </div>
                 )}
               </>
             )}
-            {(tab === "exceptions" || tab === "corrections") && (
-              <>
-                {!locked &&
-                  isReviewer(session) &&
-                  data.submission.category === "CONTACT_UPDATE" &&
-                  open.some(
-                    (item) => item.check_key === "SERVICE_PHONE_REVIEW",
-                  ) && (
-                    <ContactPhoneReview
-                      id={id}
-                      revision={data.submission.revision}
-                      onUpdate={() => void result.refresh()}
-                    />
-                  )}
-                <CaseIssues
-                  detail={data}
-                  selected={finding}
-                  onSelect={setFinding}
-                  onInspect={inspect}
-                  onDocuments={() => setParams({ tab: "review" })}
-                />
-                {selectedEvidence.filter(
-                  (field) =>
-                    field.version_id &&
-                    data.documents.some((doc) =>
-                      doc.versions.some(
-                        (version) => version.id === field.version_id,
-                      ),
-                    ),
-                ).length > 1 && (
-                  <button
-                    className="button secondary"
-                    onClick={() => setCompare(!compare)}
-                  >
-                    {compare ? "Close comparison" : "Compare original PDFs"}
-                  </button>
-                )}
-                {compare && (
-                  <div className="source-comparison">
-                    {selectedEvidence
-                      .filter(
-                        (field) =>
-                          field.version_id &&
-                          data.documents.some((doc) =>
-                            doc.versions.some(
-                              (version) => version.id === field.version_id,
-                            ),
-                          ),
-                      )
-                      .slice(0, 3)
-                      .map((field, index) => (
-                        <Panel
-                          key={`${field.version_id}-${index}`}
-                          title={field.filename}
-                          subtitle={`${field.field_value} / page ${field.page_number ?? "unconfirmed"}`}
-                        >
-                          <PdfPreview
-                            caseId={id}
-                            versionId={field.version_id}
-                            page={field.page_number || 1}
-                          />
-                        </Panel>
-                      ))}
-                  </div>
-                )}
-                <CorrectionTasks
-                  detail={data}
-                  onUpload={() => setParams({ tab: "review" })}
-                />
-                {!!data.addressVerifications?.length && (
-                  <AddressVerificationPanel detail={data} onInspect={inspect} />
-                )}
-                <Disclosure
-                  title={`All policy checks (${data.checks.filter((check) => check.passed).length}/${data.checks.length} passed)`}
-                >
-                  <Checklist checks={data.checks} />
-                </Disclosure>
-              </>
-            )}
-            {tab === "automation" && (
-              <>
-                <RiskInvestigation
-                  detail={data}
-                  onUpdate={() => void result.refresh()}
-                  showActions={false}
-                />
-                <AutonomyEvidence detail={data} onInspect={inspect} />
-              </>
-            )}
-            {tab === "preflight" && (
-              <PreflightView
-                detail={data}
-                busy={!!busy}
-                onRun={() => void run("preflight")}
-              />
-            )}
             {tab === "history" && <HandoverHistory detail={data} />}
           </TabPanel>
         </div>
-        <CaseDecisionPanel
-          key={id}
-          detail={data}
-          busy={!!busy}
-          onAction={run}
-          onNavigate={(tab) => setParams({ tab })}
-        />
       </div>
     </div>
   );

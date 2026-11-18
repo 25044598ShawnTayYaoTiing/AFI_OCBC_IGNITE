@@ -39,6 +39,7 @@ export interface Field {
   method?: string;
 }
 export interface Version {
+  converted_from_images?: boolean;
   source_page_count?: number;
   id: string;
   version: number;
@@ -49,7 +50,6 @@ export interface Version {
 export interface Doc {
   id: string;
   version_id: string;
-  evidence_reviewed_by?: string | null;
   filename: string;
   document_type: string;
   current_version: number;
@@ -58,6 +58,7 @@ export interface Doc {
   extraction: {
     method: string;
     requires_review: boolean;
+    converted_from_images?: boolean;
     source_images?: { filename: string; size_bytes: number }[];
     notes: string;
     observations?: {

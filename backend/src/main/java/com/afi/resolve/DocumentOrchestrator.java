@@ -62,11 +62,6 @@ public class DocumentOrchestrator {
                 + " action_type='ATTACH_VERIFIED_DOCUMENT'",
             id);
     // The only executable autonomous action in this MVP is administrative attachment.
-    var reviewedVersions = workflow.documents(id, false).stream()
-        .filter(document -> document.get("evidence_reviewed_by") != null)
-        .map(document -> document.get("version_id").toString())
-        .sorted()
-        .toList();
     for (var exception : exceptions) {
       String ex = (String) exception.get("id");
       String key =
@@ -82,8 +77,7 @@ public class DocumentOrchestrator {
                   + workflow.documents(id, true).stream()
                       .map(d -> d.get("version_id").toString())
                       .sorted()
-                      .toList()
-                  + (reviewedVersions.isEmpty() ? "" : ":reviewed:" + reviewedVersions));
+                      .toList());
       if (s.db.queryForObject(
               "SELECT COUNT(*) FROM document_automation_attempts WHERE attempt_key=?",
               Integer.class,

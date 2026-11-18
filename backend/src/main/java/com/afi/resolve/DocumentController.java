@@ -39,14 +39,6 @@ public class DocumentController {
 
   public record RiskReview(int revision, String note) {}
 
-  @PostMapping("/submissions/{id}/versions/{version}/review-evidence")
-  @PreAuthorize("hasRole('REVIEWER')")
-  public Object reviewEvidence(
-      @PathVariable String id, @PathVariable String version, @RequestBody RiskReview request,
-      Authentication actor) {
-    return service.reviewDocumentEvidence(id, version, request.revision(), request.note(), actor);
-  }
-
   @PostMapping("/submissions/{id}/authorize-correction")
   @PreAuthorize("hasRole('REVIEWER')")
   public Object authorizeCorrection(
@@ -115,6 +107,16 @@ public class DocumentController {
         .cacheControl(CacheControl.noStore())
         .header("Content-Disposition", "inline; filename=\"synthetic-document" + DocumentContent.extension(bytes) + "\"")
         .header("X-Content-Type-Options", "nosniff")
+        .body(bytes);
+  }
+
+  @GetMapping("/submissions/{id}/versions/{version}/originals/{page}")
+  public ResponseEntity<byte[]> originalImage(@PathVariable String id, @PathVariable String version,
+      @PathVariable int page, Authentication actor) throws Exception {
+    byte[] bytes = service.originalImage(id, version, page, actor);
+    return ResponseEntity.ok().contentType(MediaType.parseMediaType(DocumentContent.type(bytes)))
+        .cacheControl(CacheControl.noStore()).header("X-Content-Type-Options", "nosniff")
+        .header("Content-Disposition", "inline; filename=\"original-image" + DocumentContent.extension(bytes) + "\"")
         .body(bytes);
   }
 

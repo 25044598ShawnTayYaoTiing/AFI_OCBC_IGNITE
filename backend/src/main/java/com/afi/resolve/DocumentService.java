@@ -25,6 +25,7 @@ public class DocumentService {
   final DemoService demoAccess;
   final CustomerNotifications customerNotifications;
   final DocumentAddressVerifier addressVerifier;
+  final ImagePdfService imagePdfs;
   static final Set<String> TYPES =
       Set.of(
           "SERVICE_REQUEST",
@@ -72,10 +73,16 @@ public class DocumentService {
     this(s, ai, orchestrator, storage, demoAccess, customerNotifications, null);
   }
 
-  @org.springframework.beans.factory.annotation.Autowired
   public DocumentService(Store s, AiClient ai, DocumentOrchestrator orchestrator,
       DocumentStorage storage, DemoService demoAccess, CustomerNotifications customerNotifications,
       DocumentAddressVerifier addressVerifier) {
+    this(s, ai, orchestrator, storage, demoAccess, customerNotifications, addressVerifier, null);
+  }
+
+  @org.springframework.beans.factory.annotation.Autowired
+  public DocumentService(Store s, AiClient ai, DocumentOrchestrator orchestrator,
+      DocumentStorage storage, DemoService demoAccess, CustomerNotifications customerNotifications,
+      DocumentAddressVerifier addressVerifier, ImagePdfService imagePdfs) {
     this.s = s;
     this.ai = ai;
     this.orchestrator = orchestrator;
@@ -83,6 +90,7 @@ public class DocumentService {
     this.demoAccess = demoAccess;
     this.customerNotifications = customerNotifications;
     this.addressVerifier = addressVerifier;
+    this.imagePdfs = imagePdfs;
   }
 
   @PostConstruct
@@ -279,12 +287,9 @@ public class DocumentService {
   List<Map<String, Object>> documents(String id, boolean repository) {
     return s.db.queryForList(
         "SELECT d.*,v.id AS"
-            + " version_id,v.filename,v.sha256,v.size_bytes,v.extraction_json,v.created_at,"
-            + " e.reviewed_by AS evidence_reviewed_by,e.reviewed_at AS evidence_reviewed_at FROM"
+            + " version_id,v.filename,v.sha256,v.size_bytes,v.extraction_json,v.created_at FROM"
             + " submission_documents d JOIN document_versions v ON v.document_id=d.id AND"
-            + " v.version=d.current_version LEFT JOIN document_evidence_reviews e ON e.version_id=v.id"
-            + " AND e.sha256=v.sha256"
-            + " WHERE d.submission_id=? AND d.repository_only=? ORDER"
+            + " v.version=d.current_version WHERE d.submission_id=? AND d.repository_only=? ORDER"
             + " BY d.id",
         id,
         repository);
@@ -529,8 +534,10 @@ public class DocumentService {
                   + " WHERE document_id=? ORDER BY version DESC",
               d.get("id")));
       for (var item : (List<Map<String, Object>>) d.get("versions")) {
-        var sources = s.readMap((String) item.remove("extraction_json")).get("source_images");
+        var metadata = s.readMap((String) item.remove("extraction_json"));
+        var sources = metadata.get("source_images");
         item.put("source_page_count", sources instanceof List<?> pages ? pages.size() : 1);
+        item.put("converted_from_images", Boolean.TRUE.equals(metadata.get("converted_from_images")));
       }
     }
     var checks =
@@ -630,16 +637,21 @@ public class DocumentService {
   }
 
   JsonNode extractionPayload(byte[] bytes, String documentId, List<byte[]> imagePages) {
+    return extractionRequest(bytes, documentId, imagePages, false);
+  }
+
+  JsonNode extractionRequest(byte[] bytes, String documentId, List<byte[]> imagePages, boolean converted) {
     try {
+      var payload = map("document_id", documentId,
+          imagePages != null || DocumentContent.type(bytes).startsWith("image/") ? "images_base64" : "pdf_base64",
+          imagePages != null ? imagePages.stream().map(b -> Base64.getEncoder().encodeToString(b)).toList() :
+            DocumentContent.type(bytes).startsWith("image/") ? List.of(Base64.getEncoder().encodeToString(bytes)) : Base64.getEncoder().encodeToString(bytes));
+      if (converted) payload.put("converted_from_images", true);
       String body =
           ai.client
               .post()
               .uri("/documents/extract")
-              .body(
-                  map("document_id", documentId,
-                      imagePages != null || DocumentContent.type(bytes).startsWith("image/") ? "images_base64" : "pdf_base64",
-                      imagePages != null ? imagePages.stream().map(b -> Base64.getEncoder().encodeToString(b)).toList() :
-                        DocumentContent.type(bytes).startsWith("image/") ? List.of(Base64.getEncoder().encodeToString(bytes)) : Base64.getEncoder().encodeToString(bytes)))
+              .body(payload)
               .retrieve()
               .body(String.class);
       JsonNode node = s.json.readTree(body);
@@ -674,9 +686,9 @@ public class DocumentService {
       } catch (Exception ignored) {
         // Never expose upstream bodies or credentials in upload errors.
       }
+      var imageError = DocumentUploadErrors.imageError(code);
+      if (imageError != null) throw imageError;
       throw switch (code) {
-        case "INVALID_IMAGE", "INVALID_DOCUMENT", "IMAGE_QUALITY" ->
-            new ApiException(422, code, "Upload a clear, complete PDF, JPG or PNG. Include every page and edge; blurry, cropped or unreadable evidence cannot be accepted.");
         case "INVALID_PDF" ->
             new ApiException(
                 400,
@@ -695,7 +707,7 @@ public class DocumentService {
             new ApiException(
                 422,
                 code,
-                "The PDF is not one supported document type. Use a customer information form,"
+                "The uploaded file is not one supported document type. Use a customer information form,"
                     + " account application, tax residency declaration or authorised supporting"
                     + " document. No document was accepted.");
         case "EXTRACTION_FAILED", "VALIDATION_ERROR" ->
@@ -783,7 +795,10 @@ public class DocumentService {
       DocumentContent.validate(filename, bytes);
       String hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
       String groupHash = combineImages ? CustomerSessions.hash(s.json(imagePages.stream().map(raw -> Base64.getEncoder().encodeToString(raw)).toList())) : null;
-      boolean duplicate = combineImages ? s.db.queryForList("SELECT v.extraction_json FROM document_versions v JOIN submission_documents d ON d.id=v.document_id WHERE d.submission_id=?", id).stream()
+      final String originalHash = hash;
+      boolean singleImage = !combineImages && DocumentContent.type(bytes).startsWith("image/");
+      boolean duplicate = singleImage ? s.db.queryForList("SELECT v.sha256,v.extraction_json FROM document_versions v JOIN submission_documents d ON d.id=v.document_id WHERE d.submission_id=?", id).stream()
+          .anyMatch(row -> originalHash.equals(row.get("sha256")) || originalHash.equals(s.readMap((String) row.get("extraction_json")).get("image_source_sha256"))) : combineImages ? s.db.queryForList("SELECT v.extraction_json FROM document_versions v JOIN submission_documents d ON d.id=v.document_id WHERE d.submission_id=?", id).stream()
           .anyMatch(row -> groupHash.equals(s.readMap((String) row.get("extraction_json")).get("image_group_sha256"))) : s.db.queryForObject(
               "SELECT COUNT(*) FROM document_versions v JOIN submission_documents d ON"
                   + " d.id=v.document_id WHERE d.submission_id=? AND v.sha256=?",
@@ -795,16 +810,40 @@ public class DocumentService {
         throw new ApiException(
             409, "DUPLICATE_FILE", "This exact document already exists in the case's document history");
       String docId = replace == null ? s.id("FILE") : replace;
+      boolean fromImages = DocumentContent.type(bytes).startsWith("image/");
+      ImagePdfService.Converted converted = null;
+      String sourceHash = hash;
       JsonNode extracted;
       try {
-        extracted = combineImages ? extractionPayload(bytes, docId, imagePages) : extraction(bytes, docId);
+        if (fromImages) {
+          List<byte[]> pages = combineImages ? imagePages : List.of(bytes);
+          List<String> names = combineImages ? originals.stream().map(MultipartFile::getOriginalFilename).toList() : List.of(filename);
+          converted = imagePdfs.convert(id, pages, names, a.getName());
+          bytes = converted.pdf();
+          hash = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+          filename = filename.replaceFirst("(?i)\\.(png|jpe?g)$", "") + ".pdf";
+          extracted = extractionRequest(bytes, docId, null, true);
+          var metadata = (com.fasterxml.jackson.databind.node.ObjectNode) extracted;
+          metadata.put("requires_review", true);
+          metadata.put("converted_from_images", true);
+          metadata.put("image_source_sha256", sourceHash);
+          metadata.set("source_images", converted.originals());
+          metadata.put("conversion_library", "img2pdf");
+          metadata.put("conversion_page_count", converted.originals().size());
+          if (combineImages) metadata.put("image_group_sha256", groupHash);
+          for (var field : extracted.path("fields"))
+            if (field.path("page").asInt() > converted.originals().size())
+              throw new ApiException(422, "EXTRACTION_FAILED", "Extracted page references exceed the converted PDF page count");
+        } else {
+          extracted = combineImages ? extractionPayload(bytes, docId, imagePages) : extraction(bytes, docId);
+        }
       } catch (ApiException error) {
         if (error.status() >= 500) throw error;
         String attachment = combineImages ? "Combined image pages" : filename;
         throw new ApiException(error.status(), error.code(), attachment + " — " + error.getMessage());
       }
       // The backend also enforces visual review even if an upstream response claims certainty.
-      if (combineImages || DocumentContent.type(bytes).startsWith("image/"))
+      if (combineImages || fromImages)
         ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).put("requires_review", true);
       if ("DIGITAL_EFORM".equals(c.get("capture_method"))
           && !"SUPPORTING_DOCUMENT".equals(extracted.path("document_type").asText()))
@@ -835,17 +874,6 @@ public class DocumentService {
             id,
             extracted.path("document_type").asText());
       String key = UUID.randomUUID() + DocumentContent.extension(bytes), versionId = s.id("VER");
-      if (combineImages) {
-        ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).put("image_group_sha256", groupHash);
-        var sources = ((com.fasterxml.jackson.databind.node.ObjectNode) extracted).putArray("source_images");
-        for (int index = 0; index < imagePages.size(); index++) {
-          byte[] raw = imagePages.get(index);
-          String pageKey = index == 0 ? key : UUID.randomUUID() + DocumentContent.extension(raw);
-          sources.addObject().put("storage_key", pageKey).put("filename", originals.get(index).getOriginalFilename())
-              .put("sha256", HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(raw))).put("size_bytes", raw.length);
-          if (index > 0) storeOriginal(pageKey, raw);
-        }
-      }
       // Register before writing: a failed write may still have created a partial object.
       // Remove newly created files on database rollback; accepted versions are immutable.
       if (org.springframework.transaction.support.TransactionSynchronizationManager
@@ -905,7 +933,9 @@ public class DocumentService {
               "sha256",
               hash,
               "method",
-              extracted.path("method").asText()));
+              extracted.path("method").asText(),
+              "convertedFromImages", fromImages,
+              "sourcePageCount", fromImages ? converted.originals().size() : 0));
     }
     s.db.update(
         "UPDATE document_submissions SET"
@@ -1041,55 +1071,6 @@ public class DocumentService {
             formVersion,
             "method",
             "DIGITAL_EFORM"));
-  }
-
-  @Transactional
-  public Object reviewDocumentEvidence(
-      String id, String versionId, int revision, String note, Authentication actor) {
-    if (!reviewer(actor))
-      throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
-    var c = access(id, actor, true);
-    editable(c);
-    if (!Objects.equals(c.get("revision"), revision))
-      throw new ApiException(409, "STALE_REVIEW", "Reload the current case before recording evidence review");
-    var document =
-        documents(id, false).stream()
-            .filter(d -> versionId.equals(d.get("version_id")))
-            .findFirst()
-            .orElseThrow(() -> new ApiException(409, "STALE_REVIEW", "Review the current document version"));
-    if (document.get("evidence_reviewed_by") != null) return detail(id, actor);
-    var extraction = s.readMap((String) document.get("extraction_json"));
-    if (!Boolean.TRUE.equals(extraction.get("requires_review"))
-        || "UNKNOWN".equals(document.get("document_type"))
-        || !(extraction.get("fields") instanceof List<?> fields)
-        || fields.isEmpty())
-      throw new ApiException(409, "EVIDENCE_NOT_REVIEWABLE", "Use a supported document with readable fields");
-    if (extraction.get("observations") instanceof List<?> observations
-        && observations.stream().anyMatch(item -> item instanceof Map<?, ?> observation
-            && "UNCERTAIN".equals(observation.get("issue_type"))))
-      throw new ApiException(409, "EVIDENCE_CONFLICT", "Resolve the uncertain source fields before recording review");
-    String uploader = s.db.queryForObject(
-        "SELECT uploaded_by FROM document_versions WHERE id=?", String.class, versionId);
-    if (actor.getName().equals(uploader))
-      throw new ApiException(403, "INDEPENDENT_REVIEW_REQUIRED", "Another reviewer must inspect this upload");
-    if (note == null || note.trim().length() < 12 || note.trim().length() > 1000)
-      throw new ApiException(400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12 to 1000 characters");
-    if (!storageVerified(document))
-      throw new ApiException(409, "EVIDENCE_INTEGRITY", "The original document could not be verified");
-    s.db.update("INSERT INTO document_evidence_reviews(version_id,sha256,reviewed_by,reviewed_at) VALUES(?,?,?,?)",
-        versionId, document.get("sha256"), actor.getName(), Store.now());
-    s.db.update("UPDATE document_submissions SET requires_rm_approval=TRUE,approved_revision=NULL WHERE id=?", id);
-    event(id, actor, "EVIDENCE_REVIEWED",
-        map("versionId", versionId, "sha256", document.get("sha256"), "revision", revision, "note", note.trim()));
-    validateInternal(id, actor);
-    if (s.db.queryForObject(
-        "SELECT COUNT(*) FROM document_exceptions e JOIN validation_rules r ON r.id=e.rule_id"
-            + " WHERE e.submission_id=? AND e.status='OPEN' AND r.condition_type='CLASSIFICATION'",
-        Integer.class, id) == 0) {
-      orchestrator.run(this, id, actor);
-    }
-    syncCustomer(id);
-    return detail(id, actor);
   }
 
   @Transactional
@@ -1341,8 +1322,9 @@ public class DocumentService {
             version,
             id);
     if (rows.isEmpty()) throw new ApiException(404, "NOT_FOUND", "Document version not found");
-    var sources = s.json.readTree((String) rows.getFirst().get("extraction_json")).path("source_images");
-    if (sources.isArray()) {
+    var metadata = s.json.readTree((String) rows.getFirst().get("extraction_json"));
+    var sources = metadata.path("source_images");
+    if (sources.isArray() && !metadata.path("converted_from_images").asBoolean()) {
       if (page < 1 || page > sources.size()) throw new ApiException(404, "NOT_FOUND", "Image page not found");
       return verifiedSource(sources.get(page - 1));
     }
@@ -1354,6 +1336,15 @@ public class DocumentService {
     if (bytes.length != source.path("size_bytes").asLong() || !HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes)).equals(source.path("sha256").asText()))
       throw new ApiException(409, "DOCUMENT_INTEGRITY", "Stored image integrity check failed; staff review is required");
     return bytes;
+  }
+
+  public byte[] originalImage(String id, String version, int page, Authentication actor) throws Exception {
+    access(id, actor, false);
+    var rows = s.db.queryForList("SELECT v.extraction_json FROM document_versions v JOIN submission_documents d ON d.id=v.document_id WHERE v.id=? AND d.submission_id=? AND d.repository_only=FALSE", version, id);
+    if (rows.isEmpty()) throw new ApiException(404, "NOT_FOUND", "Document version not found");
+    var sources = s.json.readTree((String) rows.getFirst().get("extraction_json")).path("source_images");
+    if (!sources.isArray() || page < 1 || page > sources.size()) throw new ApiException(404, "NOT_FOUND", "Original image page not found");
+    return verifiedSource(sources.get(page - 1));
   }
 
   List<Map<String, Object>> fields(List<Map<String, Object>> docs, String field) {
@@ -1497,9 +1488,8 @@ public class DocumentService {
             docs.stream()
                 .filter(
                     d ->
-                        (d.get("evidence_reviewed_by") == null
-                            && Boolean.TRUE.equals(
-                                s.readMap((String) d.get("extraction_json")).get("requires_review")))
+                        Boolean.TRUE.equals(
+                                s.readMap((String) d.get("extraction_json")).get("requires_review"))
                             || "UNKNOWN".equals(d.get("document_type")))
                 .map(
                     d ->
@@ -1858,29 +1848,6 @@ public class DocumentService {
             s.readMap((String) d.get("extraction_json")).get("requires_review"));
   }
 
-  boolean attachmentEvidencePasses(List<Map<String, Object>> checks) {
-    return checks.stream().anyMatch(check -> "ATTACH_SUPPORTING_DOCUMENT".equals(check.get("rule_key"))
-            && Boolean.TRUE.equals(check.get("passed")))
-        && checks.stream()
-            .filter(check -> Set.of("SERVICE_SUPPORT", "REF_SUPPORTING").contains(check.get("rule_key")))
-            .allMatch(check -> Boolean.TRUE.equals(check.get("passed")));
-  }
-
-  List<Map<String, Object>> evaluateAttachment(
-      String id, List<Map<String, Object>> currentDocuments, Map<String, Object> candidate) {
-    var predicted = new ArrayList<>(currentDocuments);
-    predicted.add(candidate);
-    return evaluate(id, predicted);
-  }
-
-  boolean attachmentIntroducesNoFailures(
-      List<Map<String, Object>> current, List<Map<String, Object>> predicted) {
-    var existing = current.stream().filter(check -> Boolean.FALSE.equals(check.get("passed")))
-        .map(check -> check.get("check_key")).collect(java.util.stream.Collectors.toSet());
-    return predicted.stream().filter(check -> Boolean.FALSE.equals(check.get("passed")))
-        .allMatch(check -> existing.contains(check.get("check_key")));
-  }
-
   @Transactional
   public Object resolve(String id, String key, Authentication a) {
     var result = resolveWithPreflight(id, key, a, null);
@@ -1909,10 +1876,8 @@ public class DocumentService {
       return s.readMap((String) previous.getFirst().get("result_json"));
     }
     editable(c);
-    var currentDocuments = documents(id, false);
-    var currentChecks = evaluate(id, currentDocuments);
     boolean missing =
-        currentChecks.stream()
+        evaluate(id).stream()
             .anyMatch(
                 ch ->
                     ch.get("rule_key").equals("ATTACH_SUPPORTING_DOCUMENT")
@@ -1922,11 +1887,8 @@ public class DocumentService {
           409,
           "NO_ELIGIBLE_EXCEPTION",
           "No missing supporting-document exception is eligible for this approved action");
-    if (proposed == null) proposed = (Map<String, Object>) preflight(id, a);
-    Object proposedId = proposed.get("candidateDocumentId");
     var candidate =
         documents(id, true).stream()
-            .filter(d -> Objects.equals(proposedId, d.get("id")))
             .filter(d -> repositoryEligible(c, d))
             .findFirst()
             .orElseThrow(
@@ -1936,17 +1898,13 @@ public class DocumentService {
                         "NO_AUTHORISED_SOURCE",
                         "No authorised, valid supporting document verified against this case"
                             + " reference"));
+    if (proposed == null) proposed = (Map<String, Object>) preflight(id, a);
     PolicyService.requireDocumentSimulation(proposed, c, ruleSet(), candidate);
     PolicyService.requireDocumentAction(
         "ATTACH_VERIFIED_DOCUMENT", repositoryEligible(c, candidate));
     if (!storageVerified(candidate))
       throw new ApiException(
           409, "SOURCE_UNVERIFIED", "Repository bytes do not match the authorised version");
-    var currentProjection = evaluateAttachment(id, currentDocuments, candidate);
-    if (!attachmentEvidencePasses(currentProjection)
-        || !attachmentIntroducesNoFailures(currentChecks, currentProjection))
-      throw new ApiException(409, "UNSAFE_DOCUMENT_SIMULATION",
-          "Current supporting evidence no longer satisfies the request");
     event(
         id,
         a,
@@ -1999,7 +1957,14 @@ public class DocumentService {
         Objects.equals(persisted.get("version_id"), candidate.get("version_id"))
             && repositoryEligible(c, persisted)
             && storageVerified(persisted)
-            && attachmentEvidencePasses(evaluate(id));
+            && evaluate(id).stream()
+                .anyMatch(
+                    ch ->
+                        "ATTACH_SUPPORTING_DOCUMENT".equals(ch.get("rule_key"))
+                            && Boolean.TRUE.equals(ch.get("passed")))
+            && evaluate(id).stream()
+                .filter(ch -> "REF_SUPPORTING".equals(ch.get("rule_key")))
+                .allMatch(ch -> Boolean.TRUE.equals(ch.get("passed")));
     if (!verified)
       throw new ApiException(
           409,
@@ -2047,8 +2012,7 @@ public class DocumentService {
   @Transactional
   public Object preflight(String id, Authentication a) {
     var c = access(id, a, true);
-    var currentDocuments = documents(id, false);
-    var checks = evaluate(id, currentDocuments);
+    var checks = evaluate(id);
     long passed = checks.stream().filter(ch -> Boolean.TRUE.equals(ch.get("passed"))).count();
     long blocking = checks.stream().filter(PolicyService::blockingDocumentCheck).count();
     boolean attachment =
@@ -2057,36 +2021,48 @@ public class DocumentService {
                 ch ->
                     ch.get("rule_key").equals("ATTACH_SUPPORTING_DOCUMENT")
                         && Boolean.FALSE.equals(ch.get("passed")));
-    List<Map<String, Object>> predictedChecks = checks;
-    Map<String, Object> candidate = null;
-    boolean supportingEvidencePasses = false;
-    if (attachment) {
-      for (var source : documents(id, true)) {
-        if (!repositoryEligible(c, source)) continue;
-        var projection = evaluateAttachment(id, currentDocuments, source);
-        boolean safe = attachmentEvidencePasses(projection)
-            && attachmentIntroducesNoFailures(checks, projection);
-        if (candidate == null || safe) {
-          candidate = source;
-          predictedChecks = projection;
-        }
-        if (safe) {
-          supportingEvidencePasses = true;
-          break;
-        }
-      }
-    }
-    boolean eligible = candidate != null;
-    boolean noRegressions = attachmentIntroducesNoFailures(checks, predictedChecks);
+    boolean eligible =
+        attachment && documents(id, true).stream().anyMatch(d -> repositoryEligible(c, d));
+    var predictedDocuments = new ArrayList<>(documents(id, false));
+    if (eligible)
+      predictedDocuments.add(
+          documents(id, true).stream()
+              .filter(d -> repositoryEligible(c, d))
+              .findFirst()
+              .orElseThrow());
+    var predictedChecks = evaluate(id, predictedDocuments);
+    var candidate = eligible ? predictedDocuments.getLast() : null;
+    var previouslyPassed =
+        checks.stream()
+            .filter(ch -> Boolean.TRUE.equals(ch.get("passed")))
+            .map(ch -> ch.get("check_key"))
+            .toList();
+    var existingFailures =
+        checks.stream()
+            .filter(ch -> Boolean.FALSE.equals(ch.get("passed")))
+            .map(ch -> ch.get("check_key"))
+            .toList();
+    boolean noRegressions =
+        predictedChecks.stream()
+            .filter(ch -> Boolean.FALSE.equals(ch.get("passed")))
+            .noneMatch(
+                ch ->
+                    previouslyPassed.contains(ch.get("check_key"))
+                        || !existingFailures.contains(ch.get("check_key")));
     boolean safeAttachment =
         eligible
             && currentRevisionValidated(c)
-            && supportingEvidencePasses
+            && noRegressions
             && checks.stream()
                 .noneMatch(
                     ch ->
                         "CLASSIFICATION".equals(ch.get("condition_type"))
-                            && Boolean.FALSE.equals(ch.get("passed")));
+                            && Boolean.FALSE.equals(ch.get("passed")))
+            && predictedChecks.stream()
+                .anyMatch(
+                    ch ->
+                        "ATTACH_SUPPORTING_DOCUMENT".equals(ch.get("rule_key"))
+                            && Boolean.TRUE.equals(ch.get("passed")));
     long outstanding =
         s.db.queryForObject(
             "SELECT COUNT(*) FROM document_exceptions WHERE submission_id=? AND status='OPEN'",

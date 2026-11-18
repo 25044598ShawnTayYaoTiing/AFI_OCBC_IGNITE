@@ -197,6 +197,7 @@ public class DigitalFormService {
               (String) customer.get("id"),
               a);
       s.db.update("UPDATE document_submissions SET capture_method='DIGITAL_EFORM' WHERE id=?", id);
+      customers.copyRepository(customer, id, a);
     } else {
       var c = customers.owned(id, a);
       documents.access(id, a, true);
@@ -312,9 +313,9 @@ public class DigitalFormService {
             true,
             "declaredAt",
             declaredAt.toString()));
-    if (!files.isEmpty()) documents.uploadInternal(id, files, null, a, !initial, combineImages);
-    if (initial) customers.copyRepository(customer, id, a);
-    if (initial || files.isEmpty()) documents.validate(id, a);
+    if (files.isEmpty()) documents.validate(id, a);
+    else if (combineImages) documents.upload(id, files, null, a, true);
+    else documents.upload(id, files, null, a);
     notifications.publish(
         id,
         initial ? "SUBMISSION_RECEIVED" : "CORRECTION_RECEIVED",

@@ -140,25 +140,18 @@ def test_gemini_adapter_uses_configured_model_json_schema_and_no_tools(monkeypat
     sdk.__enter__.return_value = sdk
     sdk.models.generate_content.return_value = SimpleNamespace(text=proposal.model_dump_json())
     constructor = MagicMock(return_value=sdk)
-    monkeypatch.setattr("app.document_intelligence.genai.Client", constructor)
-    configured = replace(settings, gemini_api_key="fake-test-key", gemini_timeout_ms=17321)
-    response = generate_investigation(request, baseline, configured)
+    monkeypatch.setattr("app.agents.gemini.genai.Client", constructor)
+    response = generate_investigation(request, baseline, replace(settings, gemini_api_key="fake-test-key"))
     assert response == proposal
     call = sdk.models.generate_content.call_args.kwargs
     assert call["model"] == settings.gemini_model
     assert call["config"].response_mime_type == "application/json"
-    wire_schema = call["config"].response_json_schema
-    model_schema = ModelInvestigation.model_json_schema()
-    assert set(wire_schema["properties"]) == set(model_schema["properties"])
-    assert set(wire_schema["required"]) == set(model_schema["required"])
-    assert set(wire_schema["properties"]["candidate_actions"]["items"]["enum"]) == {
-        "RETRY_FULL_BATCH", "RESUME_PENDING_ONLY", "REQUEST_MANUAL_REVIEW",
-    }
+    assert call["config"].response_json_schema == ModelInvestigation.model_json_schema()
     assert call["config"].tools is None
     assert call["config"].automatic_function_calling.disable
-    assert constructor.call_args.kwargs["http_options"].timeout == configured.gemini_timeout_ms
+    assert constructor.call_args.kwargs["http_options"].timeout == 15000
     assert constructor.call_args.kwargs["http_options"].retry_options.attempts == 1
-    assert "fake-test-key" not in str(call["contents"])
+    assert "fake-test-key" not in call["contents"]
     sdk.__exit__.assert_called_once()
 
 
@@ -166,7 +159,7 @@ def test_adapter_malformed_json_transparently_falls_back(monkeypatch, small_snap
     sdk = MagicMock()
     sdk.__enter__.return_value = sdk
     sdk.models.generate_content.return_value = SimpleNamespace(text='{"candidate_actions":["RUN_SQL"]}')
-    monkeypatch.setattr("app.document_intelligence.genai.Client", MagicMock(return_value=sdk))
+    monkeypatch.setattr("app.agents.gemini.genai.Client", MagicMock(return_value=sdk))
     response = investigate(InvestigationRequest.model_validate(small_snapshot), replace(settings, gemini_api_key="fake"))
     assert response.method == "DETERMINISTIC_FALLBACK"
     assert "validation" in response.fallback_reason

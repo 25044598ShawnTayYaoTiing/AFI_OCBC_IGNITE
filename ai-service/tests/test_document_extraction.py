@@ -16,21 +16,6 @@ class TextPage(dict):
 
 
 
-@pytest.mark.parametrize("separator", ["\t", "    "])
-def test_labelled_table_cells_are_grounded_without_colons(separator):
-    line = separator.join(["Customer Full Name", "Alex Tan", "Postal Code", "018989"])
-    proposed = d.ModelExtraction(document_type='SUPPORTING_DOCUMENT', requires_review=False, fields=[
-        d.ModelEvidenceField(field='customer_name', page=1, value='Alex Tan', supporting_text=line),
-        d.ModelEvidenceField(field='postal_code', page=1, value='018989',
-                             supporting_text=separator.join(["Postal Code", "018989"])),
-    ])
-    fields, _ = d.normalise(proposed, [line])
-    assert [(f.field, f.value) for f in fields] == [('customer_name', 'Alex Tan'), ('postal_code', '018989')]
-    assert all(f.supporting_text in line for f in fields)
-    assert d.source_value('customer_name', f'Customer Full Name\nAlex Tan\nPostal Code{separator}018989') == 'Alex Tan'
-    assert d.source_value('customer_name', 'Customer Full Name Alex Tan') is None
-
-
 def test_aliases_and_contiguous_source_values():
     page = "Customer Full Name\nAlex Tan\nMailing Address\n12 Sample Lane\nPostal Code\n000000\nEmail Address\nalex@example.invalid\nContact Number\n6000 0000"
     model = d.ModelExtraction.model_validate({

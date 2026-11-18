@@ -37,38 +37,24 @@ export function reviewState(detail: Detail) {
   const authorisation = waiting.some(
     (task) => task.status === "AWAITING_RESOLVER_AUTHORIZATION",
   );
-  const title = cancelled
-    ? "Request cancelled by the customer"
-    : routed
-      ? "Handed over to Operations"
-      : held
-        ? "On hold — reviewer investigation required"
-        : !current
-          ? "Recheck this revision before deciding"
-          : blocking
-            ? `Cannot approve — ${blocking} ${blocking === 1 ? "issue requires" : "issues require"} attention`
-            : open.length
-              ? "Review outstanding findings before deciding"
-              : eligible
-                ? "Ready for reviewer approval"
-                : "Review the recorded validation outcome";
-  const next = cancelled
-    ? "This request is closed. Documents and decision history are retained; no further action is required."
-    : routed
-      ? "The handover is recorded. Banking fulfilment takes place outside this workspace."
-      : held
-        ? "Review the evidence, resolve critical findings, then record an explicit hold-clearance decision."
-        : !current
-          ? "Run Recheck package to obtain current policy results. Earlier findings may be out of date."
-          : authorisation
-            ? "Review the findings and authorise customer correction when appropriate."
-            : customerTasks.length
-              ? "The customer has outstanding correction tasks. Review the requirements and supporting evidence."
-              : open.length
-                ? open[0].corrective_action
-                : eligible
-                  ? "Review the evidence, then confirm approval and handover for this revision."
-                  : "Inspect readiness for the latest backend decision.";
+  const title = cancelled ? "Request cancelled"
+    : routed ? "Sent to Operations"
+    : held ? "Needs review"
+    : !current ? "Request needs checking"
+    : authorisation ? "Staff approval required for corrections"
+    : customerTasks.length ? "Waiting for customer corrections"
+    : open.length || blocking ? "Issues need attention"
+    : eligible ? "Ready for Operations approval"
+    : "Request checked";
+  const next = cancelled ? "No further action is needed."
+    : routed ? "Operations will take it from here."
+    : held ? "Review the evidence and risk before clearing the hold."
+    : !current ? "Check the latest request details before making a decision."
+    : authorisation ? "Review the issues before asking the customer for a correction."
+    : customerTasks.length ? "The customer needs to update their request before it can proceed."
+    : open.length ? "Review the issue and its supporting evidence below."
+    : eligible ? "Approve this request to send it to Operations."
+    : "Review the recorded outcome before taking further action.";
   return {
     current,
     open,

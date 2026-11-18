@@ -30,26 +30,40 @@ final class CaseRisk {
         issue = "IDENTITY_CONFLICT";
         group = "identity";
       } else if (key.equals("SERVICE_SUPPORT")) {
+        boolean supplied;
         // Identify the actual supporting document in persisted data, not a model's diagnosis.
-        var supportingIds = new HashSet<>(s.db.queryForList(
-            "SELECT id FROM submission_documents WHERE submission_id=? AND"
-                + " document_type='SUPPORTING_DOCUMENT' AND repository_only=FALSE",
-            String.class, submission.get("id")));
-        String category = Objects.toString(submission.get("category"), "");
-        boolean tax = "TAX_RESIDENCY_UPDATE".equals(category);
-        var comparedFields = tax ? List.of("tax_identifier", "foreign_tax_country")
-            : BankingServicePolicy.addressLabels(category, BankingServicePolicy.requestedAddressField(category));
+        supplied =
+            s.db.queryForObject(
+                    "SELECT COUNT(*) FROM submission_documents WHERE submission_id=? AND"
+                        + " document_type='SUPPORTING_DOCUMENT'",
+                    Integer.class,
+                    submission.get("id"))
+                > 0;
         boolean extracted =
             evidence.stream()
                 .anyMatch(
-                    e -> supportingIds.contains(e.get("document_id"))
-                        && comparedFields.contains(e.get("field_name")));
+                    e ->
+                        e.get("document_id") != null
+                            && Set.of(
+                                    "mailing_address",
+                                    "residential_address",
+                                    "tax_identifier",
+                                    "foreign_tax_country")
+                                .contains(e.get("field_name"))
+                            && s.db.queryForObject(
+                                    "SELECT COUNT(*) FROM submission_documents WHERE id=? AND"
+                                        + " document_type='SUPPORTING_DOCUMENT'",
+                                    Integer.class,
+                                    e.get("document_id"))
+                                > 0);
         issue =
-            supportingIds.isEmpty()
+            !supplied
                 ? "SUPPORT_MISSING"
                 : !extracted
                     ? "SUPPORT_UNREADABLE"
-                    : tax ? "TAX_CONFLICT" : "ADDRESS_CONFLICT";
+                    : "TAX_RESIDENCY_UPDATE".equals(submission.get("category"))
+                        ? "TAX_CONFLICT"
+                        : "ADDRESS_CONFLICT";
         group = "support";
       } else if (key.startsWith("ATTACH_SUPPORTING") || key.startsWith("REF_SUPPORTING")) {
         issue = "SUPPORT_MISSING";

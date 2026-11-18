@@ -8,9 +8,8 @@ from fastapi import HTTPException
 from pydantic import Field, field_validator
 from pypdf import PdfReader
 from pypdf.generic import IndirectObject
-from PIL import Image
 from google.genai import types
-import warnings
+from app.image_conversion import decode_images
 from app.config import Settings
 from app.document_intelligence import StrictModel, generate, succeeded, failed, failure_code
 
@@ -21,7 +20,8 @@ TITLES = {'SERVICE_REQUEST': 'Banking Service Request', 'CUSTOMER_INFORMATION': 
 
 class ExtractRequest(StrictModel):
     document_id: str = Field(min_length=1, max_length=64)
-    pdf_base64: str | None = Field(default=None, max_length=14_000_000)
+    pdf_base64: str | None = Field(default=None, max_length=23_000_000)
+    converted_from_images: bool = False
     images_base64: list[str] = Field(default_factory=list, max_length=10)
 
 # Model labels are normalised before the same closed field enum is validated.
@@ -114,7 +114,7 @@ def extract_visual(document_id, media, page_count, settings):
             'Extract only supported synthetic banking forms or supporting documents; otherwise use UNKNOWN. '
             'Utility and telecommunications bills, bank statements, proof of address, and issued tax residency certificates are SUPPORTING_DOCUMENT. '
             'Distinguish issued tax certificates from customer tax self-declarations. '
-            'Read pages in their upright orientation, including sideways scans. Transcribe each page verbatim, preserving labels and newlines. Put each table label and its value on consecutive lines, or separate them with a tab. Map visible fields to the closed schema. '
+            'Read pages in their upright orientation, including sideways scans. Transcribe each page verbatim, preserving labels and newlines. Map visible fields to the closed schema. '
             'Cite the exact visible label and value on its page. Never infer missing text, dates, identities, consent, signatures or authenticity. '
             'Use existing/new address fields separately. New Email maps to email, New Mobile to mobile, TIN to tax_identifier. '
             'Omit unreadable or absent values. Report ambiguity with requires_review=true. '
@@ -126,11 +126,16 @@ def extract_visual(document_id, media, page_count, settings):
         if len(proposed.pages) != page_count or any(len(page) > 20000 for page in proposed.pages):
             raise ValueError('Invalid page transcription')
         if proposed.quality != 'READABLE':
-            reject(422, 'IMAGE_QUALITY', 'The document is blurry, cropped, incomplete or unreadable. Upload all pages clearly, with every edge and field visible.')
-        if not proposed.synthetic_label_visible or not any(re.search(r'\bsynthetic\b', page, re.I) for page in proposed.pages):
-            reject(422, 'UNSUPPORTED_FORMAT', 'Use synthetic demonstration documents only, with a visible synthetic label.')
+            reject(422, 'IMAGE_' + proposed.quality, {
+                'BLURRY': 'The text appears blurry. Upload an in-focus photo or original-resolution screenshot.',
+                'CROPPED': 'Part of the page appears cut off. Include all document edges and fields.',
+                'INCOMPLETE': 'The document appears incomplete. Upload all pages of the same form in order.',
+                'UNREADABLE': 'The image could not be read as document evidence. Preview it and upload the actual form or supporting document.'
+            }[proposed.quality])
         if proposed.document_type == 'UNKNOWN':
             reject(422, 'UNSUPPORTED_DOCUMENT', 'Upload one complete supported banking form or supporting document per group.')
+        if not proposed.synthetic_label_visible or not any(re.search(r'\bsynthetic\b', page, re.I) for page in proposed.pages):
+            reject(422, 'UNSUPPORTED_FORMAT', 'Use synthetic demonstration documents only, with a visible synthetic label.')
         # Repeated headers on multi-page forms are common. Keep consistent values once;
         # conflicting repetitions remain explicit review observations, never a chosen guess.
         grouped = {}
@@ -161,7 +166,7 @@ def extract_visual(document_id, media, page_count, settings):
         if not fields and not (has_conflicting_evidence and observations):
             if unverified:
                 raise ValueError('No extracted field had verifiable source evidence')
-            reject(422, 'IMAGE_QUALITY', 'No readable labelled fields were found. Upload a clearer full document.')
+            reject(422, 'NO_DOCUMENT_FIELDS', 'No readable form fields were found. Upload the actual banking form or supporting document rather than a logo, icon or other graphic.')
         succeeded()
         notes = ('Visual citations were checked against AI transcription. Human review of the original '
                  'is required; extraction never establishes authenticity.')
@@ -242,33 +247,19 @@ def has_visual_resources(page):
 def source_value(field: str, support: str) -> str | None:
     """Read a cited label/value block; never concatenate separate source fields."""
     lines = support.splitlines(keepends=True)
-
     def key(value):
         return re.sub(r'[^a-z0-9]+', ' ', value.lower()).strip()
-
-    def label_and_value(line):
-        parts = re.split(r':|\t+| {2,}', line.strip(), maxsplit=1)
-        return key(parts[0]), parts[1].strip() if len(parts) == 2 else ''
-
-    def known_label(label):
-        return label in LABELS or re.fullmatch(
-            r'(?:residential |mailing )?(?:postal|post|zip) code|case reference|tax identification reference', label)
-
     for index, line in enumerate(lines):
-        source_label, inline = label_and_value(line)
+        label, colon, inline = line.partition(':')
+        source_label = key(label)
         if source_label.replace(' ', '_') != field and LABELS.get(source_label) != field:
             continue
-        if inline:
-            # Another labelled column on the same line belongs to a separate field.
-            for separator in re.finditer(r'\t+| {2,}', inline):
-                following_label, _ = label_and_value(inline[separator.end():])
-                if known_label(following_label):
-                    return inline[:separator.start()].rstrip()
-            return inline
+        if colon and inline.strip():
+            return inline.strip()
         values = []
         for following in lines[index + 1:]:
-            candidate, _ = label_and_value(following)
-            if known_label(candidate):
+            candidate = key(following.partition(':')[0])
+            if candidate in LABELS or re.fullmatch(r'(?:residential |mailing )?(?:postal|post|zip) code|case reference|tax identification reference', candidate):
                 break
             if not any(value.strip() for value in values) and following.strip() and missing(following.strip()):
                 # Keep an explicit missing marker separate from explanatory text.
@@ -343,35 +334,12 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
     if request.images_base64:
         if request.pdf_base64 is not None:
             reject(422, 'INVALID_IMAGE', 'Send either one PDF or ordered image pages, not both.')
-        media, total = [], 0
-        for encoded in request.images_base64:
-            try:
-                if len(encoded) > 14_000_000:
-                    raise ValueError('Image too large')
-                raw = base64.b64decode(encoded, validate=True)
-                total += len(raw)
-                if not 0 < len(raw) <= 10 * 1024 * 1024 or total > 12 * 1024 * 1024:
-                    raise ValueError('Image limit')
-                with warnings.catch_warnings():
-                    warnings.simplefilter('error', Image.DecompressionBombWarning)
-                    with Image.open(io.BytesIO(raw)) as image:
-                        if image.format not in ('JPEG', 'PNG') or image.width * image.height > 25_000_000 or getattr(image, 'n_frames', 1) != 1:
-                            raise ValueError('Unsupported image')
-                        if min(image.size) < 200:
-                            reject(422, 'IMAGE_QUALITY', 'The image is too small. Upload a clear full-page photo or screenshot.')
-                        mime = 'image/jpeg' if image.format == 'JPEG' else 'image/png'
-                        image.verify()
-                    with Image.open(io.BytesIO(raw)) as image:
-                        image.load()
-                media.append(types.Part.from_bytes(data=raw, mime_type=mime))
-            except HTTPException:
-                raise
-            except Exception:
-                reject(422, 'INVALID_IMAGE', 'Use a complete JPG or PNG up to 10 MB, 25 megapixels; grouped pages must total at most 12 MB.')
+        media = [types.Part.from_bytes(data=raw, mime_type=mime)
+                 for raw, mime in decode_images(request.images_base64)]
         return extract_visual(request.document_id, media, len(media), settings)
     try:
         raw = base64.b64decode(request.pdf_base64, validate=True)
-        if not raw or len(raw) > 10 * 1024 * 1024 or not raw.startswith(b'%PDF-'):
+        if not raw or len(raw) > (16 if request.converted_from_images else 10) * 1024 * 1024 or not raw.startswith(b'%PDF-'):
             raise ValueError('Invalid PDF')
         reader = PdfReader(io.BytesIO(raw), strict=True)
         if reader.is_encrypted:
@@ -387,7 +355,7 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
     except Exception:
         reject(422, 'INVALID_PDF', 'Use a readable, unencrypted PDF of at most 10 MB and 30 pages.')
     text = '\n'.join(pages)
-    if any(not page.strip() for page in pages) or any(has_visual_resources(page) for page in reader.pages):
+    if request.converted_from_images or any(not page.strip() for page in pages) or any(has_visual_resources(page) for page in reader.pages):
         return extract_visual(request.document_id,
             [types.Part.from_bytes(data=raw, mime_type='application/pdf')], len(pages), settings)
     if not re.search(r'\bsynthetic\b', text, re.I):

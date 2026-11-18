@@ -1,12 +1,15 @@
 import type { Detail, Submission } from "../document-types";
 
 export function nextCaseAction(submission: Submission, openCount: number) {
-  if (submission.status === "OPERATIONS") return "Operations handover recorded";
-  if (submission.status === "DRAFT") return "Upload the customer’s account-opening documents";
-  if (submission.validated_revision !== submission.revision) return "Check the current document package";
-  if (openCount && submission.next_action) return submission.next_action;
-  if (openCount) return submission.status === "HUMAN_REVIEW" ? "Reviewer must assess the unresolved findings" : "Obtain the recorded corrections and recheck the package";
-  return submission.status === "READY" ? "Confirm readiness for Operations" : "Review the recorded validation result";
+  if (submission.status === "OPERATIONS") return "With Operations";
+  if (submission.status === "CANCELLED") return "No action needed";
+  if (submission.status === "DRAFT") return "Add documents";
+  if (submission.risk_hold || submission.status === "ON_HOLD") return "Review the risk and evidence";
+  if (submission.validated_revision !== submission.revision) return "Check the request";
+  if (submission.status === "CORRECTION_REQUIRED") return "Wait for customer corrections";
+  if (openCount) return "Review open issues";
+  return ["READY", "RESOLUTION_MANAGEMENT"].includes(submission.status)
+    ? "Review for approval" : "View case outcome";
 }
 
 export function caseFacts(detail: Detail) {
@@ -24,3 +27,12 @@ export function caseFacts(detail: Detail) {
     routed: detail.submission.status === "OPERATIONS",
   };
 }
+
+
+export const requestedFields: Record<string, string[]> = {
+  ADDRESS_CHANGE: ["mailing_address"],
+  RESIDENTIAL_ADDRESS_CHANGE: ["residential_address"],
+  CONTACT_UPDATE: ["email", "mobile"],
+  TAX_RESIDENCY_UPDATE: ["tax_residency", "foreign_tax_country", "tax_identifier"],
+  ADDITIONAL_ACCOUNT: ["account_type", "currency", "source_of_funds"],
+};

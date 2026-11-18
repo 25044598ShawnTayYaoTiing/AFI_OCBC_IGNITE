@@ -77,13 +77,5 @@ def test_duplicate_keys_return_rejected_simulation_not_success(client, headers, 
 def test_openapi_documents_strict_schemas(client):
     spec = client.get("/openapi.json").json()
     assert "/investigate" in spec["paths"] and "/simulate" in spec["paths"]
-    schemas = []
-    for route in ("/investigate", "/documents/investigate"):
-        request_schema = spec["paths"][route]["post"]["requestBody"]["content"]["application/json"]["schema"]
-        name = request_schema["$ref"].rsplit("/", 1)[-1]
-        definition = spec["components"]["schemas"][name]
-        assert definition["additionalProperties"] is False
-        schemas.append(definition["properties"])
-    assert "exception_id" in schemas[0]
-    assert "submission_id" in schemas[1]
+    assert spec["components"]["schemas"]["InvestigationRequest"]["additionalProperties"] is False
     assert "X-Service-Key" in str(spec["paths"]["/simulate"])

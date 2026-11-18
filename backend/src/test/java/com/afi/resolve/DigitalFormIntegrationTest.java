@@ -438,21 +438,8 @@ class DigitalFormIntegrationTest {
         .isZero();
   }
 
-  @org.junit.jupiter.params.ParameterizedTest
-  @org.junit.jupiter.params.provider.CsvSource({
-    "ADDRESS_CHANGE,mailing_address,mailing_address,018989,MATCH,PASS",
-    "ADDRESS_CHANGE,new_mailing_address,mailing_address,018989,MATCH,PASS",
-    "RESIDENTIAL_ADDRESS_CHANGE,new_residential_address,residential_address,018989,MATCH,PASS",
-    "ADDRESS_CHANGE,new_mailing_address,mailing_address,01898,MATCH,SERVICE_POSTAL",
-    "ADDRESS_CHANGE,new_mailing_address,mailing_address,018989,CONFLICT_REQUEST,SERVICE_CONFLICTS",
-    "ADDRESS_CHANGE,existing_mailing_address,mailing_address,018989,MATCH,SERVICE_DETAILS",
-    "ADDRESS_CHANGE,new_mailing_address,new_mailing_address,018989,CONFLICT_SUPPORT,SERVICE_SUPPORT",
-    "RESIDENTIAL_ADDRESS_CHANGE,new_residential_address,existing_residential_address,018989,MATCH,SERVICE_SUPPORT",
-  })
-  void pdfServiceIntakeUsesTheSelectedRequestTypeAndNotAccountOpeningRules(
-      String category, String requestedLabel, String supportingLabel, String postalCode,
-      String scenario, String expectedOutcome) throws Exception {
-    String addressField = BankingServicePolicy.requestedAddressField(category);
+  @Test
+  void pdfServiceIntakeUsesTheSelectedRequestTypeAndNotAccountOpeningRules() throws Exception {
     doAnswer(
             call -> {
               boolean support =
@@ -469,12 +456,10 @@ class DigitalFormIntegrationTest {
                       "Alex Tan",
                       "customer_reference",
                       reference,
-                      support ? supportingLabel : requestedLabel,
-                      support && scenario.equals("CONFLICT_SUPPORT") ? "3 Fictional Road" : "2 Fictional Road",
-                      support ? "postal_code" : "new_" + addressField.replace("_address", "_postal_code"),
-                      support ? "018989" : postalCode,
+                      "mailing_address",
+                      "2 Fictional Road",
                       "request_type",
-                      category,
+                      "ADDRESS_CHANGE",
                       "declaration_date",
                       "2026-10-30",
                       "signature_indicator",
@@ -487,10 +472,6 @@ class DigitalFormIntegrationTest {
                         f.put("page", 1);
                         f.put("supporting_text", k + ": " + v);
                       });
-              if (!support && scenario.equals("CONFLICT_REQUEST")) {
-                fields.addObject().put("field", addressField).put("value", "3 Fictional Road")
-                    .put("page", 1).put("supporting_text", addressField + ": 3 Fictional Road");
-              }
               return n;
             })
         .when(documents)
@@ -499,7 +480,7 @@ class DigitalFormIntegrationTest {
     var result =
         json(
             mvc.perform(
-                    multipart("/api/customer/submissions?requestType=" + category)
+                    multipart("/api/customer/submissions?requestType=ADDRESS_CHANGE")
                         .file(
                             new MockMultipartFile(
                                 "files",
@@ -516,29 +497,10 @@ class DigitalFormIntegrationTest {
                         .header("Idempotency-Key", key))
                 .andExpect(status().isOk())
                 .andReturn());
-    assertThat(result.path("submission").path("requestType").asText()).isEqualTo(category);
+    assertThat(result.path("submission").path("requestType").asText()).isEqualTo("ADDRESS_CHANGE");
     assertThat(result.path("submission").path("status").asText())
         .isEqualTo("RESOLUTION_MANAGEMENT");
-    String id = result.path("submission").path("id").asText();
-    var addressChecks = documents.evaluate(id).stream()
-        .filter(check -> Set.of("SERVICE_DETAILS", "SERVICE_SUPPORT", "SERVICE_CONFLICTS", "SERVICE_POSTAL")
-            .contains(check.get("rule_key")))
-        .toList();
-    assertThat(addressChecks).hasSize(4);
-    var failures = addressChecks.stream().filter(check -> Boolean.FALSE.equals(check.get("passed")))
-        .map(check -> check.get("rule_key")).toList();
-    if (expectedOutcome.equals("PASS")) {
-      assertThat(failures).isEmpty();
-      assertThat(result.path("corrections").size()).isZero();
-    } else {
-      assertThat(failures).contains(expectedOutcome);
-      if (expectedOutcome.equals("SERVICE_SUPPORT")) {
-        var risk = s.json.valueToTree(new CaseRisk(s).assess(
-            s.db.queryForMap("SELECT * FROM document_submissions WHERE id=?", id), documents.evaluate(id)));
-        assertThat(risk.path("contributions").findValuesAsText("issue"))
-            .contains(scenario.equals("CONFLICT_SUPPORT") ? "ADDRESS_CONFLICT" : "SUPPORT_UNREADABLE");
-      }
-    }
+    assertThat(result.path("corrections").size()).isZero();
     mvc.perform(
             multipart("/api/customer/submissions?requestType=CONTACT_UPDATE")
                 .file(
@@ -556,127 +518,6 @@ class DigitalFormIntegrationTest {
                 .header("Authorization", "Bearer " + token)
                 .header("Idempotency-Key", key))
         .andExpect(status().isConflict());
-  }
-
-  @org.junit.jupiter.params.ParameterizedTest
-  @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
-  void automaticAttachmentSkipsConflictingRepositoryEvidenceAndRecordsOnlyTheMatchingSource(boolean tax)
-      throws Exception {
-    var reviewer = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
-        "reviewer", null, List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_REVIEWER")));
-    String source = documents.createOwned("Alex Tan", reference, "ACCOUNT_OPENING", "reviewer", null, reviewer);
-    var wrongEvidence = tax ? Map.of("foreign_tax_country", "Exampleland", "tax_identifier", "WRONG-TIN")
-        : Map.of("new_mailing_address", "9 Conflicting Road");
-    String wrongVersion = addRepositoryEvidence(source, "A-" + source, wrongEvidence);
-    s.db.update("UPDATE customers SET repository_submission_id=? WHERE id=?", source, customer);
-    var request = form();
-    request.put("requestType", tax ? "TAX_RESIDENCY_UPDATE" : "ADDRESS_CHANGE");
-    request.put("mailingAddress", "2 Fictional Road");
-    if (tax) {
-      request.put("taxResidency", "Foreign");
-      request.put("foreignTaxCountry", "Exampleland");
-      request.put("taxIdentifier", "DEMO-TIN");
-    }
-    var rejected = json(submit("/api/customer/eforms", UUID.randomUUID().toString(), request)
-        .andExpect(status().isOk()).andReturn());
-    String rejectedId = rejected.path("submission").path("id").asText();
-    assertThat(documents.documents(rejectedId, false)).noneMatch(
-        d -> "SUPPORTING_DOCUMENT".equals(d.get("document_type")));
-    assertThat(documents.documents(rejectedId, true)).isEmpty();
-    addRepositoryEvidence(rejectedId, "A-" + rejectedId, wrongEvidence);
-    var unsafe = json(mvc.perform(post("/api/documents/submissions/" + rejectedId + "/preflight")
-        .with(httpBasic("reviewer", "reviewer-demo"))).andExpect(status().isOk()).andReturn());
-    assertThat(unsafe.path("permittedAttachmentAvailable").asBoolean()).isTrue();
-    assertThat(unsafe.path("safeAdministrativeAttachment").asBoolean()).isFalse();
-    mvc.perform(post("/api/documents/submissions/" + rejectedId + "/resolve")
-        .with(httpBasic("reviewer", "reviewer-demo")).contentType("application/json")
-        .content(s.json(map("idempotencyKey", UUID.randomUUID().toString()))))
-        .andExpect(status().isConflict());
-    assertThat(documents.documents(rejectedId, true)).hasSize(1);
-
-    var matchingEvidence = tax ? Map.of("foreign_tax_country", "Exampleland", "tax_identifier", "DEMO-TIN")
-        : Map.of("new_mailing_address", "2 Fictional Road");
-    String matchingVersion = addRepositoryEvidence(source, "Z-" + source, matchingEvidence);
-    var accepted = json(submit("/api/customer/eforms", UUID.randomUUID().toString(), request)
-        .andExpect(status().isOk()).andReturn());
-    String acceptedId = accepted.path("submission").path("id").asText();
-    assertThat(documents.documents(acceptedId, false))
-        .filteredOn(d -> "SUPPORTING_DOCUMENT".equals(d.get("document_type"))).singleElement()
-        .satisfies(d -> assertThat(d.get("repository_source_version_id"))
-            .isEqualTo(matchingVersion).isNotEqualTo(wrongVersion));
-    assertThat(s.db.queryForList(
-        "SELECT status FROM document_automation_attempts WHERE submission_id=?", String.class, acceptedId))
-        .contains("VERIFIED");
-    assertThat(accepted.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
-  }
-
-  String addRepositoryEvidence(String source, String document, Map<String, String> values) throws Exception {
-    String version = "VER-" + document;
-    byte[] bytes = ("%PDF-" + document).getBytes(StandardCharsets.US_ASCII);
-    String key = version + ".pdf";
-    storage.put(key, bytes);
-    String hash = HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
-    s.db.update("INSERT INTO submission_documents"
-        + "(id,submission_id,document_type,repository_only,authorised,verified_reference,valid_until)"
-        + " VALUES(?,?,'SUPPORTING_DOCUMENT',TRUE,TRUE,?,?)",
-        document, source, reference, java.time.LocalDate.now(java.time.ZoneOffset.UTC).plusDays(30));
-    s.db.update("INSERT INTO document_versions VALUES(?,?,1,?,?,?,?,?,?,?)",
-        version, document, "address-proof.pdf", hash, key, bytes.length,
-        s.json(map("method", "GEMINI", "requires_review", false)), "reviewer", Store.now());
-    var fields = new LinkedHashMap<>(values);
-    fields.put("customer_reference", reference);
-    for (var field : fields.entrySet())
-      s.db.update("INSERT INTO extracted_fields VALUES(?,?,?,?,?,?,?)",
-          s.id("FIELD"), version, field.getKey(), field.getValue(), 1,
-          field.getKey() + ": " + field.getValue(), "GEMINI");
-    return version;
-  }
-
-  @Test
-  void evidenceReviewRetriesAnAttachmentPreviouslyBlockedByClassification() throws Exception {
-    var reviewer = org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
-        "reviewer", null, List.of(new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_REVIEWER")));
-    String source = documents.createOwned("Alex Tan", reference, "ACCOUNT_OPENING", "reviewer", null, reviewer);
-    addRepositoryEvidence(source, "A-" + source, Map.of("mailing_address", "2 Fictional Road"));
-    s.db.update("UPDATE customers SET repository_submission_id=? WHERE id=?", source, customer);
-    String identity = (String) new CustomerProfiles(s).get(customer).get("identity_number");
-    doAnswer(call -> {
-      var result = s.json.createObjectNode();
-      result.put("document_id", (String) call.getArgument(1));
-      result.put("document_type", "SERVICE_REQUEST");
-      result.put("method", "GEMINI");
-      result.put("requires_review", true);
-      var fields = result.putArray("fields");
-      Map.of("customer_name", "Alex Tan", "customer_reference", reference,
-          "identity_number", identity,
-          "new_mailing_address", "2 Fictional Road", "request_type", "ADDRESS_CHANGE",
-          "declaration_date", "2026-10-30", "signature_indicator", "Present")
-          .forEach((key, value) -> fields.addObject().put("field", key).put("value", value)
-              .put("page", 1).put("supporting_text", key + ": " + value));
-      return result;
-    }).when(documents).extraction(any(byte[].class), anyString());
-    var submitted = json(mvc.perform(multipart("/api/customer/submissions?requestType=ADDRESS_CHANGE")
-        .file(new MockMultipartFile("files", "scanned-service.pdf", "application/pdf",
-            "%PDF-service-scan".getBytes(StandardCharsets.US_ASCII)))
-        .header("Authorization", "Bearer " + token)
-        .header("Idempotency-Key", UUID.randomUUID().toString()))
-        .andExpect(status().isOk()).andReturn());
-    String id = submitted.path("submission").path("id").asText();
-    var attemptStatuses = "SELECT status FROM document_automation_attempts WHERE submission_id=?";
-    assertThat(s.db.queryForList(attemptStatuses, String.class, id)).containsExactly("BLOCKED");
-    mvc.perform(post("/api/documents/submissions/" + id + "/validate")
-        .with(httpBasic("reviewer", "reviewer-demo"))).andExpect(status().isOk());
-    assertThat(s.db.queryForList(attemptStatuses, String.class, id)).containsExactly("BLOCKED");
-    String version = (String) documents.documents(id, false).getFirst().get("version_id");
-    var reviewed = json(mvc.perform(post("/api/documents/submissions/" + id
-            + "/versions/" + version + "/review-evidence")
-        .with(httpBasic("reviewer", "reviewer-demo")).contentType("application/json")
-        .content(s.json(map("revision", submitted.path("submission").path("revision").asInt(),
-            "note", "Checked the synthetic scan and all extracted request details."))))
-        .andExpect(status().isOk()).andReturn());
-    assertThat(s.db.queryForList(attemptStatuses, String.class, id)).containsExactlyInAnyOrder("BLOCKED", "VERIFIED");
-    assertThat(documents.documents(id, true)).isEmpty();
-    assertThat(reviewed.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
   }
 
   @Test
