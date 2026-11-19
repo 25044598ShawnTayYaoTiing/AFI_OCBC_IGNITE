@@ -118,7 +118,8 @@ def confidence_of(answer):
 def confidence_band(confidence, threshold):
     if confidence >= threshold:
         return 'HIGH'
-    if confidence >= 0.60:
+    medium_floor = min(0.60, max(0.0, threshold - 0.15))
+    if confidence >= medium_floor:
         return 'MEDIUM'
     return 'LOW'
 
@@ -303,15 +304,24 @@ def _identity_contradicted(answers, threshold):
     return False
 
 
+_OPTIONAL_SUPPORT_OBS_FIELDS = frozenset({
+    'contact_information',
+    'email',
+    'mobile',
+    'existing_mailing_address',
+    'existing_residential_address',
+})
+
+
 def _unrelated_uncertainty_reasons(extraction, answers, threshold):
     reasons = []
-    if _identity_contradicted(answers, threshold):
-        reasons.append('IDENTITY_CONTRADICTION')
     observations = getattr(extraction, 'observations', None) or []
-    if any(
-        getattr(item, 'issue_type', None) in ('UNCERTAIN', 'POTENTIALLY_INCONSISTENT')
-        for item in observations
-    ):
+    critical_obs = [
+        item for item in observations
+        if getattr(item, 'issue_type', None) in ('UNCERTAIN', 'POTENTIALLY_INCONSISTENT')
+        and getattr(item, 'field', None) not in _OPTIONAL_SUPPORT_OBS_FIELDS
+    ]
+    if critical_obs:
         reasons.append('CRITICAL_OBSERVATION_UNCERTAIN')
     if any(
         getattr(item, 'issue_type', None) == 'POTENTIALLY_MISSING'
@@ -322,13 +332,17 @@ def _unrelated_uncertainty_reasons(extraction, answers, threshold):
     quality = getattr(extraction, 'quality', None)
     if quality is not None and quality != 'READABLE':
         reasons.append('POOR_DOCUMENT_QUALITY')
-    if getattr(extraction, 'extraction_issues', None):
+    supporting_critical_issues = [
+        issue for issue in (getattr(extraction, 'extraction_issues', None) or [])
+        if issue.split(':', 1)[-1] not in ('customer_reference', 'request_type', 'signature_indicator', 'declaration_date', 'tax_residency', 'tax_declaration', *_OPTIONAL_SUPPORT_OBS_FIELDS)
+    ]
+    if supporting_critical_issues:
         reasons.append('MANDATORY_EXTRACTION_ISSUE')
 
     structured_reasons = getattr(extraction, 'uncertainty_reasons', None)
     if structured_reasons is not None:
         for reason in structured_reasons:
-            if reason not in ('CLASSIFICATION_UNCERTAIN', 'MODEL_FLAGGED_REVIEW') and reason not in reasons:
+            if reason not in ('CLASSIFICATION_UNCERTAIN', 'CLASSIFICATION_AMBIGUOUS', 'MODEL_FLAGGED_REVIEW', 'IDENTITY_CONTRADICTION') and reason not in reasons:
                 reasons.append(reason)
     else:
         notes = getattr(extraction, 'notes', None) or ''
@@ -339,7 +353,10 @@ def _unrelated_uncertainty_reasons(extraction, answers, threshold):
         getattr(f, 'field', None): str(getattr(f, 'value', '') or '').strip()
         for f in (getattr(extraction, 'fields', None) or [])
     }
-    if not all(field_values.get(name) for name in ('customer_name', *_MANDATORY_TAX_CERT_FIELDS)):
+    has_owner = any(field_values.get(name) for name in ('customer_name', 'identity_number', 'customer_reference'))
+    if getattr(extraction, 'requires_review', False) and not (
+        has_owner and all(field_values.get(name) for name in _MANDATORY_TAX_CERT_FIELDS)
+    ):
         if 'MISSING_MANDATORY_TAX_EVIDENCE' not in reasons:
             reasons.append('MISSING_MANDATORY_TAX_EVIDENCE')
     return reasons
@@ -396,7 +413,7 @@ def reconcile(extraction, assessment, threshold):
     if readable['noul'] < threshold or confidence_of(readable) < threshold:
         gate_failures.append({
             'criterion': 'readable',
-            'actual': round(float(readable['noul']), 4),
+            'actual': round(min(float(readable['noul']), confidence_of(readable)), 4),
             'threshold': threshold,
             'detail': 'Document readability probability is below threshold.',
         })
@@ -407,7 +424,7 @@ def reconcile(extraction, assessment, threshold):
     ):
         gate_failures.append({
             'criterion': 'review_route',
-            'actual': round(gate_probs.get('review_route', 0.0), 4),
+            'actual': round(min(gate_probs.get('review_route', 0.0), float(route['confidence'])), 4),
             'threshold': threshold,
             'detail': 'Review route continue_checks probability is below threshold.',
         })
@@ -415,18 +432,21 @@ def reconcile(extraction, assessment, threshold):
         gate_probs.get('consistency', 0.0) < threshold
         or ('confidence' in consistency and consistency['confidence'] < threshold)
     ):
+        consistency_actual = gate_probs.get('consistency', 0.0)
+        if 'confidence' in consistency:
+            consistency_actual = min(consistency_actual, float(consistency['confidence']))
         gate_failures.append({
             'criterion': 'consistency',
-            'actual': round(gate_probs.get('consistency', 0.0), 4),
+            'actual': round(consistency_actual, 4),
             'threshold': threshold,
             'detail': 'Internal consistency score-2 probability is below threshold.',
         })
     if isinstance(service_relevance, dict) and (
-        service_relevance.get('noul', 0.0) < 0.5 or confidence_of(service_relevance) < threshold
+        service_relevance.get('noul', 0.0) < threshold or confidence_of(service_relevance) < threshold
     ):
         gate_failures.append({
             'criterion': 'service_relevance',
-            'actual': round(float(service_relevance.get('noul', 0.0)), 4),
+            'actual': round(min(float(service_relevance.get('noul', 0.0)), confidence_of(service_relevance)), 4),
             'threshold': threshold,
             'detail': 'Service relevance passing probability is below threshold.',
         })
@@ -439,7 +459,7 @@ def reconcile(extraction, assessment, threshold):
 
     structured_reasons = getattr(extraction, 'uncertainty_reasons', None)
     if structured_reasons is not None:
-        extraction_reasons = list(structured_reasons)
+        extraction_reasons = [r for r in structured_reasons if r != 'IDENTITY_CONTRADICTION']
     else:
         extraction_reasons = []
         if getattr(extraction, 'quality', None) not in (None, 'READABLE'):
@@ -448,19 +468,20 @@ def reconcile(extraction, assessment, threshold):
             extraction_reasons.append('MANDATORY_EXTRACTION_ISSUE')
         if any(
             getattr(item, 'issue_type', None) in ('UNCERTAIN', 'POTENTIALLY_INCONSISTENT')
+            and getattr(item, 'field', None) not in _OPTIONAL_SUPPORT_OBS_FIELDS
             for item in (getattr(extraction, 'observations', None) or [])
         ):
             extraction_reasons.append('CRITICAL_OBSERVATION_UNCERTAIN')
-        if getattr(extraction, 'requires_review', False):
+        if not extraction_reasons and getattr(extraction, 'requires_review', False):
             extraction_reasons.append('MODEL_FLAGGED_REVIEW')
 
     tax_cert_reconcilable = (
         decision_gates_ok
         and classification['choice'] == 'SUPPORTING_DOCUMENT'
         and extraction.document_type == 'TAX_RESIDENCY'
-        and assessment.get('request_type') == 'TAX_RESIDENCY_UPDATE'
+        and assessment.get('request_type') in ('TAX_RESIDENCY_UPDATE', 'ACCOUNT_OPENING')
         and isinstance(service_relevance, dict)
-        and service_relevance.get('noul', 0) >= 0.5
+        and service_relevance.get('noul', 0) >= threshold
         and confidence_of(service_relevance) >= threshold
     )
     if tax_cert_reconcilable:
@@ -475,7 +496,7 @@ def reconcile(extraction, assessment, threshold):
         if not unrelated:
             extraction_reasons = [
                 r for r in extraction_reasons
-                if r not in ('CLASSIFICATION_UNCERTAIN', 'MODEL_FLAGGED_REVIEW')
+                if r not in ('CLASSIFICATION_UNCERTAIN', 'CLASSIFICATION_AMBIGUOUS', 'MODEL_FLAGGED_REVIEW')
             ]
         else:
             for r in unrelated:
@@ -491,17 +512,29 @@ def reconcile(extraction, assessment, threshold):
         })
         failed_criteria.append('classification_agreement')
 
+    assessment_reasons = list(extraction_reasons)
     if _identity_contradicted(answers, threshold):
-        holder_noul = holder_match.get('noul', 0.0) if isinstance(holder_match, dict) else 0.0
-        gate_failures.append({
-            'criterion': 'holder_matches_profile',
-            'actual': round(float(holder_noul), 4),
-            'threshold': threshold,
-            'detail': 'Decision 1 reported contradictory account-holder identity.',
-        })
-        failed_criteria.append('holder_matches_profile')
-        if 'IDENTITY_CONTRADICTION' not in extraction_reasons:
-            extraction_reasons.append('IDENTITY_CONTRADICTION')
+        corroboration = answers.get('request_corroboration')
+        holder_failed = isinstance(holder_match, dict) and holder_match.get('noul', 1.0) <= (1.0 - threshold)
+        if holder_failed:
+            gate_failures.append({
+                'criterion': 'holder_matches_profile',
+                'actual': round(float(holder_match.get('noul', 0.0)), 4),
+                'threshold': threshold,
+                'detail': 'Decision 1 reported contradictory account-holder identity.',
+            })
+            failed_criteria.append('holder_matches_profile')
+        else:
+            diff_prob = float((corroboration or {}).get('probabilities', {}).get('identity_differs', 0.0))
+            gate_failures.append({
+                'criterion': 'request_corroboration',
+                'actual': round(max(0.0, 1.0 - diff_prob), 4),
+                'threshold': threshold,
+                'detail': 'Decision 1 request corroboration reported contradictory customer identity.',
+            })
+            failed_criteria.append('request_corroboration')
+        if 'IDENTITY_CONTRADICTION' not in assessment_reasons:
+            assessment_reasons.append('IDENTITY_CONTRADICTION')
 
     extraction_uncertain = bool(extraction_reasons)
     classification_uncertain = (
@@ -528,7 +561,7 @@ def reconcile(extraction, assessment, threshold):
     except AttributeError:
         pass
     try:
-        extraction.uncertainty_reasons = extraction_reasons
+        extraction.uncertainty_reasons = assessment_reasons
     except AttributeError:
         pass
     extraction.requires_review = bool(

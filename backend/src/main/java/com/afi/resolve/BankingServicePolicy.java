@@ -143,6 +143,10 @@ final class BankingServicePolicy {
   }
 
   List<Map<String, Object>> requestDocs(List<Map<String, Object>> docs) {
+    boolean hasDigital = docs.stream().anyMatch(d -> DocumentService.isDigitalDeclarationReceipt(s, d));
+    if (hasDigital) {
+      return docs.stream().filter(d -> DocumentService.isDigitalDeclarationReceipt(s, d)).toList();
+    }
     return docs.stream().filter(d -> "SERVICE_REQUEST".equals(d.get("document_type"))).toList();
   }
 
@@ -180,7 +184,13 @@ final class BankingServicePolicy {
     var values = addressValues(requestDocs(docs), category, field);
     if (values.isEmpty()) return "";
     String first = Objects.toString(values.getFirst().get("field_value"), "").trim();
-    return values.stream().allMatch(item -> same(first, item.get("field_value"))) ? first : "";
+    return values.stream()
+            .allMatch(
+                item ->
+                    canonicalConflictValue(field, first)
+                        .equals(canonicalConflictValue(field, item.get("field_value"))))
+        ? first
+        : "";
   }
 
   boolean same(Object a, Object b) {
@@ -317,21 +327,18 @@ final class BankingServicePolicy {
               + bParts.normalised()
               + ").");
     }
-    if ((aParts.postal().isEmpty() ^ bParts.postal().isEmpty())
-        && (!aParts.postal().isEmpty() || !bParts.postal().isEmpty())) {
-      // Allow fixture/test text without postal if exact block+street+unit match and no SG postal was in either postal_code
-      if (actualPostal != null && !actualPostal.isBlank() || requestedPostal != null && !requestedPostal.isBlank()) {
-        if (!aParts.postal().isEmpty() && bParts.postal().isEmpty()
-            || aParts.postal().isEmpty() && !bParts.postal().isEmpty() && actualValue.toString().toLowerCase(Locale.ROOT).contains("singapore")) {
-          return map(
-              "matched",
-              "false",
-              "reason",
-              "POSTAL_MISSING",
-              "detail",
-              "Postal code missing on one address (" + aParts.postal() + " vs " + bParts.postal() + ").");
-        }
-      }
+    if (aParts.postal().isEmpty() ^ bParts.postal().isEmpty()) {
+      return map(
+          "matched",
+          "false",
+          "reason",
+          "POSTAL_MISSING",
+          "detail",
+          "Postal code missing on one address ("
+              + (aParts.postal().isEmpty() ? "missing" : aParts.postal())
+              + " vs "
+              + (bParts.postal().isEmpty() ? "missing" : bParts.postal())
+              + ").");
     }
     return map("matched", "true", "reason", "MATCHED", "detail", "All address components and unit matched.");
   }
@@ -340,7 +347,13 @@ final class BankingServicePolicy {
   List<OneMapClient.Candidate> verifiedCandidatesForDocs(List<Map<String, Object>> docs) {
     var result = new ArrayList<OneMapClient.Candidate>();
     var seen = new HashSet<String>();
+    boolean hasDigital = docs.stream().anyMatch(d -> DocumentService.isDigitalDeclarationReceipt(s, d));
     for (var doc : docs) {
+      if (hasDigital
+          && !DocumentService.isDigitalDeclarationReceipt(s, doc)
+          && !"SUPPORTING_DOCUMENT".equals(doc.get("document_type"))) {
+        continue;
+      }
       Object versionId = doc.get("version_id");
       if (versionId == null) continue;
       for (var row :
@@ -398,14 +411,18 @@ final class BankingServicePolicy {
             && foreign(value(docs, "tax_residency")));
   }
 
+  static String normalisePhone(String value) {
+    String digits = Objects.toString(value, "").replaceAll("[^0-9]", "");
+    if (digits.length() == 10 && digits.startsWith("65")) return digits.substring(2);
+    return digits;
+  }
+
   boolean phoneChanged(
       Map<String, Object> c, List<Map<String, Object>> docs, Map<String, Object> profile) {
-    String phone = value(docs, "mobile");
+    String phone = normalisePhone(value(docs, "mobile"));
     return "CONTACT_UPDATE".equals(c.get("category"))
         && !phone.isBlank()
-        && !phone
-            .replaceAll("[^0-9+]", "")
-            .equals(Objects.toString(profile.get("mobile"), "").replaceAll("[^0-9+]", ""));
+        && !phone.equals(normalisePhone(Objects.toString(profile.get("mobile"), "")));
   }
 
   String findDuplicateAdditionalAccount(
@@ -476,6 +493,37 @@ final class BankingServicePolicy {
     return null;
   }
 
+  private String canonicalConflictValue(String field, Object raw) {
+    return switch (field) {
+      case "postal_code" -> {
+        String p = AddressNormaliser.extractPostal(raw);
+        yield p.isEmpty() ? workflow.normal(raw) : p;
+      }
+      case "mailing_address", "residential_address" ->
+          AddressNormaliser.canonicalUpper(Objects.toString(raw, ""));
+      case "mobile" -> normalisePhone(Objects.toString(raw, ""));
+      default -> workflow.normal(raw);
+    };
+  }
+
+  private static String readableDocType(Object docType) {
+    return switch (Objects.toString(docType, "")) {
+      case "SERVICE_REQUEST" -> "service request form";
+      case "ACCOUNT_APPLICATION" -> "account opening application form";
+      case "CUSTOMER_INFORMATION" -> "customer information form";
+      case "TAX_RESIDENCY" -> "tax residency declaration form";
+      default -> Objects.toString(docType, "document").toLowerCase(Locale.ROOT).replace('_', ' ');
+    };
+  }
+
+  private static boolean postalEquals(Object a, String b) {
+    String pa = AddressNormaliser.extractPostal(a);
+    String pb = AddressNormaliser.extractPostal(b);
+    if (!pa.isEmpty() || !pb.isEmpty()) return pa.equals(pb);
+    return AddressNormaliser.canonicalUpper(Objects.toString(a, ""))
+        .equals(AddressNormaliser.canonicalUpper(Objects.toString(b, "")));
+  }
+
   Map<String, Object> check(
       Map<String, Object> c, List<Map<String, Object>> docs, Map<String, Object> rule) {
     String id = (String) c.get("id"),
@@ -531,7 +579,7 @@ final class BankingServicePolicy {
                   .allMatch(
                       field ->
                           addressValues(requestDocs(docs), category, field).stream()
-                                  .map(item -> workflow.normal(item.get("field_value")))
+                                  .map(item -> canonicalConflictValue(field, item.get("field_value")))
                                   .distinct()
                                   .count()
                               <= 1);
@@ -571,7 +619,24 @@ final class BankingServicePolicy {
               case "ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE" -> {
                 String field = requestedAddressField(category);
                 String requested = addressValue(docs, category, field);
-                yield !requested.isBlank() && !same(requested, profile.get(field));
+                String requestedPostal = addressValue(docs, category, "postal_code");
+                var pParts =
+                    AddressNormaliser.parse(
+                        profile.get(field), Objects.toString(profile.get("postal_code"), ""));
+                var rParts = AddressNormaliser.parse(requested, requestedPostal);
+                boolean sameAsProfile =
+                    Objects.equals(pParts.block(), rParts.block())
+                        && Objects.equals(pParts.unit(), rParts.unit())
+                        && (Objects.equals(pParts.street(), rParts.street())
+                            || AddressNormaliser.sameStreetWithOptionalBuilding(
+                                pParts.street(), rParts.street()))
+                        && (pParts.postal().isEmpty()
+                            || rParts.postal().isEmpty()
+                            || Objects.equals(pParts.postal(), rParts.postal()));
+                boolean postalChanged =
+                    !requestedPostal.isBlank()
+                        && !postalEquals(profile.get("postal_code"), requestedPostal);
+                yield !requested.isBlank() && (!sameAsProfile || postalChanged);
               }
               case "CONTACT_UPDATE" -> {
                 String email = value(docs, "email"), mobile = value(docs, "mobile");
@@ -688,15 +753,43 @@ final class BankingServicePolicy {
                   .toList();
           var uploadedEvidence =
               docs.stream()
-                  .filter(
-                      d ->
-                          !"SERVICE_REQUEST".equals(d.get("document_type"))
-                              && !Boolean.TRUE.equals(d.get("repository_only")))
+                  .filter(d -> DocumentService.isUploadedAttachment(s, d))
                   .toList();
           boolean addressChange = Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(category);
           var expectedFields = addressChange ? List.of(requestedAddressField(category))
               : List.of("foreign_tax_country", "tax_identifier");
           pass = !support.isEmpty();
+          if (support.isEmpty() && !uploadedEvidence.isEmpty()) {
+            for (var d : uploadedEvidence) {
+              if (DocumentService.RECOGNISED_NON_SUPPORTING_TYPES.contains(d.get("document_type"))) {
+                evidence.add(
+                    map(
+                        "document_id",
+                        d.get("id"),
+                        "version_id",
+                        d.get("version_id"),
+                        "filename",
+                        d.get("filename"),
+                        "field_name",
+                        "unsuitable_document_type",
+                        "field_value",
+                        d.get("document_type"),
+                        "page_number",
+                        1,
+                        "supporting_text",
+                        "Uploaded file "
+                            + Objects.toString(d.get("filename"), "")
+                            + " was classified as a "
+                            + readableDocType(d.get("document_type"))
+                            + ", which cannot serve as supporting evidence for "
+                            + (addressChange ? "an address change" : "foreign tax residency")
+                            + ". Please upload a supporting document such as "
+                            + (addressChange
+                                ? "a utility bill, bank statement, or government correspondence showing your name and requested address."
+                                : "an official foreign tax residency certificate or tax notice showing your name, country, and TIN.")));
+              }
+            }
+          }
           for (String field : expectedFields) {
             var actual = addressChange ? addressValues(support, category, field) : workflow.fields(support, field);
             if (addressChange && actual.isEmpty() && "mailing_address".equals(field)) {
@@ -706,6 +799,9 @@ final class BankingServicePolicy {
             evidence.addAll(actual);
             if (actual.isEmpty() && !uploadedEvidence.isEmpty()) {
               for (var d : uploadedEvidence) {
+                if (DocumentService.RECOGNISED_NON_SUPPORTING_TYPES.contains(d.get("document_type"))) {
+                  continue;
+                }
                 var extraction = s.readMap(Objects.toString(d.get("extraction_json"), "{}"));
                 String notes = Objects.toString(extraction.get("notes"), "");
                 boolean unclear =
@@ -740,9 +836,26 @@ final class BankingServicePolicy {
               }
             }
             String reqPostal = addressChange ? addressValue(docs, category, "postal_code") : "";
-            var supportPostals = addressChange ? addressValues(support, category, "postal_code") : List.<Map<String, Object>>of();
-            String supportPostalVal = supportPostals.size() == 1 ? Objects.toString(supportPostals.getFirst().get("field_value"), "") : "";
-            var verifiedCandidates = addressChange ? verifiedCandidatesForDocs(docs) : List.<OneMapClient.Candidate>of();
+            var supportPostals =
+                addressChange
+                    ? addressValues(support, category, "postal_code").stream()
+                        .map(item -> AddressNormaliser.extractPostal(item.get("field_value")))
+                        .filter(p -> !p.isEmpty())
+                        .distinct()
+                        .toList()
+                    : List.<String>of();
+            String supportPostalVal = supportPostals.size() == 1 ? supportPostals.getFirst() : "";
+            var verifiedCandidates =
+                addressChange
+                    ? verifiedCandidatesForDocs(
+                        docs.stream()
+                            .filter(
+                                d ->
+                                    "SUPPORTING_DOCUMENT".equals(d.get("document_type"))
+                                        || requestDocs(docs).stream()
+                                            .anyMatch(r -> Objects.equals(r.get("id"), d.get("id"))))
+                            .toList())
+                    : List.<OneMapClient.Candidate>of();
             boolean fieldMatched = !requested.isBlank() && !actual.isEmpty();
             for (var f : actual) {
               if (addressChange) {
@@ -774,26 +887,28 @@ final class BankingServicePolicy {
                         : same(actualText, requested);
                 if (!match) {
                   fieldMatched = false;
-                  evidence.add(
-                      map(
-                          "document_id",
-                          f.get("document_id"),
-                          "version_id",
-                          f.get("version_id"),
-                          "page_number",
-                          f.get("page_number"),
-                          "field_name",
-                          "tax_evidence_conflict",
-                          "field_value",
-                          field,
-                          "supporting_text",
-                          "Supporting document "
-                              + field.replace('_', ' ')
-                              + " ("
-                              + actualText
-                              + ") conflicts with declared value ("
-                              + requested
-                              + ")."));
+                  if (!requested.isBlank()) {
+                    evidence.add(
+                        map(
+                            "document_id",
+                            f.get("document_id"),
+                            "version_id",
+                            f.get("version_id"),
+                            "page_number",
+                            f.get("page_number"),
+                            "field_name",
+                            "tax_evidence_conflict",
+                            "field_value",
+                            field,
+                            "supporting_text",
+                            "Supporting document "
+                                + field.replace('_', ' ')
+                                + " ("
+                                + actualText
+                                + ") conflicts with declared value ("
+                                + requested
+                                + ")."));
+                  }
                 }
               }
             }
@@ -802,12 +917,12 @@ final class BankingServicePolicy {
           for (var doc : support) {
             if (Boolean.TRUE.equals(doc.get("repository_only"))) continue;
             var extraction = s.readMap(Objects.toString(doc.get("extraction_json"), "{}"));
-            if (!"GEMINI".equals(extraction.get("method"))) continue;
+            if ("SYNTHETIC_TEMPLATE".equals(extraction.get("method"))) continue;
             var names = workflow.fields(List.of(doc), "customer_name");
             var refs = workflow.fields(List.of(doc), "customer_reference");
             String expectedRef = Objects.toString(c.get("customer_reference"), "");
             boolean hasOwnerIdentity =
-                !names.isEmpty()
+                names.stream().anyMatch(n -> !Objects.toString(n.get("field_value"), "").isBlank())
                     || refs.stream()
                         .anyMatch(r -> same(r.get("field_value"), expectedRef));
             if (!hasOwnerIdentity) {
@@ -836,9 +951,29 @@ final class BankingServicePolicy {
             var supportPostal = addressValues(support, category, "postal_code");
             if (!supportPostal.isEmpty()) {
               evidence.addAll(supportPostal);
-              pass &=
-                  supportPostal.stream()
-                      .allMatch(f -> same(f.get("field_value"), requestedPostal));
+              for (var sp : supportPostal) {
+                if (!postalEquals(sp.get("field_value"), requestedPostal)) {
+                  pass = false;
+                  evidence.add(
+                      map(
+                          "document_id",
+                          sp.get("document_id"),
+                          "version_id",
+                          sp.get("version_id"),
+                          "page_number",
+                          sp.get("page_number"),
+                          "field_name",
+                          "address_comparison",
+                          "field_value",
+                          "POSTAL_MISMATCH",
+                          "supporting_text",
+                          "Supporting document postal code ("
+                              + sp.get("field_value")
+                              + ") does not match requested postal code ("
+                              + requestedPostal
+                              + ")."));
+                }
+              }
             }
           }
           String baselineKey =

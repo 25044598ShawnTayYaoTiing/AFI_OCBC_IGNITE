@@ -94,6 +94,9 @@ export interface Doc {
   evidence_reviewed_by?: string | null;
   filename: string;
   document_type: string;
+  document_role?: string;
+  evidence_eligible?: boolean;
+  evidence_eligibility_reason?: string;
   current_version: number;
   fields: Field[];
   versions: Version[];
@@ -181,6 +184,10 @@ export interface Preflight {
   humanApprovalRequired: boolean;
   unresolvedExceptions: number;
   validatedCurrentRevision: boolean;
+  candidateDocumentId?: string | null;
+  candidateVersionId?: string | null;
+  candidateSha256?: string | null;
+  packageEvidenceFingerprint?: string;
   explanation: string;
   createdAt: string;
   checks: Check[];

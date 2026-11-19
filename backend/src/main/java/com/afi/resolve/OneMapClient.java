@@ -186,9 +186,11 @@ public class OneMapClient {
   public Verification verifyText(String address) {
     address = clean(address);
     var matcher = POSTAL.matcher(address);
-    if (!matcher.find()) return inconclusive(address, "No six-digit postal code was extracted. Check the source PDF or request manual review.");
-    String postal = matcher.group(1);
-    if (matcher.find()) return inconclusive(address, "More than one postal code was extracted. A reviewer must identify the new address.");
+    var postals = new LinkedHashSet<String>();
+    while (matcher.find()) postals.add(matcher.group(1));
+    if (postals.isEmpty()) return inconclusive(address, "No six-digit postal code was extracted. Check the source PDF or request manual review.");
+    if (postals.size() > 1) return inconclusive(address, "More than one postal code was extracted. A reviewer must identify the new address.");
+    String postal = postals.iterator().next();
     var lookup = search(postal);
     if (!"LIVE_RESULTS".equals(lookup.status())) return result(lookup.status(), lookup.message(), address, lookup, null);
     String base = normalizedBase(address, postal);

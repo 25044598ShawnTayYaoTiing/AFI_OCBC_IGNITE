@@ -29,15 +29,34 @@ public class DemoCustomerProfiles implements ApplicationRunner {
     for (String name : NAMES) {
       String username = name.toLowerCase(Locale.ROOT);
       String reference = "SYN-" + name.toUpperCase(Locale.ROOT) + "-001";
-      store.db.update("UPDATE customers SET customer_name=? WHERE customer_reference=?", name, reference);
-      // Preserve existing identities, assignments and cases; never replace an account.
-      if (store.db.queryForObject(
-          "SELECT COUNT(*) FROM customers WHERE username=? OR customer_reference=?",
-          Integer.class, username, reference) > 0) continue;
+      // Preserve existing customer names (such as Alex Tan on SYN-ALEX-001); only backfill blanks.
+      store.db.update(
+          "UPDATE customers SET customer_name=? WHERE customer_reference=? AND (customer_name IS"
+              + " NULL OR TRIM(customer_name)='')",
+          name,
+          reference);
+      var existing =
+          store.db.queryForList(
+              "SELECT id FROM customers WHERE username=? OR customer_reference=?",
+              username,
+              reference);
+      if (!existing.isEmpty()) {
+        String existingId = (String) existing.getFirst().get("id");
+        if (store.db.queryForObject(
+                "SELECT COUNT(*) FROM customer_profiles WHERE customer_id=?",
+                Integer.class,
+                existingId)
+            == 0) {
+          new CustomerProfiles(store).create(existingId, reference);
+        }
+        continue;
+      }
+      String customerId = store.id("CUSTOMER");
       store.db.update(
           "INSERT INTO customers(id,username,password_hash,customer_name,customer_reference,relationship_manager,created_at)"
               + " VALUES(?,?,?,?,?,?,?)",
-          store.id("CUSTOMER"), username, passwords.encode(""), name, reference, "reviewer", Store.now());
+          customerId, username, passwords.encode(""), name, reference, "reviewer", Store.now());
+      new CustomerProfiles(store).create(customerId, reference);
     }
   }
 }

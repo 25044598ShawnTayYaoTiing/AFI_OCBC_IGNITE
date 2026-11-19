@@ -30,16 +30,36 @@ public class PolicyService {
       Map<String, Object> submission,
       String rules,
       Map<String, Object> candidate) {
+    Instant createdAt = null;
+    Object rawCreated = simulation.get("createdAt");
+    if (rawCreated instanceof Instant inst) {
+      createdAt = inst;
+    } else if (rawCreated instanceof String s && !s.isBlank()) {
+      try {
+        createdAt = Instant.parse(s);
+      } catch (Exception ignored) {
+      }
+    }
+    Instant now = Instant.now();
+    boolean validTimestamp =
+        createdAt != null
+            && !createdAt.isAfter(now.plusSeconds(60))
+            && !createdAt.isBefore(now.minusSeconds(300));
+    boolean shaMatch =
+        !(simulation.get("candidateSha256") instanceof String expectedSha)
+            || Objects.equals(expectedSha, candidate.get("sha256"));
     if (!Boolean.TRUE.equals(simulation.get("safeAdministrativeAttachment"))
         || !Objects.equals(simulation.get("revision"), submission.get("revision"))
         || !Objects.equals(simulation.get("ruleSet"), rules)
         || !Objects.equals(simulation.get("candidateDocumentId"), candidate.get("id"))
-        || !Objects.equals(simulation.get("candidateVersionId"), candidate.get("version_id")))
+        || !Objects.equals(simulation.get("candidateVersionId"), candidate.get("version_id"))
+        || !shaMatch
+        || !validTimestamp)
       throw new ApiException(
           409,
           "UNSAFE_DOCUMENT_SIMULATION",
-          "Attachment simulation is unsafe, stale or does not identify the current authorised"
-              + " version");
+          "Attachment simulation is unsafe, stale, expired or does not identify the current"
+              + " authorised version");
   }
 
   public static boolean blockingDocumentCheck(Map<String, Object> check) {

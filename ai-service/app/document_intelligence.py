@@ -110,7 +110,7 @@ def generate(schema, payload: dict, instruction: str, settings: Settings, media=
                 continue
             raise
     if not response or not response.text:
-        raise ValueError('Empty model response')
+        raise RuntimeError('Empty model response')
     return schema.model_validate_json(response.text, strict=True)
 
 class StrictModel(BaseModel):

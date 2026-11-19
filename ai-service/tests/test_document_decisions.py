@@ -279,4 +279,94 @@ def test_tax_cert_reconciliation_preserves_identity_contradiction_with_extracted
     assert res.decision['outcome'] == 'UNCERTAIN'
     assert 'holder_matches_profile' in res.decision['failed_criteria']
     assert 'IDENTITY_CONTRADICTION' in res.uncertainty_reasons
+    assert res.extraction_requires_review is False
     assert res.requires_review is True
+
+
+def test_identity_contradiction_does_not_mark_extraction_requires_review_and_aligns_service_relevance():
+    answers = {
+        'classification': {'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.93,
+                           'probabilities': {'SUPPORTING_DOCUMENT': 0.93, 'TAX_RESIDENCY': 0.07}},
+        'readable': {'type': 'noul', 'confidence': 0.96, 'noul': 0.96},
+        'review_route': {'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.95,
+                         'probabilities': {'continue_checks': 0.95, 'manual_review': 0.05}},
+        'consistency': {'type': 'score', 'confidence': 0.94, 'score': 1.9,
+                        'probabilities': {'0': 0.01, '1': 0.05, '2': 0.94}},
+        'service_relevance': {'type': 'noul', 'confidence': 0.85, 'noul': 0.62},
+        'holder_matches_profile': {'type': 'noul', 'confidence': 0.90, 'noul': 0.90},
+        'request_corroboration': {'type': 'choice', 'choice': 'identity_differs', 'confidence': 0.91,
+                                  'probabilities': {'consistent': 0.04, 'identity_differs': 0.91}},
+    }
+    extraction = SimpleNamespace(
+        document_type='TAX_RESIDENCY',
+        requires_review=True,
+        uncertainty_reasons=['CLASSIFICATION_AMBIGUOUS'],
+        fields=[
+            SimpleNamespace(field='customer_name', value='User 2'),
+            SimpleNamespace(field='foreign_tax_country', value='Australia'),
+            SimpleNamespace(field='tax_identifier', value='AUS-QA-02-8741'),
+        ],
+        observations=[],
+        notes='Live Gemini extraction',
+        quality='READABLE',
+        extraction_issues=[],
+    )
+    res_clean = reconcile(
+        SimpleNamespace(
+            document_type='TAX_RESIDENCY',
+            requires_review=True,
+            uncertainty_reasons=['CLASSIFICATION_AMBIGUOUS'],
+            fields=list(extraction.fields),
+            observations=[],
+            notes='Live Gemini extraction',
+            quality='READABLE',
+            extraction_issues=[],
+        ),
+        {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': {
+            **answers,
+            'service_relevance': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+        }},
+        0.80,
+    )
+    assert res_clean.decision['outcome'] == 'UNCERTAIN'
+    assert 'request_corroboration' in res_clean.decision['failed_criteria']
+    assert 'IDENTITY_CONTRADICTION' in res_clean.uncertainty_reasons
+    assert res_clean.extraction_requires_review is False
+    assert res_clean.requires_review is True
+
+    res = reconcile(
+        extraction,
+        {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': answers},
+        0.80,
+    )
+    assert res.decision['outcome'] == 'UNCERTAIN'
+    assert 'service_relevance' in res.decision['failed_criteria']
+    assert 'request_corroboration' in res.decision['failed_criteria']
+    assert res.requires_review is True
+
+    # Removing service_relevance failure & identity contradiction passes clean cert even with CLASSIFICATION_AMBIGUOUS
+    clean_answers = {
+        **answers,
+        'service_relevance': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+        'request_corroboration': {'type': 'choice', 'choice': 'consistent', 'confidence': 0.95,
+                                  'probabilities': {'consistent': 0.95, 'identity_differs': 0.05}},
+    }
+    clean = SimpleNamespace(
+        document_type='TAX_RESIDENCY',
+        requires_review=True,
+        uncertainty_reasons=['CLASSIFICATION_AMBIGUOUS'],
+        fields=list(extraction.fields),
+        observations=[],
+        notes='Live Gemini extraction',
+        quality='READABLE',
+        extraction_issues=[],
+    )
+    res_clean = reconcile(
+        clean,
+        {'outcome': 'ASSESSED', 'request_type': 'ACCOUNT_OPENING', 'answers': clean_answers},
+        0.80,
+    )
+    assert res_clean.document_type == 'SUPPORTING_DOCUMENT'
+    assert res_clean.decision['outcome'] == 'PASSED'
+    assert res_clean.requires_review is False
+    assert res_clean.extraction_requires_review is False

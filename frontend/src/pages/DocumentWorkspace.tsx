@@ -399,7 +399,10 @@ export function DocumentWorkspace() {
                             >
                               {data.documents.map((item) => (
                                 <option key={item.id} value={item.id}>
-                                  {label(item.document_type)} | {item.filename}
+                                  {label(item.document_type)}
+                                  {item.document_role === "UNSUITABLE_SUPPORT_ATTACHMENT"
+                                    ? " (Not supporting proof)"
+                                    : ""} | {item.filename}
                                 </option>
                               ))}
                             </select>
@@ -417,6 +420,7 @@ export function DocumentWorkspace() {
                             ))}
                           </select>}
                           {!locked &&
+                            doc.document_role !== "DECLARATION_RECEIPT" &&
                             doc.extraction.method !== "DIGITAL_EFORM" && (
                               <button
                                 className="button secondary"
@@ -434,7 +438,9 @@ export function DocumentWorkspace() {
                             version; check each citation before acting.
                           </Notice>
                         )}
-                        {(!version || version === doc.version_id) && doc.extraction.requires_review && (
+                        {(!version || version === doc.version_id) &&
+                          doc.extraction.requires_review &&
+                          doc.extraction.decision?.outcome !== "UNAVAILABLE" && (
                           <Notice>
                             {doc.evidence_reviewed_by
                               ? `Evidence review recorded by ${doc.evidence_reviewed_by}.`
@@ -473,6 +479,12 @@ export function DocumentWorkspace() {
                     </div>
                     <Panel title="Details read from this document" className="review-sidebar">
                       <div className="panel-body">
+                        {(!version || version === doc.version_id) && doc.evidence_eligibility_reason && (
+                          <p className="field-hint">
+                            Role: <strong>{label(doc.document_role || doc.document_type)}</strong> ·{" "}
+                            {doc.evidence_eligibility_reason}
+                          </p>
+                        )}
                         {(!version || version === doc.version_id) && doc.extraction.model_document_type && doc.extraction.model_document_type !== doc.document_type && (
                           <p className="field-hint">
                             Effective classification: <strong>{label(doc.document_type)}</strong> (initial model classification: {label(doc.extraction.model_document_type)}).

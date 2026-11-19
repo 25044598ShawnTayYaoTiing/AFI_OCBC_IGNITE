@@ -302,7 +302,7 @@ class CustomerIntegrationTest {
         .isEqualTo("CUSTOMER_PORTAL");
     assertThat(staff.path("submission").path("owner_name").asText()).isEqualTo("reviewer");
     assertThat(staff.path("documents").size()).isEqualTo(4);
-    assertThat(staff.path("exceptions").toString()).contains("AUTOMATIC_VERIFIED_ATTACHMENT");
+    assertThat(staff.path("exceptions").toString()).contains("MANUAL_VERIFIED_ATTACHMENT");
     // New login, same persisted request: session-independent replay, not a browser cache.
     token = login(user);
     var replay =

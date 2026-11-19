@@ -30,6 +30,15 @@ public class CustomerService {
   java.util.concurrent.CompletableFuture<Void> startFlight(String flightKey) {
     var flight = new java.util.concurrent.CompletableFuture<Void>();
     inFlight.put(flightKey, flight);
+    if (TransactionSynchronizationManager.isSynchronizationActive()) {
+      TransactionSynchronizationManager.registerSynchronization(
+          new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+              if (status != STATUS_COMMITTED) finishFlight(flightKey, flight);
+            }
+          });
+    }
     return flight;
   }
 
@@ -194,23 +203,73 @@ public class CustomerService {
             "RESOLUTION_MANAGEMENT", "ON_HOLD", "READY").contains(c.get("status"));
   }
 
-  @Transactional
   public Object cancel(String id, Integer revision, Authentication actor) {
-    customer(actor, true);
-    var c = documents.access(id, actor, true);
-    // Ownership is checked independently; staff credentials cannot cancel a customer's request.
-    owned(id, actor);
-    if ("CANCELLED".equals(c.get("status"))) return detail(id, actor);
-    if (!cancellable(c)) throw new ApiException(409, "NOT_CANCELLABLE",
-        "This request has already been sent for processing and cannot be cancelled here.");
-    if (revision == null || !Objects.equals(c.get("revision"), revision))
-      throw new ApiException(409, "STALE_REQUEST", "The request changed. Refresh it before confirming cancellation.");
-    s.db.update("UPDATE document_submissions SET status='CANCELLED',revision=revision+1,approved_revision=NULL WHERE id=?", id);
-    s.db.update("UPDATE correction_tasks SET status='CANCELLED',resolved_at=? WHERE submission_id=? AND status NOT IN ('RESOLVED','CANCELLED')", Store.now(), id);
-    s.db.update("UPDATE document_exceptions SET status='CANCELLED',resolved_at=?,resolution_method='REQUEST_CANCELLED' WHERE submission_id=? AND status='OPEN'", Store.now(), id);
-    s.db.update("UPDATE customer_email_outbox SET status='SUPERSEDED',updated_at=? WHERE status='PENDING' AND notification_id IN (SELECT id FROM customer_notifications WHERE submission_id=?)", Store.now(), id);
-    documents.event(id, actor, "CUSTOMER_CANCELLED", map("previousStatus", c.get("status"), "revision", revision));
-    notifications.publish(id, "REQUEST_CANCELLED", "customer-cancelled", "Your request has been cancelled. Its documents and history are retained; no further processing will take place for this request.");
+    var siblingIds =
+        s.inTx(
+            () -> {
+              customer(actor, true);
+              var c = documents.access(id, actor, true);
+              // Ownership is checked independently; staff credentials cannot cancel a customer's request.
+              owned(id, actor);
+              if ("CANCELLED".equals(c.get("status"))) return List.<String>of();
+              if (!cancellable(c))
+                throw new ApiException(
+                    409,
+                    "NOT_CANCELLABLE",
+                    "This request has already been sent for processing and cannot be cancelled here.");
+              if (revision == null || !Objects.equals(c.get("revision"), revision))
+                throw new ApiException(
+                    409,
+                    "STALE_REQUEST",
+                    "The request changed. Refresh it before confirming cancellation.");
+              s.db.update(
+                  "UPDATE document_submissions SET"
+                      + " status='CANCELLED',revision=revision+1,approved_revision=NULL WHERE id=?",
+                  id);
+              s.db.update(
+                  "UPDATE correction_tasks SET status='CANCELLED',resolved_at=? WHERE"
+                      + " submission_id=? AND status NOT IN ('RESOLVED','CANCELLED')",
+                  Store.now(),
+                  id);
+              s.db.update(
+                  "UPDATE document_exceptions SET"
+                      + " status='CANCELLED',resolved_at=?,resolution_method='REQUEST_CANCELLED'"
+                      + " WHERE submission_id=? AND status='OPEN'",
+                  Store.now(),
+                  id);
+              s.db.update(
+                  "UPDATE customer_email_outbox SET status='SUPERSEDED',updated_at=? WHERE"
+                      + " status='PENDING' AND notification_id IN (SELECT id FROM"
+                      + " customer_notifications WHERE submission_id=?)",
+                  Store.now(),
+                  id);
+              documents.event(
+                  id,
+                  actor,
+                  "CUSTOMER_CANCELLED",
+                  map("previousStatus", c.get("status"), "revision", revision));
+              notifications.publish(
+                  id,
+                  "REQUEST_CANCELLED",
+                  "customer-cancelled",
+                  "Your request has been cancelled. Its documents and history are retained; no"
+                      + " further processing will take place for this request.");
+              if (!"ADDITIONAL_ACCOUNT".equals(c.get("category"))) return List.<String>of();
+              return s.db.queryForList(
+                  "SELECT id FROM document_submissions WHERE customer_id=? AND id<>? AND"
+                      + " category='ADDITIONAL_ACCOUNT' AND routed_at IS NULL AND status NOT IN"
+                      + " ('DRAFT','CANCELLED','REJECTED','OPERATIONS') ORDER BY created_at ASC,"
+                      + " id ASC",
+                  String.class,
+                  c.get("customer_id"),
+                  id);
+            });
+    for (String siblingId : siblingIds) {
+      try {
+        documents.validate(siblingId, actor);
+      } catch (Exception ignored) {
+      }
+    }
     return detail(id, actor);
   }
 
@@ -254,18 +313,26 @@ public class CustomerService {
     var files =
         documents.documents(id, false).stream()
             .map(
-                d ->
-                    map(
-                        "id",
-                        d.get("id"),
-                        "type",
-                        d.get("document_type"),
-                        "version",
-                        d.get("current_version"),
-                        "filename",
-                        d.get("filename"),
-                        "captureMethod",
-                        s.readMap((String) d.get("extraction_json")).get("method")))
+                d -> {
+                  var meta = documents.documentEligibilityMeta(c, d);
+                  return map(
+                      "id",
+                      d.get("id"),
+                      "type",
+                      d.get("document_type"),
+                      "version",
+                      d.get("current_version"),
+                      "filename",
+                      d.get("filename"),
+                      "captureMethod",
+                      s.readMap((String) d.get("extraction_json")).get("method"),
+                      "documentRole",
+                      meta.get("document_role"),
+                      "evidenceEligible",
+                      meta.get("evidence_eligible"),
+                      "evidenceEligibilityReason",
+                      meta.get("evidence_eligibility_reason"));
+                })
             .toList();
     var verification =
         "CONTACT_UPDATE".equals(c.get("category"))
@@ -370,7 +437,8 @@ public class CustomerService {
         return "Your supporting document does not display the account-holder name."
             + " Please upload a document clearly showing your account-holder name and details.";
       }
-      if ("duplicate_application".equals(e.get("field_name"))
+      if ("unsuitable_document_type".equals(e.get("field_name"))
+          || "duplicate_application".equals(e.get("field_name"))
           || "eligibility_status".equals(e.get("field_name"))
           || "jurisdiction_conflict".equals(e.get("field_name"))) {
         String detailText = Objects.toString(e.get("supporting_text"), "").trim();
@@ -380,7 +448,7 @@ public class CustomerService {
     if ("SERVICE_SUPPORT".equals(ruleKey) || "ATTACH_SUPPORTING_DOCUMENT".equals(ruleKey)) {
       var uploadedSupport =
           caseDocs.stream()
-              .filter(d -> !"SERVICE_REQUEST".equals(d.get("document_type")))
+              .filter(d -> DocumentService.isUploadedAttachment(s, d))
               .toList();
       if (uploadedSupport.isEmpty() || "ATTACH_SUPPORTING_DOCUMENT".equals(ruleKey)) {
         return "Please provide a document containing the required information.";
@@ -494,8 +562,7 @@ public class CustomerService {
                                       .anyMatch(
                                           d ->
                                               doc.equals(d.get("id"))
-                                                  && !"SERVICE_REQUEST"
-                                                      .equals(d.get("document_type"))))
+                                                  && DocumentService.isUploadedAttachment(s, d)))
                       .distinct()
                       .toList();
               return map(
@@ -652,11 +719,14 @@ public class CustomerService {
             || op.contains("/documents");
     var uploadedDocs =
         s.db.queryForList(
-            "SELECT d.id AS doc_id, v.sha256, v.extraction_json, v.created_at AS doc_created_at"
-                + " FROM submission_documents d JOIN document_versions v ON v.document_id=d.id"
-                + " AND v.version=d.current_version WHERE d.submission_id=? AND"
-                + " d.repository_only=FALSE AND d.document_type<>'SERVICE_REQUEST'",
-            subId);
+            "SELECT d.id AS doc_id, d.document_type, v.sha256, v.extraction_json, v.created_at AS"
+                + " doc_created_at FROM submission_documents d JOIN document_versions v ON"
+                + " v.document_id=d.id AND v.version=d.current_version WHERE d.submission_id=? AND"
+                + " d.repository_only=FALSE",
+                subId)
+            .stream()
+            .filter(r -> !DocumentService.isDigitalDeclarationReceipt(s, r))
+            .toList();
     Instant reqCreatedAt =
         row.get("request_created_at") == null ? null : documents.instant(row.get("request_created_at"));
     boolean followUpOp = op.startsWith("/submissions/");
@@ -687,11 +757,21 @@ public class CustomerService {
         String srcHash = Objects.toString(ext.get("image_source_sha256"), "").toLowerCase(Locale.ROOT);
         if (!srcHash.isBlank()) seenHashes.add(srcHash);
         if (Boolean.TRUE.equals(combineImages) && Boolean.TRUE.equals(ext.get("combine_images"))) {
-          int pages =
-              ext.get("conversion_page_count") instanceof Number n
-                  ? n.intValue()
-                  : (ext.get("source_images") instanceof List<?> imgs ? imgs.size() : 0);
-          if (pages == normalizedHashes.size()) matchedCombined = true;
+          if (ext.get("image_source_hashes") instanceof List<?> srcHashes) {
+            var srcSet =
+                srcHashes.stream()
+                    .filter(Objects::nonNull)
+                    .map(h -> h.toString().trim().toLowerCase(Locale.ROOT))
+                    .collect(java.util.stream.Collectors.toSet());
+            if (srcSet.containsAll(normalizedHashes)
+                && normalizedHashes.containsAll(srcSet)) matchedCombined = true;
+          } else {
+            int pages =
+                ext.get("conversion_page_count") instanceof Number n
+                    ? n.intValue()
+                    : (ext.get("source_images") instanceof List<?> imgs ? imgs.size() : 0);
+            if (pages == normalizedHashes.size()) matchedCombined = true;
+          }
         }
       }
       boolean allHashesPresent = seenHashes.containsAll(normalizedHashes);
@@ -903,9 +983,7 @@ public class CustomerService {
                       .anyMatch(
                           d ->
                               replace.equals(d.get("id"))
-                                  && "DIGITAL_EFORM"
-                                      .equals(
-                                          s.readMap((String) d.get("extraction_json")).get("method"))))
+                                  && DocumentService.isDigitalDeclarationReceipt(s, d)))
                 throw new ApiException(
                     409, "EDIT_EFORM", "Edit the digital declaration instead of replacing its receipt");
               s.db.update(
@@ -950,7 +1028,7 @@ public class CustomerService {
             String st = Objects.toString(current.get("status"), "");
             if ("OPERATIONS".equals(st) || "CANCELLED".equals(st)) return;
             if (!documents.hasUploadedAttachment(id, replace, files, combineImages)) {
-              documents.uploadInternal(id, files, replace, a, false, combineImages);
+              documents.uploadMissingAttachments(id, files, replace, a, combineImages);
               completeUpload(id, originalInitial, key, a);
             } else if (documents.hasPendingVerification(id)) {
               recoverPendingValidation(id, originalInitial, a);

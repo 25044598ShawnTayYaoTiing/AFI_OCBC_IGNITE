@@ -410,3 +410,73 @@ def test_assess_endpoint_preserves_extraction_uncertainty_and_clears_contextual(
     assert body['extraction_requires_review'] is True
     assert body['requires_review'] is True
     assert 'POOR_DOCUMENT_QUALITY' in body['uncertainty_reasons']
+
+
+def test_assess_preserves_blurry_quality_when_uncertainty_reasons_omitted(client, headers, monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test')
+    monkeypatch.setattr(d.document_decisions, 'assess', lambda media, settings, req_type, ctx: {
+        'model': 'gemini-decision-1', 'outcome': 'ASSESSED', 'request_type': req_type,
+        'answers': {
+            'classification': {'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.96, 'probabilities': {'SUPPORTING_DOCUMENT': 0.96}},
+            'readable': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+            'review_route': {'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.95, 'probabilities': {'continue_checks': 0.95}},
+            'consistency': {'type': 'score', 'confidence': 0.95, 'score': 2.0, 'probabilities': {'0': 0.01, '1': 0.04, '2': 0.95}},
+            'service_relevance': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+        },
+    })
+    resp = client.post('/documents/assess', headers=headers, json={
+        'document_id': 'doc-blurry-fallback',
+        'document_type': 'SUPPORTING_DOCUMENT',
+        'pdf_base64': base64.b64encode(b'%PDF-1.4 test').decode(),
+        'request_type': 'ADDRESS_CHANGE',
+        'fields': ['customer_name', 'mailing_address'],
+        'requires_review': True,
+        'extraction_requires_review': True,
+        'quality': 'BLURRY',
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['extraction_requires_review'] is True
+    assert body['requires_review'] is True
+
+
+def test_blank_colon_field_routes_to_potentially_missing_not_unverified_issue(monkeypatch):
+    page = 'Declaration Date:\nSignature Indicator: Present'
+    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(
+        is_encrypted=False, trailer={'/Root': {}}, pages=[TextPage(page)]))
+    monkeypatch.setattr(d, 'generate', lambda *args: d.ModelExtraction(
+        document_type='ACCOUNT_APPLICATION',
+        requires_review=False,
+        fields=[
+            d.ModelEvidenceField(field='declaration_date', value='', page=1, supporting_text='Declaration Date:'),
+            d.ModelEvidenceField(field='signature_indicator', value='Present', page=1, supporting_text='Signature Indicator: Present'),
+        ]))
+    res = d.extract(d.ExtractRequest(
+        document_id='blank-date', pdf_base64=base64.b64encode(b'%PDF-blank').decode(),
+    ), Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
+    assert not res.extraction_requires_review
+    assert not res.extraction_issues
+    assert any(o.field == 'declaration_date' and o.issue_type == 'POTENTIALLY_MISSING' for o in res.observations)
+
+
+def test_extract_visual_receives_all_service_labels(monkeypatch):
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new('RGB', (8, 8), 'white').save(buf, format='PNG')
+    seen = {}
+    def fake_generate(schema, payload, *args, **kwargs):
+        seen['labels'] = payload.get('recognised_labels')
+        return d.VisualExtraction(
+            document_type='SERVICE_REQUEST', requires_review=False,
+            pages=['Account Type: CURRENT\nCurrency: USD\nSource of Funds: Salary'],
+            quality='READABLE',
+            fields=[d.ModelEvidenceField(field='account_type', value='CURRENT', page=1, supporting_text='Account Type: CURRENT')],
+        )
+    monkeypatch.setattr(d, 'generate', fake_generate)
+    res = d.extract(d.ExtractRequest(
+        document_id='vis-1', images_base64=[base64.b64encode(buf.getvalue()).decode()],
+        request_type='ADDITIONAL_ACCOUNT',
+    ), Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
+    assert {'account_type', 'currency', 'source_of_funds'} <= set(seen['labels'])
+    assert res.fields[0].field == 'account_type'

@@ -5,9 +5,18 @@ export function reviewState(detail: Detail) {
   const { submission: c, checks } = detail;
   const current = c.validated_revision === c.revision && checks.length > 0;
   const open = detail.exceptions.filter((issue) => issue.status === "OPEN");
+  const pendingVerification =
+    c.status === "PENDING_VALIDATION" ||
+    checks.some((check) => check.outcome === "UNAVAILABLE") ||
+    detail.documents.some(
+      (doc) =>
+        doc.extraction.decision?.outcome === "UNAVAILABLE" ||
+        Boolean(doc.extraction.decision?.unavailable),
+    );
   const failed = checks.filter(
     (check) =>
       !check.passed &&
+      check.outcome !== "UNAVAILABLE" &&
       (check.severity === "BLOCKING" ||
         check.condition_type === "CLASSIFICATION"),
   );
@@ -24,6 +33,7 @@ export function reviewState(detail: Detail) {
     !routed &&
     !cancelled &&
     !held &&
+    !pendingVerification &&
     current &&
     failed.length === 0 &&
     open.length === 0 &&
@@ -40,6 +50,7 @@ export function reviewState(detail: Detail) {
   const title = cancelled ? "Request cancelled"
     : routed ? "Sent to Operations"
     : held ? "Needs review"
+    : pendingVerification ? "Verification pending"
     : !current ? "Request needs checking"
     : authorisation ? "Staff approval required for corrections"
     : customerTasks.length ? "Waiting for customer corrections"
@@ -49,6 +60,7 @@ export function reviewState(detail: Detail) {
   const next = cancelled ? "No further action is needed."
     : routed ? "Operations will take it from here."
     : held ? "Review the evidence and risk before clearing the hold."
+    : pendingVerification ? "Automated verification is temporarily delayed. Recheck the request shortly; submitted files remain safely stored."
     : !current ? "Check the latest request details before making a decision."
     : authorisation ? "Review the issues before asking the customer for a correction."
     : customerTasks.length ? "The customer needs to update their request before it can proceed."
@@ -63,6 +75,7 @@ export function reviewState(detail: Detail) {
     routed,
     cancelled,
     held,
+    pendingVerification,
     eligible,
     customerTasks,
     authorisation,

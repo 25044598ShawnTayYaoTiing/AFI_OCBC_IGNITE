@@ -21,7 +21,16 @@ export function CaseSummary({ detail }: { detail: Detail }) {
   const risk = detail.riskAssessment;
   const resolved = detail.exceptions.filter((item) =>
     item.status === "RESOLVED" && item.resolution_method === "AUTOMATIC_VERIFIED_ATTACHMENT");
-  const fields = detail.documents.filter((doc) => doc.document_type !== "SUPPORTING_DOCUMENT").flatMap((doc) => doc.fields);
+  const fields = detail.documents
+    .filter(
+      (doc) =>
+        doc.document_role === "DECLARATION_RECEIPT" ||
+        doc.document_role === "REQUEST_DOCUMENT" ||
+        (!doc.document_role &&
+          doc.document_type !== "SUPPORTING_DOCUMENT" &&
+          doc.document_type !== "UNKNOWN"),
+    )
+    .flatMap((doc) => doc.fields);
   const requested = (requestedFields[detail.submission.category] || []).flatMap((name) => {
     const value = fields.find((field) => field.field_name === name)?.field_value;
     return value ? [{ name, value }] : [];

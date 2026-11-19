@@ -241,6 +241,11 @@ public class DocumentIntelligence {
     final Map<String, Object> finalResult = result;
     s.inTxVoid(
         () -> {
+          var current = workflow.access(id, actor, true);
+          if (((Number) current.get("revision")).intValue() != revision
+              || Set.of("OPERATIONS", "CANCELLED").contains(current.get("status"))) {
+            return;
+          }
           s.db.update(
               "INSERT INTO"
                   + " document_investigations(id,submission_id,revision,rule_set,method,result_json,completed_at)"

@@ -11,10 +11,15 @@ export function issueRuleKey(issue: Finding) {
 }
 
 export function issueCategory(issue: Finding) {
-  if (issue.status === "RESOLVED")
-    return issue.resolution_method === "AUTOMATIC_VERIFIED_ATTACHMENT"
-      ? "Resolved automatically and verified"
-      : "Resolved after checking again";
+  if (issue.status === "RESOLVED") {
+    if (issue.resolution_method === "AUTOMATIC_VERIFIED_ATTACHMENT")
+      return "Resolved automatically and verified";
+    if (issue.resolution_method === "MANUAL_VERIFIED_ATTACHMENT")
+      return "Resolved manually with verified attachment";
+    if (issue.resolution_method === "ONEMAP_UNAVAILABLE_DEFERRED")
+      return "Deferred while OneMap unavailable";
+    return "Resolved after checking again";
+  }
   return issue.action_type === "ATTACH_VERIFIED_DOCUMENT"
     ? "Eligible for automatic resolution"
     : "Needs a person to review";

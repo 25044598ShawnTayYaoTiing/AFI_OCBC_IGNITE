@@ -805,7 +805,8 @@ class StageTwoReliabilityTest {
   @Test
   void stageThreeClassificationConsistencyAdditionalAccountsFlightTimeoutAndContextualRefresh()
       throws Exception {
-    // 1. Consistent classification: DIGITAL_EFORM non-supporting document is persisted as UNKNOWN while preserving model_document_type
+    // 1. Consistent classification: DIGITAL_EFORM unsuitable non-supporting attachment preserves true
+    // classification without UNKNOWN override, routes to customer CORRECTION_REQUIRED, and allows cross-type replacement
     doAnswer(call -> {
       var n = extractedNode((String) call.getArgument(1), "TAX_RESIDENCY", false, map(
           "customer_name", "Alex Tan",
@@ -825,19 +826,43 @@ class StageTwoReliabilityTest {
         .andExpect(status().isOk())
         .andReturn());
     String classSubId = nonSupport.path("submission").path("id").asText();
-    assertThat(nonSupport.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
+    assertThat(nonSupport.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
     var rmClass = json(mvc.perform(
         get("/api/documents/submissions/" + classSubId)
             .with(httpBasic("reviewer", "reviewer-demo")))
         .andExpect(status().isOk())
         .andReturn());
     var docNode = findUploadedDoc(rmClass.path("documents"));
-    assertThat(docNode.path("document_type").asText()).isEqualTo("UNKNOWN");
-    assertThat(docNode.path("extraction").path("document_type").asText()).isEqualTo("UNKNOWN");
+    String wrongDocId = docNode.path("id").asText();
+    assertThat(docNode.path("document_type").asText()).isEqualTo("TAX_RESIDENCY");
+    assertThat(docNode.path("document_role").asText()).isEqualTo("UNSUITABLE_SUPPORT_ATTACHMENT");
+    assertThat(docNode.path("evidence_eligible").asBoolean()).isFalse();
+    assertThat(docNode.path("extraction").path("document_type").asText()).isEqualTo("TAX_RESIDENCY");
     assertThat(docNode.path("extraction").path("model_document_type").asText()).isEqualTo("TAX_RESIDENCY");
+    assertThat(docNode.path("extraction").has("classification_overridden_reason")).isFalse();
     assertThat(s.db.queryForObject(
         "SELECT document_type FROM submission_documents WHERE id=?",
-        String.class, docNode.path("id").asText())).isEqualTo("UNKNOWN");
+        String.class, wrongDocId)).isEqualTo("TAX_RESIDENCY");
+    var classCorrections = nonSupport.path("corrections");
+    assertThat(classCorrections.size()).isGreaterThan(0);
+
+    // Cross-type replacement of unsuitable attachment with SUPPORTING_DOCUMENT resolves the case cleanly
+    doAnswer(call -> {
+      var n = extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+          "customer_name", "Alex Tan",
+          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+      n.put("method", "GEMINI");
+      return n;
+    }).when(documents).extraction(any(byte[].class), anyString());
+    var replacedSupport = json(mvc.perform(
+        multipart("/api/customer/submissions/" + classSubId + "/documents/" + wrongDocId + "/replacement")
+            .file(new MockMultipartFile("files", "valid-bill.pdf", "application/pdf",
+                "%PDF-VALID-SUPPORT-AFTER-UNSUITABLE".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(replacedSupport.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
 
     // 2. Additional account: routed OPERATIONS request does NOT block a new request of same type/currency; active unrouted request DOES
     var accForm = addressForm("1 Fictional Road", "018983");
@@ -1316,8 +1341,9 @@ class StageTwoReliabilityTest {
     assertThat(unavailDoc.path("extraction").path("decision").path("stale").asBoolean()).isTrue();
     assertThat(unavailDoc.path("extraction").path("decision").path("previous_outcome").asText())
         .isEqualTo("PASSED");
-    assertThat(unavailDoc.path("extraction").path("assessment_uncertain").asBoolean()).isTrue();
-    assertThat(unavailDoc.path("extraction").path("requires_review").asBoolean()).isTrue();
+    assertThat(unavailDoc.path("extraction").path("requires_review").asBoolean()).isFalse();
+    assertThat(rmUnavail.path("submission").path("status").asText())
+        .isEqualTo("PENDING_VALIDATION");
 
     // Concurrent revision guard: simulate another transaction bumping revision during assessDecision
     doAnswer(
@@ -1454,5 +1480,290 @@ class StageTwoReliabilityTest {
     assertThat(partialStatus.path("complete").asBoolean()).isFalse();
     assertThat(partialStatus.path("incomplete").asBoolean()).isTrue();
     assertThat(partialStatus.path("hasDocuments").asBoolean()).isFalse();
+  }
+
+  @Test
+  void auditStageOneThroughFiveFixesDigitalEformIsolationHistoricalMigrationAndRecovery()
+      throws Exception {
+    // 1. Historical overridden row reconciliation recovers model_document_type without changing OPERATIONS status
+    String histDoc = s.id("FILE"), histVer = s.id("VER"), histSub = s.id("DOC");
+    s.db.update(
+        "INSERT INTO document_submissions(id,customer_reference,customer_name,category,owner_name,customer_id,capture_method,submission_source,status,created_at)"
+            + " VALUES(?,'SYN-ALEX-001','Alex Tan','ADDRESS_CHANGE','reviewer',?,'DIGITAL_EFORM','CUSTOMER_PORTAL','RESOLUTION_MANAGEMENT',?)",
+        histSub, customer, Instant.now());
+    s.db.update(
+        "INSERT INTO submission_documents(id,submission_id,document_type,current_version,repository_only) VALUES(?,?,'UNKNOWN',1,FALSE)",
+        histDoc, histSub);
+    String legacyJson =
+        s.json(
+            map(
+                "document_id", histDoc,
+                "document_type", "UNKNOWN",
+                "effective_document_type", "UNKNOWN",
+                "model_document_type", "ACCOUNT_APPLICATION",
+                "classification_overridden_reason", "DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT",
+                "classification_uncertain", true,
+                "assessment_uncertain", true,
+                "requires_review", true,
+                "method", "GEMINI",
+                "fields", List.of(map("field", "customer_name", "value", "Alex Tan", "page", 1))));
+    s.db.update(
+        "INSERT INTO document_versions(id,document_id,version,filename,sha256,storage_key,size_bytes,extraction_json,uploaded_by,created_at)"
+            + " VALUES(?,?,1,'acc.pdf','sha-hist','missing',10,?,'user',?)",
+        histVer, histDoc, legacyJson, Instant.now());
+    documents.reconcileHistoricalOverriddenClassifications();
+    assertThat(
+            s.db.queryForObject(
+                "SELECT document_type FROM submission_documents WHERE id=?", String.class, histDoc))
+        .isEqualTo("ACCOUNT_APPLICATION");
+    var migratedExt =
+        s.readMap(
+            s.db.queryForObject(
+                "SELECT extraction_json FROM document_versions WHERE id=?", String.class, histVer));
+    assertThat(migratedExt).doesNotContainKey("classification_overridden_reason");
+    assertThat(migratedExt.get("classification_uncertain")).isEqualTo(false);
+    assertThat(migratedExt.get("requires_review")).isEqualTo(false);
+
+    // 2. SERVICE_REQUEST upload on DIGITAL_EFORM never clobbers declaration receipt and cannot be edited via replacement
+    doAnswer(call -> {
+      var n = extractedNode((String) call.getArgument(1), "SERVICE_REQUEST", false, map(
+          "customer_name", "Alex Tan",
+          "mailing_address", "99 Wrong Road #99-99 Singapore 543298"));
+      n.put("method", "GEMINI");
+      return n;
+    }).when(documents).extraction(any(byte[].class), anyString());
+
+    var srUpload = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(addressForm("298B Sengkang East Way, #12-34", "543298")).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "sr-attachment.pdf", "application/pdf",
+                "%PDF-SR-UNSUITABLE".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+    String srCaseId = srUpload.path("submission").path("id").asText();
+    assertThat(srUpload.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
+    var srDetail = json(mvc.perform(
+        get("/api/documents/submissions/" + srCaseId)
+            .with(httpBasic("reviewer", "reviewer-demo")))
+        .andExpect(status().isOk())
+        .andReturn());
+    String receiptDocId = null;
+    String uploadedSrDocId = null;
+    for (var d : srDetail.path("documents")) {
+      if ("DIGITAL_EFORM".equals(d.path("extraction").path("method").asText())) {
+        receiptDocId = d.path("id").asText();
+      } else {
+        uploadedSrDocId = d.path("id").asText();
+      }
+    }
+    assertThat(receiptDocId).isNotNull();
+    assertThat(uploadedSrDocId).isNotNull();
+    // Editing digital form preserves both receipt doc and separate uploaded attachment
+    int srRev = srUpload.path("submission").path("revision").asInt();
+    var srEdit = addressForm("298B Sengkang East Way, #12-34", "543298");
+    srEdit.put("expectedRevision", srRev);
+    mvc.perform(
+        post("/api/customer/submissions/" + srCaseId + "/eform")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(srEdit)))
+        .andExpect(status().isOk());
+    // Attempting to replace the digital declaration receipt returns 409 EDIT_EFORM
+    mvc.perform(
+        multipart("/api/customer/submissions/" + srCaseId + "/documents/" + receiptDocId + "/replacement")
+            .file(new MockMultipartFile("files", "replace-receipt.pdf", "application/pdf",
+                "%PDF-REPLACE-RECEIPT".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isConflict());
+
+    // 3. Transient Decision 1 reassessment unavailability yields PENDING_VALIDATION (not RESOLUTION_MANAGEMENT)
+    doAnswer(call -> {
+      var n = extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+          "customer_name", "Alex Tan",
+          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+      n.put("method", "GEMINI");
+      n.put("extraction_requires_review", false);
+      n.put("classification_uncertain", false);
+      n.put("assessment_uncertain", true);
+      var dec = n.putObject("decision");
+      dec.put("model", "gemini-decision-1");
+      dec.put("outcome", "UNCERTAIN");
+      dec.put("gating_pass_probability", 0.72);
+      dec.put("context_fingerprint", "force-refresh");
+      return n;
+    }).when(documents).extraction(any(byte[].class), anyString());
+    var initialOutage = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(addressForm("99 Wrong Way #99-99", "543999")).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-outage.pdf", "application/pdf",
+                "%PDF-DECISION-OUTAGE".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+    String outageSubId = initialOutage.path("submission").path("id").asText();
+    int outageRev = initialOutage.path("submission").path("revision").asInt();
+    doReturn(null).when(documents)
+        .assessDecision(any(), anyString(), anyString(), any(), any(), any(), anyBoolean(), any(), any(), any());
+    var outageFix = addressForm("298B Sengkang East Way, #12-34", "543298");
+    outageFix.put("expectedRevision", outageRev);
+    var outageRes = json(mvc.perform(
+        post("/api/customer/submissions/" + outageSubId + "/eform")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(outageFix)))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(outageRes.path("submission").path("status").asText()).isEqualTo("PENDING_VALIDATION");
+    assertThat(outageRes.path("processing").path("pendingVerification").asBoolean()).isTrue();
+
+    // 4. Cancelling blocking ADDITIONAL_ACCOUNT automatically revalidates duplicate sibling
+    var curForm = addressForm("1 Fictional Road", "018983");
+    curForm.put("requestType", "ADDITIONAL_ACCOUNT");
+    curForm.put("accountType", "SAVINGS");
+    curForm.put("currency", "USD");
+    curForm.put("sourceOfFunds", "Salary");
+    var dupA = json(mvc.perform(
+        post("/api/customer/eforms")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(curForm)))
+        .andExpect(status().isOk())
+        .andReturn());
+    String dupAId = dupA.path("submission").path("id").asText();
+    // Demote dupA from OPERATIONS to CORRECTION_REQUIRED to simulate an active unrouted blocker
+    s.db.update(
+        "UPDATE document_submissions SET status='CORRECTION_REQUIRED', routed_at=NULL WHERE id=?",
+        dupAId);
+    var dupB = json(mvc.perform(
+        post("/api/customer/eforms")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(curForm)))
+        .andExpect(status().isOk())
+        .andReturn());
+    String dupBId = dupB.path("submission").path("id").asText();
+    assertThat(dupB.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
+    int dupARev =
+        s.db.queryForObject(
+            "SELECT revision FROM document_submissions WHERE id=?", Integer.class, dupAId);
+    mvc.perform(
+        post("/api/customer/submissions/" + dupAId + "/cancel")
+            .header("Authorization", "Bearer " + token)
+            .contentType("application/json")
+            .content(s.json(map("expectedRevision", dupARev))))
+        .andExpect(status().isOk());
+    var dupBNow = json(mvc.perform(
+        get("/api/customer/submissions/" + dupBId)
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(dupBNow.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+
+    // 5. Partial draft deletion cleans all foreign-key tables & audit_logs(exception_id) without SQL errors
+    String draftId = s.id("DOC");
+    s.db.update(
+        "INSERT INTO document_submissions(id,customer_reference,customer_name,category,owner_name,customer_id,status,created_at)"
+            + " VALUES(?,'SYN-ALEX-001','Alex Tan','ADDRESS_CHANGE','reviewer',?,'PENDING_VALIDATION',?)",
+        draftId, customer, Instant.now());
+    s.audit(draftId, "User2", "DOCUMENT_CREATED", "{}", "RECORDED", null);
+    documents.deleteInitialDraft(draftId, customer, "nonexistent-draft-key");
+    assertThat(
+            s.db.queryForObject(
+                "SELECT COUNT(*) FROM document_submissions WHERE id=?", Integer.class, draftId))
+        .isZero();
+    assertThat(
+            s.db.queryForObject(
+                "SELECT COUNT(*) FROM audit_logs WHERE exception_id=?", Integer.class, draftId))
+        .isZero();
+
+    // 6. AddressNormaliser unit/postal/building normalization invariants
+    var policy = new BankingServicePolicy(documents, s);
+    assertThat(
+            policy
+                .compareAddress(
+                    "123 Example St. #B01-02 Singapore 048616",
+                    "",
+                    "Blk 123 Example Street B01-02 S(048616)",
+                    "")
+                .get("matched"))
+        .isEqualTo("true");
+    assertThat(
+            policy
+                .compareAddress(
+                    "123 Example Street #12-34/35 Singapore 048616",
+                    "",
+                    "Blk 123 Example Street #12-34/35 Singapore 048616",
+                    "")
+                .get("matched"))
+        .isEqualTo("true");
+    assertThat(
+            policy
+                .compareAddress(
+                    "100 Orchard Avenue Singapore 238800",
+                    "",
+                    "100 Avenue Singapore 238800",
+                    "")
+                .get("matched"))
+        .isEqualTo("false");
+
+    // 7. Decision 1 criterion/confidence/non-service failure guards on unsuitable eForm attachments
+    assertThat(
+            DocumentService.isRecognisedUnsuitableEformAttachment(
+                "DIGITAL_EFORM",
+                "CUSTOMER_INFORMATION",
+                map("failed_criteria", List.of("service_relevance"), "gate_failures", List.of(map("criterion", "service_relevance")))))
+        .isTrue();
+    assertThat(
+            DocumentService.isRecognisedUnsuitableEformAttachment(
+                "DIGITAL_EFORM",
+                "CUSTOMER_INFORMATION",
+                map("gate_failures", List.of(map("criterion", "classification")))))
+        .isFalse();
+    assertThat(
+            DocumentService.hasNonServiceRelevanceDecisionFailure(
+                map("failed_criteria", List.of("service_relevance", "holder_matches_profile"))))
+        .isTrue();
+    assertThat(
+            DocumentService.hasNonServiceRelevanceDecisionFailure(
+                map("failed_criteria", List.of("service_relevance"))))
+        .isFalse();
+    assertThat(
+            DocumentService.recoverDecisionNonSupportingChoice(
+                map(
+                    "decision",
+                    map(
+                        "confidence_threshold",
+                        0.75,
+                        "gate_failures",
+                        List.of(map("criterion", "service_relevance")),
+                        "answers",
+                        map(
+                            "classification",
+                            map("choice", "TAX_RESIDENCY", "confidence", 0.55))))))
+        .isNull();
+    assertThat(
+            DocumentService.recoverDecisionNonSupportingChoice(
+                map(
+                    "decision",
+                    map(
+                        "confidence_threshold",
+                        0.75,
+                        "gate_failures",
+                        List.of(map("criterion", "service_relevance")),
+                        "answers",
+                        map(
+                            "classification",
+                            map("choice", "TAX_RESIDENCY", "confidence", 0.92))))))
+        .isEqualTo("TAX_RESIDENCY");
   }
 }

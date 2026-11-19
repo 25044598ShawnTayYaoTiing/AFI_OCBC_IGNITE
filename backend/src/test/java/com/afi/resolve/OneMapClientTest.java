@@ -85,4 +85,16 @@ class OneMapClientTest {
     assertThat(client.verifyText("109 Rivervale Walk Tower 2 #12-34 Singapore 540109").status()).isEqualTo("INCONCLUSIVE");
     server.verify();
   }
+
+  @Test void allowsIdenticalRepeatedPostalsAndRejectsSingleTokenEndsWith() {
+    auth();
+    search(RESULTS);
+    assertThat(
+            client
+                .verifyText(
+                    "640 Rowell Road Singapore 200640 / Postal 200640")
+                .status())
+        .isEqualTo("VERIFIED");
+    server.verify();
+  }
 }

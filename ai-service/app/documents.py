@@ -153,7 +153,7 @@ class AssessRequest(StrictModel):
     notes: str = Field(default='', max_length=3000)
     requires_review: bool = False
     extraction_requires_review: bool | None = None
-    uncertainty_reasons: list[str] = Field(default_factory=list, max_length=30)
+    uncertainty_reasons: list[str] | None = None
     quality: str | None = Field(default=None, max_length=32)
     extraction_issues: list[str] = Field(default_factory=list, max_length=30)
 
@@ -189,6 +189,11 @@ _SERVICE_CRITICAL_FIELDS = {
     'CONTACT_UPDATE': _IDENTITY_FIELDS | frozenset({
         'customer_reference', 'request_type', 'signature_indicator', 'declaration_date',
         'email', 'mobile', 'contact_information',
+    }),
+    'ACCOUNT_OPENING': _IDENTITY_FIELDS | _ADDRESS_FIELDS | frozenset({
+        'customer_reference', 'declaration_date', 'signature_indicator', 'required_selection',
+        'tax_residency', 'tax_declaration', 'foreign_tax_country', 'tax_identifier',
+        'account_type', 'currency', 'source_of_funds',
     }),
 }
 _SUPPORTING_CRITICAL_DEFAULT = _IDENTITY_FIELDS | _ADDRESS_FIELDS | frozenset({'foreign_tax_country', 'tax_identifier'})
@@ -273,10 +278,14 @@ def _evaluate_extraction_uncertainty(
     if critical_model_fields:
         reasons.append('CRITICAL_FIELD_UNCERTAIN')
 
+    model_optional_fields_only = bool(optional_model_fields or optional_issues or optional_obs) and not critical_model_fields
+    ignored_model_reasons = {'OPTIONAL_FIELD_UNCERTAIN', 'OPTIONAL_FIELD_UNVERIFIED'}
+    if model_optional_fields_only:
+        ignored_model_reasons.add('UNVERIFIED_CITATION')
     model_critical_reasons = []
     for raw in proposed.uncertainty_reasons:
         code = str(raw).strip().upper()
-        if code and code not in ('OPTIONAL_FIELD_UNCERTAIN', 'OPTIONAL_FIELD_UNVERIFIED'):
+        if code and code not in ignored_model_reasons:
             model_critical_reasons.append(code)
             if code not in reasons:
                 reasons.append(code)
@@ -347,7 +356,8 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
     try:
         with budget_window(_FLASH_EXTRACT_BUDGET_S):
             payload = {'document_id': document_id,
-                'page_count': page_count, 'recognised_labels': ALIASES}
+                'page_count': page_count,
+                'recognised_labels': {name: [name.replace('_', ' '), *ALIASES.get(name, ())] for name in FIELDS}}
             if service_key:
                 payload['request_type'] = service_key
             proposed = generate(VisualExtraction, payload,
@@ -381,8 +391,10 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
                 if item.page > page_count:
                     raise ValueError('Invalid visual page')
                 support = quote_in(item.supporting_text, proposed.pages[item.page - 1])
-                value = source_value(item.field, support) or _supporting_fallback(
-                    proposed.document_type, item.field, item.value, support)
+                value = source_value(item.field, support)
+                if value is None:
+                    value = _supporting_fallback(
+                        proposed.document_type, item.field, item.value, support)
                 if value is None:
                     raise ValueError('Citation does not identify the extracted field')
                 grouped.setdefault(item.field, []).append((item, value))
@@ -606,8 +618,10 @@ def normalise_items(proposed: ModelExtraction, pages: list[str]) -> tuple[list[E
         if item.field in seen:
             raise ValueError('Duplicate field; ambiguous source')
         seen.add(item.field)
-        cited_value = source_value(item.field, support) or _supporting_fallback(
-            proposed.document_type, item.field, item.value, support)
+        cited_value = source_value(item.field, support)
+        if cited_value is None:
+            cited_value = _supporting_fallback(
+                proposed.document_type, item.field, item.value, support)
         if cited_value is None:
             raise ValueError('Citation does not identify the extracted field')
         if missing(item.value):
@@ -695,27 +709,29 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
                 'For service updates map New Email -> email and New Mobile -> mobile, Request Type -> request_type, Foreign Tax Country -> foreign_tax_country, TIN -> tax_identifier, and Tax Declaration -> tax_declaration. Existing generic Email Address/Contact Number -> contact_information; Tax Residency Country -> tax_residency; Account Category/Account Selection -> required_selection. Terms Acknowledged and Declaration Confirmed are consent fields, NOT account selection. '
                 'Case Reference and Tax Identification Reference are NOT customer_reference. Do not combine distinct address types or invent fields. '
                 'Keep explicitly labelled new/proposed addresses in new_mailing_address or new_residential_address and old/existing addresses in existing_mailing_address or existing_residential_address. Never substitute an old address for a new address. Return separately labelled postal codes in their corresponding postal-code fields. '
-                'Labels may be above their values or in tables. Cite the source label corresponding to each field using the supplied recognised_labels; if it cannot be cited, omit that field and set requires_review=true. Return each field only once. '
+                'Labels may be above their values or in tables. Cite the source label corresponding to each field using the supplied recognised_labels; if a mandatory/critical field cannot be cited, omit it and set requires_review=true (do not set requires_review=true solely for unlabelled optional metadata). Return each field only once. '
                 'Return each value as one contiguous verbatim source block, without adding punctuation or labels. Do not append separately labelled postal codes to addresses. Choose email for contact_information when present; do not concatenate email and phone. Return supporting source text containing the label and value, with its exact page. Preserve newlines in citations. '
                 'Omit blank, [BLANK], [NOT COMPLETED], incomplete, missing and not-provided values from fields; cite them as POTENTIALLY_MISSING observations only when that label actually occurs on the PDF. Do not report missing schema fields that are not on this form and never cite a schema label as PDF evidence. '
                 'Do not invent dates, identities, signatures, consent, addresses or policy requirements. A signature indicator does not establish authenticity. '
                 'Clearly missing values are completeness findings, not extraction uncertainty. requires_review is true for ambiguous classification, duplicate/conflicting values for the same field, or unreadable evidence; populate uncertain_fields and uncertainty_reasons (e.g. OPTIONAL_FIELD_UNCERTAIN, CLASSIFICATION_AMBIGUOUS, CONFLICTING_EVIDENCE). Only approved Spring rules decide violations. No tools or actions.', settings)
         service_key_opt = service_key or None
         _normalise_supporting_fields(proposed)
-        # Deduplicate consistent values repeated across distinct pages of multi-page PDFs.
+        # Deduplicate consistent values repeated across pages (same or multiple pages).
         by_field = {}
         for item in proposed.fields:
             by_field.setdefault(item.field, []).append(item)
         deduped = []
         for name, items in by_field.items():
-            if len(items) > 1 and len({item.page for item in items}) > 1:
+            if len(items) > 1:
                 grounded = []
                 for item in items:
                     if item.page <= len(pages):
                         try:
                             support = quote_in(item.supporting_text, pages[item.page - 1])
-                            val = source_value(item.field, support) or _supporting_fallback(
-                                proposed.document_type, item.field, item.value, support)
+                            val = source_value(item.field, support)
+                            if val is None:
+                                val = _supporting_fallback(
+                                    proposed.document_type, item.field, item.value, support)
                             if val is not None:
                                 grounded.append((item, val))
                         except ValueError:
@@ -803,7 +819,7 @@ def assess_document(request: AssessRequest, settings: Settings) -> dict:
             else request.requires_review
         ),
         extraction_requires_review=request.extraction_requires_review,
-        uncertainty_reasons=list(request.uncertainty_reasons),
+        uncertainty_reasons=(list(request.uncertainty_reasons) if request.uncertainty_reasons is not None else None),
         quality=request.quality,
         extraction_issues=request.extraction_issues,
     )

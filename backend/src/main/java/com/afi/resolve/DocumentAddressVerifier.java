@@ -15,7 +15,13 @@ public class DocumentAddressVerifier {
   @SuppressWarnings("unchecked")
   List<Map<String, Object>> sources(List<Map<String, Object>> docs, String kind) {
     var result = new ArrayList<Map<String, Object>>();
+    boolean hasDigital = docs.stream().anyMatch(d -> DocumentService.isDigitalDeclarationReceipt(s, d));
     for (var doc : docs) {
+      if (hasDigital
+          && !DocumentService.isDigitalDeclarationReceipt(s, doc)
+          && !"SUPPORTING_DOCUMENT".equals(doc.get("document_type"))) {
+        continue;
+      }
       var fields = s.db.queryForList("SELECT * FROM extracted_fields WHERE version_id=?", doc.get("version_id"));
       var extraction = s.readMap((String) doc.get("extraction_json"));
       var observations = (List<Map<String, Object>>) extraction.getOrDefault("observations", List.of());
@@ -23,9 +29,11 @@ public class DocumentAddressVerifier {
       boolean explicitNew = fields.stream().anyMatch(f -> proposed.equals(f.get("field_name")))
           || observations.stream().anyMatch(f -> proposed.equals(f.get("field")));
       String field = explicitNew ? proposed : kind;
+      String selectedField = field;
       var selected = fields.stream().filter(f -> field.equals(f.get("field_name"))).findFirst().orElse(null);
       if (selected == null && "SUPPORTING_DOCUMENT".equals(doc.get("document_type")) && "mailing_address".equals(kind)) {
         selected = fields.stream().filter(f -> "residential_address".equals(f.get("field_name"))).findFirst().orElse(null);
+        if (selected != null) selectedField = "residential_address";
       }
       if (selected == null && explicitNew) {
         var observation = observations.stream().filter(f -> proposed.equals(f.get("field"))).findFirst().orElse(null);
@@ -35,7 +43,7 @@ public class DocumentAddressVerifier {
       var source = new LinkedHashMap<>(selected);
       source.put("document_id", doc.get("id")); source.put("version_id", doc.get("version_id"));
       source.put("filename", doc.get("filename")); source.put("synthetic", "SYNTHETIC_TEMPLATE".equals(extraction.get("method")));
-      String postalField = field.replace("_address", "_postal_code");
+      String postalField = selectedField.replace("_address", "_postal_code");
       var postal = fields.stream().filter(f -> postalField.equals(f.get("field_name"))).findFirst().orElse(null);
       long addressCount = fields.stream().filter(f -> Set.of("mailing_address", "residential_address", "new_mailing_address", "new_residential_address").contains(f.get("field_name"))).count();
       if (postal == null && addressCount == 1) postal = fields.stream().filter(f -> "postal_code".equals(f.get("field_name"))).findFirst().orElse(null);
@@ -64,10 +72,13 @@ public class DocumentAddressVerifier {
     var updates = new ArrayList<Map<String, Object>>();
     for (var source : pending) {
       String address = Objects.toString(source.get("field_value"), "");
-      if (!OneMapClient.POSTAL.matcher(address).find()
-          && source.get("postalEvidence") instanceof Map<?, ?> postal) {
-        String value = Objects.toString(postal.get("field_value"), "");
-        if (value.matches("\\d{6}")) address += " Singapore " + value;
+      String embeddedPostal = AddressNormaliser.extractPostal(address);
+      String separatePostal =
+          source.get("postalEvidence") instanceof Map<?, ?> postal
+              ? AddressNormaliser.extractPostal(postal.get("field_value"))
+              : "";
+      if (embeddedPostal.isEmpty() && !separatePostal.isEmpty()) {
+        address += " Singapore " + separatePostal;
       }
       OneMapClient.Verification result;
       if (Boolean.TRUE.equals(source.get("synthetic"))) {
@@ -78,6 +89,17 @@ public class DocumentAddressVerifier {
                 "Synthetic template evidence only. No live OneMap confirmation was performed.",
                 address,
                 "",
+                null,
+                List.of(),
+                Instant.now());
+      } else if (!embeddedPostal.isEmpty() && !separatePostal.isEmpty() && !embeddedPostal.equals(separatePostal)) {
+        result =
+            new OneMapClient.Verification(
+                "MISMATCH",
+                "NOT_QUERIED",
+                "Postal code field (" + separatePostal + ") conflicts with the postal code in the address (" + embeddedPostal + ").",
+                address,
+                separatePostal,
                 null,
                 List.of(),
                 Instant.now());

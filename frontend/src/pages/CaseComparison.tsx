@@ -14,7 +14,14 @@ export function CaseComparison({
     .flatMap((check) => check.evidence)
     .filter((field) => field.method === "SYNTHETIC_CUSTOMER_PROFILE");
   const declarations = detail.documents
-    .filter((doc) => doc.document_type !== "SUPPORTING_DOCUMENT")
+    .filter(
+      (doc) =>
+        doc.document_role === "DECLARATION_RECEIPT" ||
+        doc.document_role === "REQUEST_DOCUMENT" ||
+        (!doc.document_role &&
+          doc.document_type !== "SUPPORTING_DOCUMENT" &&
+          doc.document_type !== "UNKNOWN"),
+    )
     .flatMap((doc) =>
       doc.fields.map((field) => ({
         ...field,
@@ -24,7 +31,12 @@ export function CaseComparison({
       })),
     );
   const supporting = detail.documents
-    .filter((doc) => doc.document_type === "SUPPORTING_DOCUMENT")
+    .filter(
+      (doc) =>
+        doc.document_role === "SUPPORTING_EVIDENCE" ||
+        doc.document_role === "REPOSITORY_EVIDENCE" ||
+        (!doc.document_role && doc.document_type === "SUPPORTING_DOCUMENT"),
+    )
     .flatMap((doc) =>
       doc.fields.map((field) => ({
         ...field,

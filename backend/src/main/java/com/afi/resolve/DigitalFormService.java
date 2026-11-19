@@ -296,7 +296,7 @@ public class DigitalFormService {
             String st = Objects.toString(current.get("status"), "");
             if ("OPERATIONS".equals(st) || "CANCELLED".equals(st)) return;
             if (!files.isEmpty() && !documents.hasUploadedAttachment(id, null, files, combineImages)) {
-              documents.uploadInternal(id, files, null, a, false, combineImages);
+              documents.uploadMissingAttachments(id, files, null, a, combineImages);
               if (!documents.hasPendingVerification(id)) documents.validate(id, a);
             } else if (!files.isEmpty() && documents.hasPendingVerification(id)) {
               customers.recoverPendingValidation(id, false, a);
@@ -313,8 +313,18 @@ public class DigitalFormService {
         try {
           documents.uploadInternal(id, files, null, a, false, combineImages);
         } catch (ApiException error) {
-          if (initial && error.status() < 500) {
-            documents.deleteInitialDraft(id, customerId, key);
+          if (error.status() < 500) {
+            if (initial) {
+              documents.deleteInitialDraft(id, customerId, key);
+            } else {
+              s.inTxVoid(
+                  () ->
+                      s.db.update(
+                          "DELETE FROM customer_upload_requests WHERE customer_id=? AND"
+                              + " request_key=?",
+                          customerId,
+                          key));
+            }
           }
           throw error;
         } catch (Exception error) {
@@ -366,8 +376,10 @@ public class DigitalFormService {
       if (form.requestType().equals("TAX_RESIDENCY_UPDATE")) {
         common.put("tax_residency", trim(form.taxResidency()));
         common.put("tax_declaration", form.taxDeclaration() ? "Confirmed" : "Not confirmed");
-        if (!"Singapore".equals(form.taxResidency())) {
+        if (!"Singapore".equals(form.taxResidency()) || !trim(form.foreignTaxCountry()).isBlank()) {
           common.put("foreign_tax_country", trim(form.foreignTaxCountry()));
+        }
+        if (!"Singapore".equals(form.taxResidency()) || !trim(form.taxIdentifier()).isBlank()) {
           common.put("tax_identifier", trim(form.taxIdentifier()));
         }
       }
@@ -443,6 +455,19 @@ public class DigitalFormService {
             || (!trim(f.mobile()).isBlank() && !BankingServicePolicy.validMobile(trim(f.mobile())))))
       throw new ApiException(
           400, "INVALID_FORM", "Provide a valid contact email and telephone number");
+    if (Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(f.requestType())) {
+      String addr =
+          "RESIDENTIAL_ADDRESS_CHANGE".equals(f.requestType())
+                  && !trim(f.residentialAddress()).isBlank()
+              ? trim(f.residentialAddress())
+              : trim(f.mailingAddress());
+      String postal = AddressNormaliser.extractPostal(f.postalCode());
+      String embedded = AddressNormaliser.extractPostal(addr);
+      if (!embedded.isEmpty() && !postal.isEmpty() && !embedded.equals(postal)) {
+        throw new ApiException(
+            400, "INVALID_FORM", "Postal code does not match the postal code included in the address");
+      }
+    }
     if (!f.authorisation())
       throw new ApiException(
           400,

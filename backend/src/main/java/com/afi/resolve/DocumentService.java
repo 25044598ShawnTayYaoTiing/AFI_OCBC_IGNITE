@@ -35,6 +35,21 @@ public class DocumentService {
           "TAX_RESIDENCY",
           "SUPPORTING_DOCUMENT",
           "UNKNOWN");
+  static final Set<String> RECOGNISED_NON_SUPPORTING_TYPES =
+      Set.of(
+          "CUSTOMER_INFORMATION",
+          "ACCOUNT_APPLICATION",
+          "TAX_RESIDENCY",
+          "SERVICE_REQUEST");
+  static final Set<String> OPTIONAL_SUPPORT_OBS_FIELDS =
+      Set.of(
+          "customer_reference",
+          "declaration_date",
+          "signature_indicator",
+          "required_selection",
+          "account_type",
+          "currency",
+          "source_of_funds");
   static final Set<String> FIELDS =
       Set.of(
           "customer_name",
@@ -228,6 +243,7 @@ public class DocumentService {
         "",
         "Escalate ambiguous or unsupported evidence for human review; upload a supported corrected"
             + " form.");
+    reconcileHistoricalOverriddenClassifications();
   }
 
   void seed(String key, String name, String type, String condition, String field, String action) {
@@ -253,6 +269,12 @@ public class DocumentService {
     return a.getAuthorities().stream().anyMatch(r -> r.getAuthority().equals("ROLE_REVIEWER"));
   }
 
+  static boolean isSystemAutomation(Authentication a) {
+    return a != null
+        && "AFI_AUTONOMOUS_ENGINE".equals(a.getName())
+        && a.getAuthorities().stream().anyMatch(r -> r.getAuthority().equals("ROLE_SYSTEM"));
+  }
+
   Map<String, Object> access(String id, Authentication a, boolean lock) {
     var rows =
         s.db.queryForList(
@@ -264,6 +286,7 @@ public class DocumentService {
         throw new ApiException(404, "NOT_FOUND", "Submission is not available to your account");
       return c;
     }
+    if (isSystemAutomation(a)) return c;
     if (!a.getName().equals(c.get("owner_name")) && !reviewer(a))
       throw new ApiException(
           403, "FORBIDDEN", "This submission belongs to another relationship manager");
@@ -285,17 +308,282 @@ public class DocumentService {
     s.audit(id, a.getName(), "DOCUMENT_" + type, s.json(detail), "RECORDED", null);
   }
 
+  static boolean isDigitalDeclarationReceipt(Store store, Map<String, Object> docRow) {
+    if (Boolean.TRUE.equals(docRow.get("repository_only"))) return false;
+    Object raw = docRow.get("extraction_json");
+    if (raw instanceof Map<?, ?> m) {
+      return "DIGITAL_EFORM".equals(m.get("method"));
+    }
+    String json = Objects.toString(raw, "");
+    if (json.isBlank()) return false;
+    return "DIGITAL_EFORM".equals(store.readMap(json).get("method"));
+  }
+
+  static boolean isUploadedAttachment(Store store, Map<String, Object> docRow) {
+    return !Boolean.TRUE.equals(docRow.get("repository_only"))
+        && !isDigitalDeclarationReceipt(store, docRow);
+  }
+
+  private static void collectCriterion(Set<String> out, Object raw) {
+    String val = Objects.toString(raw, "").trim();
+    if (!val.isEmpty()) out.add(val);
+  }
+
+  static Set<String> decisionFailedCriteria(Object decisionObj) {
+    var out = new LinkedHashSet<String>();
+    if (decisionObj instanceof JsonNode node) {
+      if (node.isMissingNode() || node.isNull()) return out;
+      for (var c : node.path("failed_criteria")) collectCriterion(out, c.asText(""));
+      for (var gf : node.path("gate_failures")) {
+        String crit = gf.path("criterion").asText("");
+        collectCriterion(out, crit.isEmpty() ? gf.path("question").asText("") : crit);
+      }
+      return out;
+    }
+    if (decisionObj instanceof Map<?, ?> m) {
+      if (m.get("failed_criteria") instanceof List<?> list) {
+        for (var c : list) collectCriterion(out, c);
+      }
+      if (m.get("gate_failures") instanceof List<?> failures) {
+        for (var item : failures) {
+          if (item instanceof Map<?, ?> gm) {
+            Object crit = gm.get("criterion");
+            collectCriterion(out, crit != null ? crit : gm.get("question"));
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  static boolean hasNonServiceRelevanceDecisionFailure(Object decisionObj) {
+    if (decisionObj == null) return false;
+    if (decisionObj instanceof JsonNode n
+        && (n.isMissingNode() || n.isNull() || n.path("unavailable").asBoolean(false))) {
+      return false;
+    }
+    if (decisionObj instanceof Map<?, ?> m
+        && (m.isEmpty() || Boolean.TRUE.equals(m.get("unavailable")))) {
+      return false;
+    }
+    return decisionFailedCriteria(decisionObj).stream().anyMatch(c -> !"service_relevance".equals(c));
+  }
+
+  static boolean isRecognisedUnsuitableEformAttachment(
+      String captureMethod, String effectiveType, Object decisionObj) {
+    if (!"DIGITAL_EFORM".equals(captureMethod)
+        || !RECOGNISED_NON_SUPPORTING_TYPES.contains(effectiveType)) {
+      return false;
+    }
+    var failed = decisionFailedCriteria(decisionObj);
+    return !failed.contains("classification") && !failed.contains("classification_agreement");
+  }
+
+  @SuppressWarnings("unchecked")
+  static String recoverDecisionNonSupportingChoice(Map<String, Object> extraction) {
+    if (!(extraction.get("decision") instanceof Map<?, ?> decision)) return null;
+    if (!(decision.get("answers") instanceof Map<?, ?> answers)) return null;
+    if (!(answers.get("classification") instanceof Map<?, ?> cls)) return null;
+    String choice = Objects.toString(cls.get("choice"), "");
+    if (!RECOGNISED_NON_SUPPORTING_TYPES.contains(choice)) return null;
+    var failed = decisionFailedCriteria(decision);
+    if (failed.contains("classification") || failed.contains("classification_agreement")) {
+      return null;
+    }
+    double threshold =
+        decision.get("confidence_threshold") instanceof Number t ? t.doubleValue() : 0.75;
+    Number confNum =
+        cls.get("confidence") instanceof Number c
+            ? c
+            : (cls.get("probabilities") instanceof Map<?, ?> probs
+                    && probs.get(choice) instanceof Number p)
+                ? p
+                : null;
+    if (confNum != null && confNum.doubleValue() < threshold) return null;
+    return choice;
+  }
+
+  private record UncertaintyFlags(
+      boolean classificationUncertain, boolean assessmentUncertain, boolean requiresReview) {}
+
+  private static UncertaintyFlags computeUncertaintyFlags(
+      String captureMethod,
+      String effectiveType,
+      String assessedType,
+      JsonNode payload,
+      JsonNode decisionNode,
+      boolean extUncertain) {
+    boolean unsuitableEform =
+        isRecognisedUnsuitableEformAttachment(captureMethod, effectiveType, decisionNode);
+    boolean nonServiceFailure = hasNonServiceRelevanceDecisionFailure(decisionNode);
+    boolean classUncertain =
+        "UNKNOWN".equals(effectiveType)
+            || "UNKNOWN".equals(assessedType)
+            || payload.path("classification_uncertain").asBoolean(false);
+    boolean decisionUnavailable = decisionNode != null && decisionNode.path("unavailable").asBoolean(false);
+    boolean decisionAvailable =
+        decisionNode != null
+            && !decisionNode.isMissingNode()
+            && !decisionNode.isNull()
+            && !decisionUnavailable;
+    String outcome = decisionNode == null ? "" : decisionNode.path("outcome").asText("");
+    boolean assessUncertain =
+        unsuitableEform
+            ? nonServiceFailure
+            : ((decisionAvailable && !outcome.isBlank() && !"PASSED".equals(outcome))
+                || (!decisionUnavailable && payload.path("assessment_uncertain").asBoolean(false)));
+    boolean effectiveReview =
+        extUncertain
+            || classUncertain
+            || assessUncertain
+            || (!unsuitableEform && payload.path("requires_review").asBoolean(false));
+    return new UncertaintyFlags(classUncertain, assessUncertain, effectiveReview);
+  }
+
   static String effectiveDocumentType(Store store, Map<String, Object> docRow) {
     String dbType = Objects.toString(docRow.get("document_type"), "UNKNOWN");
     String rawJson = Objects.toString(docRow.get("extraction_json"), "");
     if (rawJson.isBlank()) return dbType;
     var extraction = store.readMap(rawJson);
     if (Boolean.TRUE.equals(extraction.get("pending_verification"))) return dbType;
+    String overrideReason = Objects.toString(extraction.get("classification_overridden_reason"), "");
+    if ("DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT".equals(overrideReason)) {
+      String modelType = Objects.toString(extraction.get("model_document_type"), "");
+      if (RECOGNISED_NON_SUPPORTING_TYPES.contains(modelType)) return modelType;
+      String recovered = recoverDecisionNonSupportingChoice(extraction);
+      if (recovered != null) return recovered;
+    }
     String explicit = Objects.toString(extraction.get("effective_document_type"), "");
-    if (!explicit.isBlank() && TYPES.contains(explicit)) return explicit;
+    if (!explicit.isBlank() && !"UNKNOWN".equals(explicit) && TYPES.contains(explicit)) {
+      return explicit;
+    }
     String metaType = Objects.toString(extraction.get("document_type"), "");
+    if ("UNKNOWN".equals(explicit) || "UNKNOWN".equals(metaType) || "UNKNOWN".equals(dbType)) {
+      String recovered = recoverDecisionNonSupportingChoice(extraction);
+      if (recovered != null) return recovered;
+    }
     if ("UNKNOWN".equals(metaType)) return "UNKNOWN";
     return dbType;
+  }
+
+  Map<String, Object> documentEligibilityMeta(Map<String, Object> c, Map<String, Object> doc) {
+    String docType = Objects.toString(doc.get("document_type"), "UNKNOWN");
+    if (Boolean.TRUE.equals(doc.get("repository_only"))) {
+      boolean eligible = "SUPPORTING_DOCUMENT".equals(docType);
+      return map(
+          "document_role", "REPOSITORY_EVIDENCE",
+          "evidence_eligible", eligible,
+          "evidence_eligibility_reason",
+          eligible
+              ? "Authorised repository supporting document available for verified attachment."
+              : "Repository document does not match supporting-document type.");
+    }
+    if (isDigitalDeclarationReceipt(s, doc)) {
+      return map(
+          "document_role", "DECLARATION_RECEIPT",
+          "evidence_eligible", true,
+          "evidence_eligibility_reason", "Authenticated digital declaration receipt.");
+    }
+    if ("DIGITAL_EFORM".equals(c.get("capture_method"))) {
+      if ("SUPPORTING_DOCUMENT".equals(docType)) {
+        return map(
+            "document_role", "SUPPORTING_EVIDENCE",
+            "evidence_eligible", true,
+            "evidence_eligibility_reason", "Eligible supporting document for digital request verification.");
+      }
+      if (RECOGNISED_NON_SUPPORTING_TYPES.contains(docType)) {
+        return map(
+            "document_role", "UNSUITABLE_SUPPORT_ATTACHMENT",
+            "evidence_eligible", false,
+            "evidence_eligibility_reason",
+            "Classified as a "
+                + docType.toLowerCase(Locale.ROOT).replace('_', ' ')
+                + ", which cannot serve as supporting evidence for a digital request.");
+      }
+      return map(
+          "document_role", "UNCLASSIFIED_ATTACHMENT",
+          "evidence_eligible", false,
+          "evidence_eligibility_reason",
+          "Document classification could not be confirmed as eligible supporting evidence.");
+    }
+    if ("SUPPORTING_DOCUMENT".equals(docType)) {
+      return map(
+          "document_role", "SUPPORTING_EVIDENCE",
+          "evidence_eligible", true,
+          "evidence_eligibility_reason", "Supporting evidence document.");
+    }
+    if ("UNKNOWN".equals(docType)) {
+      return map(
+          "document_role", "UNCLASSIFIED_ATTACHMENT",
+          "evidence_eligible", false,
+          "evidence_eligibility_reason", "Document classification is uncertain.");
+    }
+    return map(
+        "document_role", "REQUEST_DOCUMENT",
+        "evidence_eligible", true,
+        "evidence_eligibility_reason", "Request or customer declaration document.");
+  }
+
+  @SuppressWarnings("unchecked")
+  void reconcileHistoricalOverriddenClassifications() {
+    s.inTxVoid(
+        () -> {
+          var rows =
+              s.db.queryForList(
+                  "SELECT d.id AS doc_id, d.current_version, v.id AS version_id,"
+                      + " v.extraction_json, sub.capture_method FROM submission_documents d"
+                      + " JOIN document_versions v ON v.document_id=d.id AND"
+                      + " v.version=d.current_version JOIN document_submissions sub ON"
+                      + " sub.id=d.submission_id WHERE d.repository_only=FALSE AND"
+                      + " d.document_type='UNKNOWN' AND v.extraction_json LIKE"
+                      + " '%DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT%'");
+          for (var row : rows) {
+            String rawJson = Objects.toString(row.get("extraction_json"), "");
+            if (rawJson.isBlank()) continue;
+            com.fasterxml.jackson.databind.node.ObjectNode root;
+            try {
+              root = (com.fasterxml.jackson.databind.node.ObjectNode) s.json.readTree(rawJson);
+            } catch (Exception ex) {
+              continue;
+            }
+            if (!"DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT"
+                .equals(root.path("classification_overridden_reason").asText(""))) continue;
+            var extMap = s.readMap(rawJson);
+            String recovered = Objects.toString(extMap.get("model_document_type"), "");
+            if (!RECOGNISED_NON_SUPPORTING_TYPES.contains(recovered)) {
+              recovered = recoverDecisionNonSupportingChoice(extMap);
+            }
+            if (recovered == null || !RECOGNISED_NON_SUPPORTING_TYPES.contains(recovered)) continue;
+            root.remove("classification_overridden_reason");
+            root.put("document_type", recovered);
+            root.put("effective_document_type", recovered);
+            root.put("model_document_type", recovered);
+            String captureMethod = Objects.toString(row.get("capture_method"), "");
+            if (isRecognisedUnsuitableEformAttachment(
+                captureMethod, recovered, root.path("decision"))) {
+              boolean nonServiceFailure =
+                  hasNonServiceRelevanceDecisionFailure(root.path("decision"));
+              root.put("classification_uncertain", false);
+              root.put("assessment_uncertain", nonServiceFailure);
+              boolean extUncertain =
+                  root.hasNonNull("extraction_requires_review")
+                      ? root.path("extraction_requires_review").asBoolean(false)
+                      : hasIntrinsicExtractionMarkers(s.readMap(root.toString()));
+              root.put("extraction_requires_review", extUncertain);
+              root.put("requires_review", extUncertain || nonServiceFailure);
+            }
+            s.db.update(
+                "UPDATE submission_documents SET document_type=? WHERE id=? AND current_version=?"
+                    + " AND document_type='UNKNOWN'",
+                recovered,
+                row.get("doc_id"),
+                row.get("current_version"));
+            s.db.update(
+                "UPDATE document_versions SET extraction_json=? WHERE id=?",
+                root.toString(),
+                row.get("version_id"));
+          }
+        });
   }
 
   List<Map<String, Object>> documents(String id, boolean repository) {
@@ -542,6 +830,7 @@ public class DocumentService {
     var c = access(id, a, false);
     var docs = documents(id, false);
     for (var d : docs) {
+      d.putAll(documentEligibilityMeta(c, d));
       d.put("extraction", s.readMap((String) d.remove("extraction_json")));
       d.put(
           "fields",
@@ -798,16 +1087,46 @@ public class DocumentService {
       String previousDocType,
       Integer previousVersion) {}
 
+  @SuppressWarnings("unchecked")
+  private static void addSourceImageStorageKeys(Store store, Object rawExtraction, List<String> keys) {
+    String json = Objects.toString(rawExtraction, "");
+    if (json.isBlank()) return;
+    var meta = store.readMap(json);
+    if (meta.get("source_images") instanceof List<?> imgs) {
+      for (var item : imgs) {
+        if (item instanceof Map<?, ?> m) {
+          String k = Objects.toString(m.get("storage_key"), "");
+          if (!k.isBlank()) keys.add(k);
+        }
+      }
+    }
+  }
+
   void deleteInitialDraft(String id, String customerId, String key) {
     List<String> storageKeys =
         s.inTx(
             () -> {
-              var keys =
+              var rows =
                   s.db.queryForList(
-                      "SELECT v.storage_key FROM document_versions v JOIN submission_documents d"
-                          + " ON d.id=v.document_id WHERE d.submission_id=?",
-                      String.class,
+                      "SELECT status, validated_at FROM document_submissions WHERE id=? FOR UPDATE",
                       id);
+              if (rows.isEmpty()) return List.<String>of();
+              String st = Objects.toString(rows.getFirst().get("status"), "");
+              if ("OPERATIONS".equals(st) || "CANCELLED".equals(st)) return List.<String>of();
+              if (rows.getFirst().get("validated_at") != null && !"PENDING_VALIDATION".equals(st)) {
+                return List.<String>of();
+              }
+              var keys = new ArrayList<String>();
+              for (var v :
+                  s.db.queryForList(
+                      "SELECT v.storage_key, v.extraction_json FROM document_versions v JOIN"
+                          + " submission_documents d ON d.id=v.document_id WHERE"
+                          + " d.submission_id=?",
+                      id)) {
+                String k = Objects.toString(v.get("storage_key"), "");
+                if (!k.isBlank()) keys.add(k);
+                addSourceImageStorageKeys(s, v.get("extraction_json"), keys);
+              }
               s.db.update(
                   "DELETE FROM customer_upload_requests WHERE customer_id=? AND request_key=?",
                   customerId,
@@ -817,10 +1136,29 @@ public class DocumentService {
                       + " customer_notifications WHERE submission_id=?)",
                   id);
               s.db.update("DELETE FROM customer_notifications WHERE submission_id=?", id);
+              s.db.update("DELETE FROM contact_verifications WHERE submission_id=?", id);
+              s.db.update("DELETE FROM document_automation_attempts WHERE submission_id=?", id);
+              s.db.update("DELETE FROM preflight_simulations WHERE submission_id=?", id);
+              s.db.update("DELETE FROM case_routing_history WHERE submission_id=?", id);
+              s.db.update("DELETE FROM document_resolution_actions WHERE submission_id=?", id);
+              s.db.update("DELETE FROM document_investigations WHERE submission_id=?", id);
+              s.db.update("DELETE FROM case_risk_assessments WHERE submission_id=?", id);
+              s.db.update("DELETE FROM correction_tasks WHERE submission_id=?", id);
+              s.db.update("DELETE FROM document_exceptions WHERE submission_id=?", id);
+              s.db.update("DELETE FROM validation_results WHERE submission_id=?", id);
+              s.db.update(
+                  "DELETE FROM document_address_verifications WHERE version_id IN (SELECT v.id FROM"
+                      + " document_versions v JOIN submission_documents d ON d.id=v.document_id"
+                      + " WHERE d.submission_id=?)",
+                  id);
               s.db.update(
                   "DELETE FROM extracted_fields WHERE version_id IN (SELECT v.id FROM"
                       + " document_versions v JOIN submission_documents d ON d.id=v.document_id"
                       + " WHERE d.submission_id=?)",
+                  id);
+              s.db.update(
+                  "UPDATE submission_documents SET repository_source_version_id=NULL WHERE"
+                      + " submission_id=?",
                   id);
               s.db.update(
                   "DELETE FROM document_versions WHERE document_id IN (SELECT id FROM"
@@ -828,7 +1166,7 @@ public class DocumentService {
                   id);
               s.db.update("DELETE FROM submission_documents WHERE submission_id=?", id);
               s.db.update("DELETE FROM customer_eforms WHERE submission_id=?", id);
-              s.db.update("DELETE FROM audit_logs WHERE submission_id=?", id);
+              s.db.update("DELETE FROM audit_logs WHERE exception_id=?", id);
               s.db.update("DELETE FROM document_submissions WHERE id=?", id);
               return keys;
             });
@@ -846,8 +1184,21 @@ public class DocumentService {
                                 .get("pending_verification"))));
   }
 
+  boolean hasPendingDecisionAssessment(String id) {
+    return s.inTx(
+        () ->
+            documents(id, false).stream()
+                .anyMatch(
+                    d -> {
+                      var ext = s.readMap(Objects.toString(d.get("extraction_json"), "{}"));
+                      if (!(ext.get("decision") instanceof Map<?, ?> dec)) return false;
+                      return Boolean.TRUE.equals(dec.get("unavailable"))
+                          || "UNAVAILABLE".equals(dec.get("outcome"));
+                    }));
+  }
+
   boolean hasPendingVerification(String id) {
-    if (hasPendingExtraction(id)) return true;
+    if (hasPendingExtraction(id) || hasPendingDecisionAssessment(id)) return true;
     return s.inTx(
         () -> {
           var rows =
@@ -945,13 +1296,22 @@ public class DocumentService {
               if (replace != null) {
                 var old =
                     s.db.queryForList(
-                        "SELECT * FROM submission_documents WHERE id=? AND submission_id=? AND"
-                            + " repository_only=FALSE",
+                        "SELECT d.*, v.extraction_json FROM submission_documents d LEFT JOIN"
+                            + " document_versions v ON v.document_id=d.id AND"
+                            + " v.version=d.current_version WHERE d.id=? AND d.submission_id=?"
+                            + " AND d.repository_only=FALSE",
                         replace,
                         id);
                 if (old.isEmpty())
                   throw new ApiException(404, "NOT_FOUND", "Replacement document not found in this case");
                 oldDoc = old.getFirst();
+                if ("DIGITAL_EFORM".equals(c.get("capture_method"))
+                    && isDigitalDeclarationReceipt(s, oldDoc)) {
+                  throw new ApiException(
+                      409,
+                      "EDIT_EFORM",
+                      "Edit the digital declaration instead of replacing its receipt");
+                }
               }
               return map(
                   "captureMethod", Objects.toString(c.get("capture_method"), ""),
@@ -979,6 +1339,16 @@ public class DocumentService {
                         .map(raw -> Base64.getEncoder().encodeToString(raw))
                         .toList()))
             : null;
+    final List<String> imageSourceHashes;
+    if (combineImages && !imagePages.isEmpty()) {
+      var pageDigest = MessageDigest.getInstance("SHA-256");
+      imageSourceHashes =
+          imagePages.stream()
+              .map(raw -> HexFormat.of().formatHex(pageDigest.digest(raw)))
+              .toList();
+    } else {
+      imageSourceHashes = List.of();
+    }
 
     record PreparedFile(
         String docId,
@@ -1007,17 +1377,18 @@ public class DocumentService {
           singleImage
               ? existingRows.stream()
                   .anyMatch(
-                      row ->
-                          originalHash.equals(row.get("sha256"))
-                              || originalHash.equals(
-                                  s.readMap((String) row.get("extraction_json"))
-                                      .get("image_source_sha256")))
+                      row -> {
+                        var meta = s.readMap(Objects.toString(row.get("extraction_json"), "{}"));
+                        return originalHash.equals(row.get("sha256"))
+                            || (!Boolean.TRUE.equals(meta.get("combine_images"))
+                                && originalHash.equals(meta.get("image_source_sha256")));
+                      })
               : combineImages
                   ? existingRows.stream()
                       .anyMatch(
                           row ->
                               groupHash.equals(
-                                  s.readMap((String) row.get("extraction_json"))
+                                  s.readMap(Objects.toString(row.get("extraction_json"), "{}"))
                                       .get("image_group_sha256")))
                   : existingRows.stream().anyMatch(row -> originalHash.equals(row.get("sha256")));
       if (duplicate)
@@ -1124,7 +1495,10 @@ public class DocumentService {
                 pendingMeta.put("source_images", item.sourceImages());
                 pendingMeta.put("conversion_library", "img2pdf");
                 pendingMeta.put("conversion_page_count", item.sourcePageCount());
-                if (item.combineImages()) pendingMeta.put("image_group_sha256", item.groupHash());
+                if (item.combineImages()) {
+                  pendingMeta.put("image_group_sha256", item.groupHash());
+                  pendingMeta.put("image_source_hashes", imageSourceHashes);
+                }
               }
               if (item.replacement()) {
                 var currentDoc =
@@ -1259,11 +1633,20 @@ public class DocumentService {
     String quality = Objects.toString(extraction.get("quality"), "");
     if (!quality.isBlank() && !"READABLE".equals(quality)) return true;
     if (extraction.get("extraction_issues") instanceof List<?> issues && !issues.isEmpty()) return true;
+    String notes = Objects.toString(extraction.get("notes"), "");
+    if (notes.contains("Omitted ")
+        || notes.contains("could not be read clearly")
+        || notes.contains("could not be verified")) return true;
     if (extraction.get("fields") instanceof List<?> fields && fields.isEmpty()
         && "GEMINI".equals(extraction.get("method"))) return true;
+    boolean supportingDoc =
+        "SUPPORTING_DOCUMENT".equals(extraction.get("document_type"))
+            || "SUPPORTING_DOCUMENT".equals(extraction.get("effective_document_type"));
     if (extraction.get("observations") instanceof List<?> obs) {
       for (var item : obs) {
         if (item instanceof Map<?, ?> m) {
+          String field = Objects.toString(m.get("field"), "");
+          if (supportingDoc && OPTIONAL_SUPPORT_OBS_FIELDS.contains(field)) continue;
           String issue = Objects.toString(m.get("issue_type"), "");
           if ("UNCERTAIN".equals(issue) || "POTENTIALLY_INCONSISTENT".equals(issue)) return true;
         }
@@ -1273,10 +1656,21 @@ public class DocumentService {
   }
 
   private static boolean intrinsicExtractionUncertain(Map<String, Object> extraction) {
-    if (extraction.get("extraction_requires_review") instanceof Boolean explicit) {
-      return explicit || hasIntrinsicExtractionMarkers(extraction);
-    }
     if (hasIntrinsicExtractionMarkers(extraction)) return true;
+    if (extraction.get("extraction_requires_review") instanceof Boolean explicit) {
+      return explicit;
+    }
+    if (extraction.get("uncertainty_reasons") instanceof List<?> reasons && !reasons.isEmpty()) {
+      boolean nonFatalOnly =
+          reasons.stream()
+              .map(r -> Objects.toString(r, "").trim())
+              .filter(r -> !r.isBlank())
+              .allMatch(
+                  r ->
+                      "IDENTITY_CONTRADICTION".equals(r)
+                          || "CLASSIFICATION_AMBIGUOUS".equals(r));
+      if (nonFatalOnly) return false;
+    }
     if (extraction.get("decision") instanceof Map<?, ?> dec) {
       String outcome = Objects.toString(dec.get("outcome"), "");
       if ("PASSED".equals(outcome)) {
@@ -1371,6 +1765,8 @@ public class DocumentService {
       List<byte[]> imagePages,
       Authentication a) {
     try {
+      int initialRevision =
+          s.inTx(() -> ((Number) access(id, a, false).get("revision")).intValue());
       var context = buildExtractionContext(id, a);
       String contextFp = contextFingerprint(context);
       JsonNode extracted;
@@ -1414,37 +1810,49 @@ public class DocumentService {
         }
       }
       String effectiveType = prePolicyType;
-      if ("DIGITAL_EFORM".equals(captureMethod) && !"SUPPORTING_DOCUMENT".equals(prePolicyType)) {
-        effectiveType = "UNKNOWN";
-        metadata.put("classification_overridden_reason", "DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT");
-      }
+      metadata.remove("classification_overridden_reason");
       metadata.put("document_type", effectiveType);
       metadata.put("effective_document_type", effectiveType);
-      String decisionOutcome = extracted.path("decision").path("outcome").asText("");
+      var docDecisionNode = extracted.path("decision");
       boolean extUncertain =
-          extracted.has("extraction_requires_review")
+          extracted.hasNonNull("extraction_requires_review")
               ? extracted.path("extraction_requires_review").asBoolean(false)
               : intrinsicExtractionUncertain(s.readMap(metadata.toString()));
-      boolean classUncertain =
-          "UNKNOWN".equals(effectiveType) || extracted.path("classification_uncertain").asBoolean(false);
-      boolean assessUncertain =
-          (!decisionOutcome.isBlank() && !"PASSED".equals(decisionOutcome))
-              || extracted.path("assessment_uncertain").asBoolean(false);
-      boolean effectiveReview =
-          extUncertain || classUncertain || assessUncertain || extracted.path("requires_review").asBoolean(false);
+      var flags =
+          computeUncertaintyFlags(
+              captureMethod, effectiveType, effectiveType, extracted, docDecisionNode, extUncertain);
+      boolean classUncertain = flags.classificationUncertain();
+      boolean assessUncertain = flags.assessmentUncertain();
+      boolean effectiveReview = flags.requiresReview();
       metadata.put("extraction_requires_review", extUncertain);
       metadata.put("classification_uncertain", classUncertain);
       metadata.put("assessment_uncertain", assessUncertain);
       metadata.put("requires_review", effectiveReview);
       String nextType = effectiveType;
       if (item.replacement()) {
-        String previousType = Objects.toString(item.previousDocType(), "UNKNOWN");
-        boolean uncertainReplacement =
-            "UNKNOWN".equals(previousType)
-                || ("SUPPORTING_DOCUMENT".equals(previousType) && "UNKNOWN".equals(nextType));
-        if (!previousType.equals(nextType) && !uncertainReplacement) {
-          throw new ApiException(
-              409, "WRONG_DOCUMENT_TYPE", "Replacement must have the same document classification");
+        if ("DIGITAL_EFORM".equals(captureMethod)) {
+          if (item.docId() != null) {
+            var currentRows =
+                s.db.queryForList(
+                    "SELECT d.document_type, v.extraction_json FROM submission_documents d"
+                        + " JOIN document_versions v ON v.document_id=d.id AND"
+                        + " v.version=d.current_version WHERE d.id=? AND d.submission_id=?",
+                    item.docId(),
+                    id);
+            if (!currentRows.isEmpty() && isDigitalDeclarationReceipt(s, currentRows.getFirst())) {
+              throw new ApiException(
+                  409, "EDIT_EFORM", "Edit the digital declaration instead of replacing its receipt");
+            }
+          }
+        } else {
+          String previousType = Objects.toString(item.previousDocType(), "UNKNOWN");
+          boolean uncertainReplacement =
+              "UNKNOWN".equals(previousType)
+                  || ("SUPPORTING_DOCUMENT".equals(previousType) && "UNKNOWN".equals(nextType));
+          if (!previousType.equals(nextType) && !uncertainReplacement) {
+            throw new ApiException(
+                409, "WRONG_DOCUMENT_TYPE", "Replacement must have the same document classification");
+          }
         }
       }
       String commitOutcome =
@@ -1469,16 +1877,23 @@ public class DocumentService {
                     s.db.queryForList(
                         "SELECT extraction_json FROM document_versions WHERE id=? FOR UPDATE",
                         item.versionId());
-                if (verRows.isEmpty()
-                    || !Boolean.TRUE.equals(
-                        s.readMap(Objects.toString(verRows.getFirst().get("extraction_json"), "{}"))
-                            .get("pending_verification"))) {
+                if (verRows.isEmpty()) return "EXTRACTED";
+                var pendingMetaMap =
+                    s.readMap(Objects.toString(verRows.getFirst().get("extraction_json"), "{}"));
+                if (!Boolean.TRUE.equals(pendingMetaMap.get("pending_verification"))) {
                   return "EXTRACTED";
                 }
+                if (pendingMetaMap.containsKey("image_source_hashes")
+                    && !metadata.has("image_source_hashes")) {
+                  metadata.set(
+                      "image_source_hashes",
+                      s.json.valueToTree(pendingMetaMap.get("image_source_hashes")));
+                }
                 if (metadata.get("decision") instanceof com.fasterxml.jackson.databind.node.ObjectNode decisionObj) {
-                  decisionObj.put("context_revision", ((Number) c.get("revision")).intValue());
+                  int currentRev = ((Number) c.get("revision")).intValue();
+                  decisionObj.put("context_revision", currentRev);
                   decisionObj.put("context_fingerprint", contextFp);
-                  decisionObj.put("stale", false);
+                  decisionObj.put("stale", currentRev != initialRevision);
                 }
                 s.db.update(
                     "UPDATE submission_documents SET document_type=? WHERE id=? AND"
@@ -1565,7 +1980,7 @@ public class DocumentService {
         return "PENDING";
       }
       if ("STALE_DOCUMENT".equals(error.code())) throw error;
-      compensateRejectedUpload(id, item, prevSubmissionStatus);
+      compensateRejectedUpload(id, item, prevSubmissionStatus, a);
       if (error.status() == 409) throw error;
       String attachment = combineImages ? "Combined image pages" : item.filename();
       throw new ApiException(error.status(), error.code(), attachment + " — " + error.getMessage());
@@ -1624,37 +2039,58 @@ public class DocumentService {
   }
 
   private void compensateRejectedUpload(
-      String id, PendingUpload item, String prevSubmissionStatus) {
-    s.inTxVoid(
-        () -> {
-          var docRows =
-              s.db.queryForList(
-                  "SELECT current_version FROM submission_documents WHERE id=? AND"
-                      + " submission_id=? FOR UPDATE",
-                  item.docId(),
-                  id);
-          if (docRows.isEmpty()
-              || ((Number) docRows.getFirst().get("current_version")).intValue() != item.version())
-            return;
-          s.db.update("DELETE FROM extracted_fields WHERE version_id=?", item.versionId());
-          s.db.update("DELETE FROM document_versions WHERE id=?", item.versionId());
-          if (item.replacement() && item.previousVersion() != null) {
-            s.db.update(
-                "UPDATE submission_documents SET current_version=?,document_type=? WHERE id=?",
-                item.previousVersion(),
-                Objects.toString(item.previousDocType(), "UNKNOWN"),
-                item.docId());
-          } else {
-            s.db.update("DELETE FROM submission_documents WHERE id=?", item.docId());
-          }
-          if (prevSubmissionStatus != null && !prevSubmissionStatus.isBlank()) {
-            s.db.update(
-                "UPDATE document_submissions SET status=? WHERE id=? AND status='PENDING_VALIDATION'",
-                prevSubmissionStatus,
-                id);
-          }
-        });
-    cleanupStorageKeys(List.of(item.key()));
+      String id, PendingUpload item, String prevSubmissionStatus, Authentication a) {
+    List<String> keysToDelete =
+        s.inTx(
+            () -> {
+              var c = access(id, a, true);
+              if ("OPERATIONS".equals(c.get("status")) || "CANCELLED".equals(c.get("status"))) {
+                return List.<String>of();
+              }
+              var docRows =
+                  s.db.queryForList(
+                      "SELECT current_version FROM submission_documents WHERE id=? AND"
+                          + " submission_id=? FOR UPDATE",
+                      item.docId(),
+                      id);
+              if (docRows.isEmpty()
+                  || ((Number) docRows.getFirst().get("current_version")).intValue() != item.version())
+                return List.<String>of();
+              var verRows =
+                  s.db.queryForList(
+                      "SELECT extraction_json FROM document_versions WHERE id=? FOR UPDATE",
+                      item.versionId());
+              if (verRows.isEmpty()) return List.<String>of();
+              var meta =
+                  s.readMap(Objects.toString(verRows.getFirst().get("extraction_json"), "{}"));
+              if (!Boolean.TRUE.equals(meta.get("pending_verification"))) {
+                return List.<String>of();
+              }
+              var keys = new ArrayList<String>();
+              keys.add(item.key());
+              addSourceImageStorageKeys(s, verRows.getFirst().get("extraction_json"), keys);
+              s.db.update("DELETE FROM document_address_verifications WHERE version_id=?", item.versionId());
+              s.db.update("DELETE FROM extracted_fields WHERE version_id=?", item.versionId());
+              s.db.update("DELETE FROM document_versions WHERE id=?", item.versionId());
+              if (item.replacement() && item.previousVersion() != null) {
+                s.db.update(
+                    "UPDATE submission_documents SET current_version=?,document_type=? WHERE id=?",
+                    item.previousVersion(),
+                    Objects.toString(item.previousDocType(), "UNKNOWN"),
+                    item.docId());
+              } else {
+                s.db.update("DELETE FROM submission_documents WHERE id=?", item.docId());
+              }
+              if (prevSubmissionStatus != null && !prevSubmissionStatus.isBlank()) {
+                s.db.update(
+                    "UPDATE document_submissions SET status=? WHERE id=? AND"
+                        + " status='PENDING_VALIDATION'",
+                    prevSubmissionStatus,
+                    id);
+              }
+              return keys;
+            });
+    cleanupStorageKeys(keysToDelete);
   }
 
   boolean hasUploadedAttachment(
@@ -1664,16 +2100,19 @@ public class DocumentService {
     var rows =
         targetDocId != null
             ? s.db.queryForList(
-                "SELECT v.sha256,v.extraction_json FROM document_versions v JOIN"
-                    + " submission_documents d ON d.id=v.document_id WHERE d.submission_id=? AND"
-                    + " d.id=? AND d.repository_only=FALSE",
+                "SELECT d.document_type,v.sha256,v.extraction_json FROM document_versions v JOIN"
+                    + " submission_documents d ON d.id=v.document_id AND v.version=d.current_version"
+                    + " WHERE d.submission_id=? AND d.id=? AND d.repository_only=FALSE",
                 id,
                 targetDocId)
             : s.db.queryForList(
-                "SELECT v.sha256,v.extraction_json FROM document_versions v JOIN"
-                    + " submission_documents d ON d.id=v.document_id WHERE d.submission_id=? AND"
-                    + " d.repository_only=FALSE AND d.document_type<>'SERVICE_REQUEST'",
-                id);
+                "SELECT d.document_type,v.sha256,v.extraction_json FROM document_versions v JOIN"
+                    + " submission_documents d ON d.id=v.document_id AND v.version=d.current_version"
+                    + " WHERE d.submission_id=? AND d.repository_only=FALSE",
+                id)
+                .stream()
+                .filter(row -> !isDigitalDeclarationReceipt(s, row))
+                .toList();
     if (rows.isEmpty()) return false;
     if (combineImages) {
       var pages = new ArrayList<String>(files.size());
@@ -1694,15 +2133,37 @@ public class DocumentService {
       boolean found =
           rows.stream()
               .anyMatch(
-                  row ->
-                      fileHash.equals(row.get("sha256"))
-                          || (singleImage
-                              && fileHash.equals(
-                                  s.readMap(Objects.toString(row.get("extraction_json"), "{}"))
-                                      .get("image_source_sha256"))));
+                  row -> {
+                    var meta = s.readMap(Objects.toString(row.get("extraction_json"), "{}"));
+                    return fileHash.equals(row.get("sha256"))
+                        || (singleImage
+                            && !Boolean.TRUE.equals(meta.get("combine_images"))
+                            && fileHash.equals(meta.get("image_source_sha256")));
+                  });
       if (!found) return false;
     }
     return true;
+  }
+
+  void uploadMissingAttachments(
+      String id, List<MultipartFile> files, String replace, Authentication a, boolean combineImages)
+      throws Exception {
+    if (files == null || files.isEmpty()) return;
+    if (combineImages || replace != null) {
+      if (!hasUploadedAttachment(id, replace, files, combineImages)) {
+        uploadInternal(id, files, replace, a, false, combineImages);
+      }
+      return;
+    }
+    var missing = new ArrayList<MultipartFile>();
+    for (var f : files) {
+      if (!hasUploadedAttachment(id, null, List.of(f), false)) {
+        missing.add(f);
+      }
+    }
+    if (!missing.isEmpty()) {
+      uploadInternal(id, missing, null, a, false, false);
+    }
   }
 
   void recordPendingNotification(String id) {
@@ -1791,7 +2252,7 @@ public class DocumentService {
               a);
       if ("PENDING".equals(outcome)) anyStillPending = true;
     }
-    return !anyStillPending && !hasPendingVerification(id);
+    return !anyStillPending && !hasPendingExtraction(id);
   }
 
   void storeOriginal(String key, byte[] bytes) throws Exception {
@@ -1811,10 +2272,14 @@ public class DocumentService {
       throws Exception {
     var rows =
         s.db.queryForList(
-            "SELECT * FROM submission_documents WHERE submission_id=? AND document_type=? AND"
-                + " repository_only=FALSE",
-            id,
-            type);
+                "SELECT d.*, v.extraction_json FROM submission_documents d LEFT JOIN"
+                    + " document_versions v ON v.document_id=d.id AND v.version=d.current_version"
+                    + " WHERE d.submission_id=? AND d.document_type=? AND d.repository_only=FALSE",
+                id,
+                type)
+            .stream()
+            .filter(row -> isDigitalDeclarationReceipt(s, row))
+            .toList();
     String doc = rows.isEmpty() ? s.id("FILE") : (String) rows.getFirst().get("id");
     int version =
         rows.isEmpty() ? 1 : ((Number) rows.getFirst().get("current_version")).intValue() + 1;
@@ -2057,6 +2522,13 @@ public class DocumentService {
             throw new ApiException(
                 400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12?1000 characters");
           if (clearHold) {
+            if (!Boolean.TRUE.equals(c.get("risk_hold")))
+              throw new ApiException(409, "NO_HOLD_ACTIVE", "No risk hold is active on this case");
+            if (hasPendingVerification(id))
+              throw new ApiException(
+                  409,
+                  "PENDING_VERIFICATION",
+                  "Complete pending document verification before clearing a hold");
             var checks = evaluate(id);
             var assessment = new CaseRisk(s).assess(c, checks);
             boolean critical =
@@ -2095,12 +2567,25 @@ public class DocumentService {
                     + " AND action_type='REQUEST_CORRECTION')",
                 id,
                 id);
-            if (s.db.queryForObject(
-                    "SELECT COUNT(*) FROM correction_tasks WHERE submission_id=? AND"
-                        + " assigned_role='CUSTOMER' AND status='AWAITING_CORRECTION'",
-                    Integer.class,
-                    id)
-                > 0) s.db.update("UPDATE document_submissions SET status='CORRECTION_REQUIRED' WHERE id=?", id);
+            boolean hasCustomerTasks =
+                s.db.queryForObject(
+                        "SELECT COUNT(*) FROM correction_tasks WHERE submission_id=? AND"
+                            + " assigned_role='CUSTOMER' AND status='AWAITING_CORRECTION'",
+                        Integer.class,
+                        id)
+                    > 0;
+            boolean hasEscalatedRmTasks =
+                s.db.queryForObject(
+                        "SELECT COUNT(*) FROM correction_tasks WHERE submission_id=? AND"
+                            + " assigned_role<>'CUSTOMER' AND status NOT IN"
+                            + " ('RESOLVED','CANCELLED')",
+                        Integer.class,
+                        id)
+                    > 0;
+            if (hasCustomerTasks && !hasEscalatedRmTasks) {
+              s.db.update(
+                  "UPDATE document_submissions SET status='CORRECTION_REQUIRED' WHERE id=?", id);
+            }
             event(
                 id,
                 actor,
@@ -2155,17 +2640,19 @@ public class DocumentService {
     var profile = new CustomerProfiles(s).get((String) c.get("customer_id"));
     var evidence = new ArrayList<Map<String, Object>>();
     boolean pass = true;
+    boolean digitalEform = "DIGITAL_EFORM".equals(c.get("capture_method"));
     if ("PROFILE_MATCH".equals(rule.get("condition_type"))) {
       String field = (String) rule.get("field_name");
       boolean includeSupport = "PROFILE_NAME".equals(key);
-      var source =
-          fields(
-              includeSupport
-                  ? docs
+      var sourceDocs =
+          includeSupport
+              ? docs
+              : digitalEform
+                  ? docs.stream().filter(d -> isDigitalDeclarationReceipt(s, d)).toList()
                   : docs.stream()
                       .filter(d -> !"SUPPORTING_DOCUMENT".equals(d.get("document_type")))
-                      .toList(),
-              field);
+                      .toList();
+      var source = fields(sourceDocs, field);
       String expected = (String) profile.get(field);
       evidence.addAll(source);
       evidence.add(
@@ -2211,7 +2698,11 @@ public class DocumentService {
                     "tax_declaration", "tax_residency", "foreign_tax_country", "tax_identifier");
             default -> List.of("mailing_address");
           };
-      for (String name : requested) evidence.addAll(fields(docs, name));
+      var eformSourceDocs =
+          digitalEform
+              ? docs.stream().filter(d -> isDigitalDeclarationReceipt(s, d)).toList()
+              : docs;
+      for (String name : requested) evidence.addAll(fields(eformSourceDocs, name));
       switch (key) {
         case "EFORM_REQUIRED" ->
             pass =
@@ -2387,6 +2878,7 @@ public class DocumentService {
       String type = (String) rule.get("document_type"),
           condition = (String) rule.get("condition_type"),
           field = (String) rule.get("field_name");
+      boolean digitalEform = "DIGITAL_EFORM".equals(c.get("capture_method"));
       var relevant =
           docs.stream()
               .filter(d -> "PACKAGE".equals(type) || type.equals(d.get("document_type")))
@@ -2394,14 +2886,26 @@ public class DocumentService {
       if (condition.equals("ONEMAP_ADDRESS")) {
         var targetDocs =
             "SERVICE_ONEMAP_MAILING".equals(rule.get("rule_key"))
-                ? relevant.stream().filter(d -> "SERVICE_REQUEST".equals(d.get("document_type"))).toList()
+                ? (digitalEform
+                    ? relevant.stream().filter(d -> isDigitalDeclarationReceipt(s, d)).toList()
+                    : relevant.stream()
+                        .filter(d -> "SERVICE_REQUEST".equals(d.get("document_type")))
+                        .toList())
                 : relevant;
-        var addressChecks = addressVerifier == null ? List.<Map<String, Object>>of()
-            : addressVerifier.checks(this, rule, targetDocs.isEmpty() ? relevant : targetDocs);
+        var addressChecks =
+            addressVerifier == null
+                ? List.<Map<String, Object>>of()
+                : addressVerifier.checks(
+                    this,
+                    rule,
+                    targetDocs.isEmpty() && !digitalEform ? relevant : targetDocs);
         if ("SERVICE_ONEMAP_MAILING".equals(rule.get("rule_key"))) {
           boolean verified = !addressChecks.isEmpty()
               && addressChecks.stream().allMatch(check -> Boolean.TRUE.equals(check.get("passed")));
-          boolean mismatch = addressChecks.stream().anyMatch(check -> "MISMATCH".equals(check.get("verification_status")));
+          boolean mismatch =
+              addressChecks.isEmpty()
+                  || addressChecks.stream()
+                      .anyMatch(check -> "MISMATCH".equals(check.get("verification_status")));
           boolean unavailable = addressChecks.stream().anyMatch(check -> "UNAVAILABLE".equals(check.get("verification_status")));
           var evidence = addressChecks.stream().flatMap(check -> ((List<?>) check.get("evidence")).stream()).toList();
           var result = check(rule, "SERVICE_ONEMAP_MAILING", verified, evidence);
@@ -2417,9 +2921,11 @@ public class DocumentService {
       // address with the profile only once the customer has reconciled the declarations.
       if ("PROFILE_ADDRESS".equals(rule.get("rule_key"))
           && fields(
-                      docs.stream()
-                          .filter(d -> !"SUPPORTING_DOCUMENT".equals(d.get("document_type")))
-                          .toList(),
+                      digitalEform
+                          ? docs.stream().filter(d -> isDigitalDeclarationReceipt(s, d)).toList()
+                          : docs.stream()
+                              .filter(d -> !"SUPPORTING_DOCUMENT".equals(d.get("document_type")))
+                              .toList(),
                       "mailing_address")
                   .stream()
                   .map(f -> normal(f.get("field_value")))
@@ -2435,45 +2941,99 @@ public class DocumentService {
             "SUPPORTING_DOCUMENT".equals(type)
                 && (BankingServicePolicy.REQUESTS.contains(c.get("category"))
                     ? !servicePolicy.supportRequired(c, docs)
-                    : "DIGITAL_EFORM".equals(c.get("capture_method")) && !supportRequired(c));
+                    : digitalEform && !supportRequired(c));
+        var attachDocs =
+            digitalEform && !"SUPPORTING_DOCUMENT".equals(type)
+                ? relevant.stream().filter(d -> isDigitalDeclarationReceipt(s, d)).toList()
+                : relevant;
+        var attachEvidence = new ArrayList<Map<String, Object>>();
+        if (optional) {
+          attachEvidence.add(
+              map(
+                  "field_name",
+                  "support_requirement",
+                  "field_value",
+                  "NOT_REQUIRED",
+                  "supporting_text",
+                  "No address change or foreign tax residency was declared."));
+        } else if ("SUPPORTING_DOCUMENT".equals(type) && attachDocs.isEmpty()) {
+          for (var d : docs) {
+            if (isUploadedAttachment(s, d)
+                && RECOGNISED_NON_SUPPORTING_TYPES.contains(d.get("document_type"))) {
+              attachEvidence.add(
+                  map(
+                      "document_id",
+                      d.get("id"),
+                      "version_id",
+                      d.get("version_id"),
+                      "filename",
+                      d.get("filename"),
+                      "field_name",
+                      "unsuitable_document_type",
+                      "field_value",
+                      d.get("document_type"),
+                      "page_number",
+                      1,
+                      "supporting_text",
+                      "Uploaded file "
+                          + Objects.toString(d.get("filename"), "")
+                          + " is a "
+                          + Objects.toString(d.get("document_type"), "").toLowerCase(Locale.ROOT).replace('_', ' ')
+                          + " and cannot serve as supporting evidence."));
+            }
+          }
+        }
         checks.add(
             check(
                 rule,
                 (String) rule.get("rule_key"),
-                optional || !relevant.isEmpty(),
-                optional
-                    ? List.of(
-                        map(
-                            "field_name",
-                            "support_requirement",
-                            "field_value",
-                            "NOT_REQUIRED",
-                            "supporting_text",
-                            "No address change or foreign tax residency was declared."))
-                    : List.of()));
+                optional || !attachDocs.isEmpty(),
+                attachEvidence));
         continue;
       }
       if (condition.equals("CLASSIFICATION")) {
         var uncertain =
             docs.stream()
                 .filter(
-                    d ->
-                        (d.get("evidence_reviewed_by") == null
-                            && Boolean.TRUE.equals(
-                                s.readMap((String) d.get("extraction_json")).get("requires_review")))
-                            || "UNKNOWN".equals(d.get("document_type")))
+                    d -> {
+                      var ext = s.readMap((String) d.get("extraction_json"));
+                      boolean decisionUnavailable =
+                          ext.get("decision") instanceof Map<?, ?> dec
+                              && (Boolean.TRUE.equals(dec.get("unavailable"))
+                                  || "UNAVAILABLE".equals(dec.get("outcome")));
+                      boolean needsReview =
+                          decisionUnavailable
+                              ? Boolean.TRUE.equals(ext.get("extraction_requires_review"))
+                                  || Boolean.TRUE.equals(ext.get("classification_uncertain"))
+                              : Boolean.TRUE.equals(ext.get("requires_review"));
+                      return (d.get("evidence_reviewed_by") == null && needsReview)
+                          || "UNKNOWN".equals(d.get("document_type"));
+                    })
                 .map(
                     d ->
                         map(
                             "document_id",
                             d.get("id"),
+                            "version_id",
+                            d.get("version_id"),
                             "filename",
                             d.get("filename"),
+                            "field_name",
+                            "classification",
+                            "field_value",
+                            d.get("document_type"),
+                            "page_number",
+                            1,
+                            "supporting_text",
+                            "Classification or extraction is uncertain",
                             "reason",
                             "Classification or extraction is uncertain"))
                 .toList();
         checks.add(check(rule, (String) rule.get("rule_key"), uncertain.isEmpty(), uncertain));
         continue;
+      }
+      if (digitalEform && !"SUPPORTING_DOCUMENT".equals(type)) {
+        relevant = relevant.stream().filter(d -> isDigitalDeclarationReceipt(s, d)).toList();
       }
       if (condition.equals("MATCH")) {
         var source =
@@ -2576,7 +3136,7 @@ public class DocumentService {
         evidence);
   }
 
-  private static boolean isTransientProviderCheck(Map<String, Object> check) {
+  static boolean isTransientProviderCheck(Map<String, Object> check) {
     return "ONEMAP_ADDRESS".equals(check.get("condition_type"))
         && "UNAVAILABLE".equals(check.get("verification_status"));
   }
@@ -2619,7 +3179,27 @@ public class DocumentService {
                     Boolean.TRUE.equals(dec.get("stale"))
                         || Boolean.TRUE.equals(dec.get("unavailable"))
                         || "UNAVAILABLE".equals(dec.get("outcome"));
-                if (fp.equals(storedFp) && !needsRetry) continue;
+                if (fp.equals(storedFp) && !needsRetry) {
+                  int decRev =
+                      dec.get("context_revision") instanceof Number n ? n.intValue() : -1;
+                  if (decRev != revision) {
+                    try {
+                      var root =
+                          (com.fasterxml.jackson.databind.node.ObjectNode)
+                              s.json.readTree(Objects.toString(doc.get("extraction_json"), "{}"));
+                      if (root.get("decision")
+                          instanceof com.fasterxml.jackson.databind.node.ObjectNode decNode) {
+                        decNode.put("context_revision", revision);
+                        s.db.update(
+                            "UPDATE document_versions SET extraction_json=? WHERE id=?",
+                            root.toString(),
+                            doc.get("version_id"));
+                      }
+                    } catch (Exception ignored) {
+                    }
+                  }
+                  continue;
+                }
                 String storageKey = Objects.toString(extraction.get("storage_key"), "");
                 if (storageKey.isBlank()) continue;
                 var row = new LinkedHashMap<>(doc);
@@ -2727,6 +3307,13 @@ public class DocumentService {
             if (finalAssessed != null
                 && finalAssessed.has("decision")
                 && !"UNAVAILABLE".equals(finalAssessed.path("decision").path("outcome").asText(""))) {
+              var currentDec = root.path("decision");
+              if (fp.equals(currentDec.path("context_fingerprint").asText(""))
+                  && !currentDec.path("stale").asBoolean(false)
+                  && !currentDec.path("unavailable").asBoolean(false)
+                  && !"UNAVAILABLE".equals(currentDec.path("outcome").asText(""))) {
+                return;
+              }
               var newDecision =
                   (com.fasterxml.jackson.databind.node.ObjectNode)
                       finalAssessed.get("decision").deepCopy();
@@ -2736,34 +3323,25 @@ public class DocumentService {
               newDecision.put("unavailable", false);
               root.set("decision", newDecision);
               String assessedType = finalAssessed.path("document_type").asText(modelDocType);
-              String effectiveType =
-                  "DIGITAL_EFORM".equals(captureMethod) && !"SUPPORTING_DOCUMENT".equals(assessedType)
-                      ? "UNKNOWN"
-                      : assessedType;
+              String effectiveType = assessedType;
               root.put("model_document_type", modelDocType);
               root.put("document_type", effectiveType);
               root.put("effective_document_type", effectiveType);
-              if ("UNKNOWN".equals(effectiveType) && !"UNKNOWN".equals(assessedType)) {
-                root.put("classification_overridden_reason", "DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT");
-              } else {
-                root.remove("classification_overridden_reason");
-              }
+              root.remove("classification_overridden_reason");
               boolean extUncertain =
                   intrinsicUncertain
                       || finalAssessed.path("extraction_requires_review").asBoolean(false);
-              boolean classUncertain =
-                  "UNKNOWN".equals(effectiveType)
-                      || "UNKNOWN".equals(assessedType)
-                      || finalAssessed.path("classification_uncertain").asBoolean(false);
-              String outcome = newDecision.path("outcome").asText("PASSED");
-              boolean assessUncertain =
-                  !"PASSED".equals(outcome)
-                      || finalAssessed.path("assessment_uncertain").asBoolean(false);
-              boolean effectiveRequiresReview =
-                  extUncertain
-                      || classUncertain
-                      || assessUncertain
-                      || finalAssessed.path("requires_review").asBoolean(false);
+              var flags =
+                  computeUncertaintyFlags(
+                      captureMethod,
+                      effectiveType,
+                      assessedType,
+                      finalAssessed,
+                      newDecision,
+                      extUncertain);
+              boolean classUncertain = flags.classificationUncertain();
+              boolean assessUncertain = flags.assessmentUncertain();
+              boolean effectiveRequiresReview = flags.requiresReview();
               root.put("extraction_requires_review", extUncertain);
               root.put("classification_uncertain", classUncertain);
               root.put("assessment_uncertain", assessUncertain);
@@ -2830,8 +3408,12 @@ public class DocumentService {
                       : (ai == null || ai.client == null
                           ? "ASSESSMENT_NOT_CONFIGURED"
                           : "PROVIDER_UNAVAILABLE"));
-              root.put("assessment_uncertain", true);
-              root.put("requires_review", true);
+              boolean keepReview =
+                  intrinsicUncertain
+                      || root.path("classification_uncertain").asBoolean(false)
+                      || "UNKNOWN".equals(root.path("document_type").asText(""));
+              root.put("assessment_uncertain", false);
+              root.put("requires_review", keepReview);
               s.db.update(
                   "UPDATE document_versions SET extraction_json=? WHERE id=?",
                   root.toString(),
@@ -2842,14 +3424,15 @@ public class DocumentService {
   }
 
   void validateInternal(String id, Authentication a) {
-    boolean cancelled =
+    Integer expectedRevision =
         s.inTx(
             () -> {
               var c = access(id, a, true);
               if ("CANCELLED".equals(c.get("status"))) editable(c);
-              return false;
+              if ("OPERATIONS".equals(c.get("status"))) return null;
+              return ((Number) c.get("revision")).intValue();
             });
-    if (cancelled) return;
+    if (expectedRevision == null) return;
     if (!retryPendingExtractions(id, a)) {
       recordPendingNotification(id);
       return;
@@ -2870,12 +3453,21 @@ public class DocumentService {
               });
       addressVerifier.refresh(addressSources);
     }
-    s.inTxVoid(() -> validateEvaluatedInTx(id, a));
+    s.inTxVoid(() -> validateEvaluatedInTx(id, a, expectedRevision));
   }
 
   void validateEvaluatedInTx(String id, Authentication a) {
+    validateEvaluatedInTx(id, a, null);
+  }
+
+  void validateEvaluatedInTx(String id, Authentication a, Integer expectedRevision) {
     var c = access(id, a, true);
     if ("CANCELLED".equals(c.get("status"))) editable(c);
+    if ("OPERATIONS".equals(c.get("status"))) return;
+    if (expectedRevision != null
+        && ((Number) c.get("revision")).intValue() != expectedRevision.intValue()) {
+      return;
+    }
     var checks = evaluate(id);
     var failed = new HashSet<String>();
     s.db.update(
@@ -2903,8 +3495,8 @@ public class DocumentService {
           check.get("outcome"),
           check.get("category"));
       if (Boolean.TRUE.equals(check.get("passed"))) continue;
-      failed.add(key);
       if (isTransientProviderCheck(check)) continue;
+      failed.add(key);
       String action =
           check.get("condition_type").equals("ATTACHMENT")
                   && check.get("document_type").equals("SUPPORTING_DOCUMENT")
@@ -2997,16 +3589,27 @@ public class DocumentService {
                                   && "SERVICE_ONEMAP_MAILING".equals(ch.get("check_key"))
                                   && Objects.toString(ex.get("check_key"), "").startsWith("ONEMAP_MAILING:")))
                           && Boolean.TRUE.equals(ch.get("passed")));
+      boolean transientOneMap =
+          checks.stream()
+              .anyMatch(
+                  ch ->
+                      (ch.get("check_key").equals(ex.get("check_key"))
+                              || ("ADDRESS_CHANGE".equals(c.get("category"))
+                                  && "SERVICE_ONEMAP_MAILING".equals(ch.get("check_key"))
+                                  && Objects.toString(ex.get("check_key"), "").startsWith("ONEMAP_MAILING:")))
+                          && isTransientProviderCheck(ch));
       boolean retiredSupportingReference =
           "SUPPORTING_DOCUMENT".equals(ex.get("rule_document_type"))
               && "CASE_REFERENCE".equals(ex.get("rule_condition_type"));
-      if (!verified && !retiredSupportingReference) continue;
+      if (!verified && !transientOneMap && !retiredSupportingReference) continue;
       s.db.update(
           "UPDATE document_exceptions SET"
               + " status='RESOLVED',resolved_at=?,resolution_method=? WHERE"
               + " id=?",
           Store.now(),
-          retiredSupportingReference ? "RULE_RETIRED" : "VERIFIED_REVALIDATION",
+          transientOneMap
+              ? "ONEMAP_UNAVAILABLE_DEFERRED"
+              : retiredSupportingReference ? "RULE_RETIRED" : "VERIFIED_REVALIDATION",
           ex.get("id"));
       s.db.update(
           "UPDATE correction_tasks SET status='RESOLVED',resolved_at=? WHERE exception_id=?",
@@ -3016,9 +3619,17 @@ public class DocumentService {
           id,
           a,
           "EXCEPTION_RESOLVED",
-          map("exceptionId", ex.get("id"), "verification", "Current approved check passed"));
+          map(
+              "exceptionId",
+              ex.get("id"),
+              "verification",
+              transientOneMap
+                  ? "OneMap verification temporarily unavailable; deferred to pending state"
+                  : "Current approved check passed"));
     }
-    boolean pendingProvider = checks.stream().anyMatch(DocumentService::isTransientProviderCheck);
+    boolean pendingDecision = hasPendingDecisionAssessment(id);
+    boolean pendingProvider =
+        pendingDecision || checks.stream().anyMatch(DocumentService::isTransientProviderCheck);
     boolean uncertain =
         checks.stream()
             .anyMatch(
@@ -3063,24 +3674,46 @@ public class DocumentService {
     int documentVersions =
         s.db.queryForObject(
             "SELECT COALESCE(MAX(current_version),0) FROM submission_documents WHERE"
-                + " submission_id=?",
+                + " submission_id=? AND repository_only=FALSE",
             Integer.class,
             id);
-    if (uncertain || (blocked && Math.max(formVersions, documentVersions) >= 4)) {
+    boolean nonContactBlocked =
+        checks.stream()
+            .anyMatch(
+                ch ->
+                    PolicyService.blockingDocumentCheck(ch)
+                        && !isTransientProviderCheck(ch)
+                        && !"SERVICE_CONTACT_VERIFIED".equals(ch.get("rule_key")));
+    if (uncertain || (nonContactBlocked && Math.max(formVersions, documentVersions) >= 4)) {
       s.db.update(
           "UPDATE correction_tasks SET status='ESCALATED',assigned_role='RESOLUTION_MANAGEMENT'"
               + " WHERE submission_id=? AND status<>'RESOLVED'",
           id);
+      status = "RESOLUTION_MANAGEMENT";
       s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
     }
     if (checks.stream()
         .anyMatch(
             ch ->
                 "SERVICE_MANUAL".equals(ch.get("condition_type"))
-                    && !Boolean.TRUE.equals(ch.get("passed"))))
-      s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
+                    && !Boolean.TRUE.equals(ch.get("passed")))) {
+      boolean hasCustomerTask =
+          s.db.queryForObject(
+                  "SELECT COUNT(*) FROM correction_tasks WHERE submission_id=? AND"
+                      + " assigned_role='CUSTOMER' AND status NOT IN ('RESOLVED','CANCELLED')",
+                  Integer.class,
+                  id)
+              > 0;
+      if (!hasCustomerTask) {
+        status = "RESOLUTION_MANAGEMENT";
+        s.db.update("UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=?", id);
+      }
+    }
     new CaseRisk(s).apply(this, id, checks, a);
-    if (status.equals("READY") && !Boolean.TRUE.equals(access(id, a, false).get("risk_hold")))
+    var afterRisk = access(id, a, false);
+    if (!pendingProvider
+        && "READY".equals(afterRisk.get("status"))
+        && !Boolean.TRUE.equals(afterRisk.get("risk_hold")))
       routeInternal(id, a, checks);
   }
 
@@ -3132,10 +3765,22 @@ public class DocumentService {
             .allMatch(check -> Boolean.TRUE.equals(check.get("passed")));
   }
 
+  String packageEvidenceFingerprint(List<Map<String, Object>> docs, String rules) {
+    var tokens =
+        docs.stream()
+            .filter(d -> !Boolean.TRUE.equals(d.get("repository_only")))
+            .map(d -> d.get("id") + ":" + d.get("version_id") + ":" + d.get("sha256"))
+            .sorted()
+            .toList();
+    return CustomerSessions.hash(rules + "|" + s.json(tokens));
+  }
+
   List<Map<String, Object>> evaluateAttachment(
       String id, List<Map<String, Object>> currentDocuments, Map<String, Object> candidate) {
     var predicted = new ArrayList<>(currentDocuments);
-    predicted.add(candidate);
+    var simulated = new LinkedHashMap<>(candidate);
+    simulated.put("repository_only", false);
+    predicted.add(simulated);
     return evaluate(id, predicted);
   }
 
@@ -3202,6 +3847,13 @@ public class DocumentService {
                         "NO_AUTHORISED_SOURCE",
                         "No authorised, valid supporting document verified against this case"
                             + " reference"));
+    String currentPackageFp = packageEvidenceFingerprint(currentDocuments, ruleSet());
+    if (proposed.get("packageEvidenceFingerprint") instanceof String fp
+        && !fp.equals(currentPackageFp))
+      throw new ApiException(
+          409,
+          "UNSAFE_DOCUMENT_SIMULATION",
+          "Attachment simulation is stale; package evidence changed");
     PolicyService.requireDocumentSimulation(proposed, c, ruleSet(), candidate);
     PolicyService.requireDocumentAction(
         "ATTACH_VERIFIED_DOCUMENT", repositoryEligible(c, candidate));
@@ -3261,11 +3913,13 @@ public class DocumentService {
             .filter(d -> candidate.get("id").equals(d.get("id")))
             .findFirst()
             .orElseThrow();
+    var postChecks = evaluate(id);
     boolean verified =
         Objects.equals(persisted.get("version_id"), candidate.get("version_id"))
             && repositoryEligible(c, persisted)
             && storageVerified(persisted)
-            && attachmentEvidencePasses(evaluate(id));
+            && attachmentEvidencePasses(postChecks)
+            && attachmentIntroducesNoFailures(currentChecks, postChecks);
     if (!verified)
       throw new ApiException(
           409,
@@ -3285,9 +3939,12 @@ public class DocumentService {
             "sha256",
             candidate.get("sha256")));
     validateEvaluatedInTx(id, a);
+    String methodLabel =
+        isSystemAutomation(a) ? "AUTOMATIC_VERIFIED_ATTACHMENT" : "MANUAL_VERIFIED_ATTACHMENT";
     s.db.update(
-        "UPDATE document_exceptions SET resolution_method='AUTOMATIC_VERIFIED_ATTACHMENT' WHERE"
-            + " submission_id=? AND check_key='ATTACH_SUPPORTING_DOCUMENT' AND status='RESOLVED'",
+        "UPDATE document_exceptions SET resolution_method=? WHERE submission_id=? AND"
+            + " check_key IN ('ATTACH_SUPPORTING_DOCUMENT','SERVICE_SUPPORT') AND status='RESOLVED'",
+        methodLabel,
         id);
     var result =
         map(
@@ -3313,6 +3970,7 @@ public class DocumentService {
   @Transactional
   public Object preflight(String id, Authentication a) {
     var c = access(id, a, true);
+    editable(c);
     var currentDocuments = documents(id, false);
     var checks = evaluate(id, currentDocuments);
     long passed = checks.stream().filter(ch -> Boolean.TRUE.equals(ch.get("passed"))).count();
@@ -3344,21 +4002,38 @@ public class DocumentService {
     }
     boolean eligible = candidate != null;
     boolean noRegressions = attachmentIntroducesNoFailures(checks, predictedChecks);
+    boolean riskAllowsAttach = !Boolean.TRUE.equals(c.get("risk_hold"));
+    boolean classificationOrIntegrityFailed =
+        checks.stream()
+            .anyMatch(
+                ch ->
+                    Set.of("CLASSIFICATION", "INTEGRITY").contains(ch.get("condition_type"))
+                        && Boolean.FALSE.equals(ch.get("passed")));
+    boolean humanRequired =
+        Boolean.TRUE.equals(c.get("risk_hold"))
+            || Boolean.TRUE.equals(c.get("requires_rm_approval"))
+            || !"LOW".equals(c.get("risk_level"))
+            || checks.stream()
+                .anyMatch(
+                    ch ->
+                        Set.of("CLASSIFICATION", "INTEGRITY", "SERVICE_MANUAL")
+                                .contains(ch.get("condition_type"))
+                            && Boolean.FALSE.equals(ch.get("passed")));
+    boolean permittedAvailable = eligible;
     boolean safeAttachment =
         eligible
-            && currentRevisionValidated(c)
             && supportingEvidencePasses
-            && checks.stream()
-                .noneMatch(
-                    ch ->
-                        "CLASSIFICATION".equals(ch.get("condition_type"))
-                            && Boolean.FALSE.equals(ch.get("passed")));
+            && noRegressions
+            && currentRevisionValidated(c)
+            && riskAllowsAttach
+            && !classificationOrIntegrityFailed;
     long outstanding =
         s.db.queryForObject(
             "SELECT COUNT(*) FROM document_exceptions WHERE submission_id=? AND status='OPEN'",
             Long.class,
             id);
     boolean current = Objects.equals(c.get("revision"), c.get("validated_revision"));
+    String rules = ruleSet();
     var result =
         map(
             "id",
@@ -3366,7 +4041,9 @@ public class DocumentService {
             "revision",
             c.get("revision"),
             "ruleSet",
-            ruleSet(),
+            rules,
+            "packageEvidenceFingerprint",
+            packageEvidenceFingerprint(currentDocuments, rules),
             "totalChecks",
             checks.size(),
             "checksPassed",
@@ -3374,7 +4051,11 @@ public class DocumentService {
             "blockingIssues",
             blocking,
             "actualReady",
-            blocking == 0 && unresolvedBlocking(id) == 0 && current,
+            blocking == 0
+                && unresolvedBlocking(id) == 0
+                && current
+                && !hasPendingVerification(id)
+                && !Boolean.TRUE.equals(c.get("risk_hold")),
             "predictedPassedAfterAttachment",
             predictedChecks.stream().filter(ch -> Boolean.TRUE.equals(ch.get("passed"))).count(),
             "predictedTotalChecks",
@@ -3382,7 +4063,7 @@ public class DocumentService {
             "predictedBlockingIssues",
             predictedChecks.stream().filter(PolicyService::blockingDocumentCheck).count(),
             "permittedAttachmentAvailable",
-            eligible,
+            permittedAvailable,
             "safeAdministrativeAttachment",
             safeAttachment,
             "noNewIssues",
@@ -3391,14 +4072,12 @@ public class DocumentService {
             candidate == null ? null : candidate.get("id"),
             "candidateVersionId",
             candidate == null ? null : candidate.get("version_id"),
+            "candidateSha256",
+            candidate == null ? null : candidate.get("sha256"),
             "predictedChecks",
             predictedChecks,
             "humanApprovalRequired",
-            checks.stream()
-                .anyMatch(
-                    ch ->
-                        ch.get("condition_type").equals("CLASSIFICATION")
-                            && Boolean.FALSE.equals(ch.get("passed"))),
+            humanRequired,
             "unresolvedExceptions",
             outstanding,
             "validatedCurrentRevision",
@@ -3608,7 +4287,7 @@ public class DocumentService {
         "UPDATE validation_rules SET status='ACTIVE',approved_by=? WHERE id=?", a.getName(), id);
     s.db.update(
         "UPDATE document_submissions SET validated_revision=NULL,status='PENDING_VALIDATION' WHERE"
-            + " status NOT IN ('OPERATIONS','CANCELLED')");
+            + " status NOT IN ('OPERATIONS','CANCELLED','ON_HOLD')");
     event(null, a, "RULE_APPROVED", map("ruleId", id, "ruleVersion", rule.get("version")));
     return rules();
   }

@@ -18,6 +18,13 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class DocumentOrchestrator {
+  static final Authentication AUTONOMOUS_ACTOR =
+      new org.springframework.security.authentication.UsernamePasswordAuthenticationToken(
+          "AFI_AUTONOMOUS_ENGINE",
+          "",
+          List.of(
+              new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                  "ROLE_SYSTEM")));
   final Store s;
   final DocumentIntelligence intelligence;
   final boolean enabled;
@@ -63,15 +70,16 @@ public class DocumentOrchestrator {
           if (Boolean.TRUE.equals(c.get("risk_hold"))
               || (c.get("risk_score") instanceof Number score && score.intValue() >= 25)) return;
           if (!enabled) {
-            workflow.event(id, actor, "AUTOMATION_DISABLED", map("revision", c.get("revision")));
+            workflow.event(
+                id, AUTONOMOUS_ACTOR, "AUTOMATION_DISABLED", map("revision", c.get("revision")));
             return;
           }
-          runAutomation(workflow, id, actor, c);
+          runAutomation(workflow, id, c);
         });
   }
 
   private void runAutomation(
-      DocumentService workflow, String id, Authentication actor, Map<String, Object> c) {
+      DocumentService workflow, String id, Map<String, Object> c) {
     var exceptions =
         s.db.queryForList(
             "SELECT * FROM document_exceptions WHERE submission_id=? AND status='OPEN' AND"
@@ -112,14 +120,17 @@ public class DocumentOrchestrator {
               ex);
       if (previous >= maxAttempts) {
         workflow.event(
-            id, actor, "AUTOMATION_RETRY_LIMIT", map("exceptionId", ex, "limit", maxAttempts));
+            id,
+            AUTONOMOUS_ACTOR,
+            "AUTOMATION_RETRY_LIMIT",
+            map("exceptionId", ex, "limit", maxAttempts));
         s.db.update(
             "UPDATE correction_tasks SET status='ESCALATED',assigned_role='RESOLUTION_MANAGEMENT'"
                 + " WHERE exception_id=? AND status<>'RESOLVED'",
             ex);
         s.db.update(
             "UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=? AND"
-                + " status NOT IN ('OPERATIONS','CANCELLED')",
+                + " status NOT IN ('OPERATIONS','CANCELLED','ON_HOLD')",
             id);
         continue;
       }
@@ -136,11 +147,11 @@ public class DocumentOrchestrator {
           Store.now());
       workflow.event(
           id,
-          actor,
+          AUTONOMOUS_ACTOR,
           "RESOLUTION_PLANNED",
           map("attemptId", attempt, "exceptionId", ex, "action", "ATTACH_VERIFIED_DOCUMENT"));
       @SuppressWarnings("unchecked")
-      var simulation = (Map<String, Object>) workflow.preflight(id, actor);
+      var simulation = (Map<String, Object>) workflow.preflight(id, AUTONOMOUS_ACTOR);
       s.db.update(
           "UPDATE document_automation_attempts SET simulation_id=? WHERE id=?",
           simulation.get("id"),
@@ -157,7 +168,7 @@ public class DocumentOrchestrator {
                 simulation.get("id")));
         workflow.event(
             id,
-            actor,
+            AUTONOMOUS_ACTOR,
             "AUTOMATION_BLOCKED",
             map(
                 "attemptId",
@@ -170,7 +181,7 @@ public class DocumentOrchestrator {
       }
       workflow.event(
           id,
-          actor,
+          AUTONOMOUS_ACTOR,
           "PREFLIGHT_PASSED",
           map("attemptId", attempt, "simulationId", simulation.get("id"), "predictedOnly", true));
       // A JDBC savepoint keeps a failed execution from discarding the original
@@ -180,7 +191,7 @@ public class DocumentOrchestrator {
       java.sql.Savepoint savepoint = null;
       try {
         savepoint = connection.setSavepoint();
-        workflow.resolveWithPreflight(id, key, actor, simulation);
+        workflow.resolveWithPreflight(id, key, AUTONOMOUS_ACTOR, simulation);
         var persisted =
             s.db
                 .queryForList(
@@ -198,7 +209,7 @@ public class DocumentOrchestrator {
             map("exceptionId", ex, "simulationId", simulation.get("id"), "verified", true));
         workflow.event(
             id,
-            actor,
+            AUTONOMOUS_ACTOR,
             "AUTOMATION_COMPLETED",
             map("attemptId", attempt, "exceptionId", ex, "verified", true));
       } catch (Exception failure) {
@@ -220,7 +231,7 @@ public class DocumentOrchestrator {
                 ex));
         workflow.event(
             id,
-            actor,
+            AUTONOMOUS_ACTOR,
             "AUTOMATION_FAILED",
             map(
                 "attemptId",
@@ -235,7 +246,7 @@ public class DocumentOrchestrator {
             ex);
         s.db.update(
             "UPDATE document_submissions SET status='RESOLUTION_MANAGEMENT' WHERE id=? AND"
-                + " status NOT IN ('OPERATIONS','CANCELLED')",
+                + " status NOT IN ('OPERATIONS','CANCELLED','ON_HOLD')",
             id);
       } finally {
         DataSourceUtils.releaseConnection(connection, s.db.getDataSource());

@@ -55,13 +55,29 @@ final class CaseRisk {
             tax
                 && evidence.stream()
                     .anyMatch(e -> "tax_evidence_conflict".equals(e.get("field_name")));
-        issue =
-            supportingIds.isEmpty() || (missingSupportIdentity && extracted)
-                ? "SUPPORT_MISSING"
-                : !extracted
-                    ? "SUPPORT_UNREADABLE"
-                    : tax ? (taxValueConflict ? "TAX_CONFLICT" : "TIN_MISSING") : "ADDRESS_CONFLICT";
-        group = "support";
+        boolean addressConflict =
+            !tax
+                && evidence.stream()
+                    .anyMatch(e -> "address_comparison".equals(e.get("field_name")));
+        if (supportingIds.isEmpty()) {
+          issue = "SUPPORT_MISSING";
+          group = "support";
+        } else if (!extracted) {
+          issue = "SUPPORT_UNREADABLE";
+          group = "support";
+        } else if (tax) {
+          issue =
+              taxValueConflict
+                  ? "TAX_CONFLICT"
+                  : missingSupportIdentity ? "SUPPORT_MISSING" : "TIN_MISSING";
+          group = taxValueConflict ? "tax" : "support";
+        } else {
+          issue =
+              addressConflict
+                  ? "ADDRESS_CONFLICT"
+                  : missingSupportIdentity ? "SUPPORT_MISSING" : "ADDRESS_CONFLICT";
+          group = "support";
+        }
       } else if (key.startsWith("ATTACH_SUPPORTING") || key.startsWith("REF_SUPPORTING")) {
         issue = "SUPPORT_MISSING";
         group = "support";
@@ -82,14 +98,14 @@ final class CaseRisk {
                 .anyMatch(
                     e ->
                         "tax_declaration".equals(e.get("field_name"))
-                            && "Confirmed".equals(e.get("field_value")));
+                            && "Confirmed".equalsIgnoreCase(Objects.toString(e.get("field_value"), "")));
         boolean jurisdictionConflict =
             evidence.stream().anyMatch(e -> "jurisdiction_conflict".equals(e.get("field_name")));
         issue =
             jurisdictionConflict
                 ? "TAX_CONFLICT"
                 : confirmed ? "TIN_MISSING" : "DECLARATION_MISSING";
-        group = jurisdictionConflict ? "tax_conflict" : confirmed ? "tin" : "declaration";
+        group = jurisdictionConflict ? "tax" : confirmed ? "tin" : "declaration";
       } else if (key.equals("SERVICE_DETAILS")
           && "ADDITIONAL_ACCOUNT".equals(submission.get("category"))) {
         if (evidence.stream()
@@ -120,11 +136,18 @@ final class CaseRisk {
                     submission.get("id")),
                 s.db.queryForObject(
                     "SELECT COALESCE(MAX(current_version),0) FROM submission_documents WHERE"
-                        + " submission_id=?",
+                        + " submission_id=? AND repository_only=FALSE",
                     Integer.class,
                     submission.get("id")))
             - 1;
-    if (attempts >= 3 && checks.stream().anyMatch(PolicyService::blockingDocumentCheck))
+    if (attempts >= 3
+        && checks.stream()
+            .filter(
+                c ->
+                    !DocumentService.isTransientProviderCheck(c)
+                        && !"SERVICE_CONTACT_VERIFIED"
+                            .equals(Objects.toString(c.get("check_key"), "").split(":", 2)[0]))
+            .anyMatch(PolicyService::blockingDocumentCheck))
       add(
           issues,
           "retries",
@@ -202,7 +225,8 @@ final class CaseRisk {
         s.json(result),
         Store.now());
     s.db.update(
-        "UPDATE document_submissions SET risk_score=?,risk_level=?,risk_hold=? WHERE id=?",
+        "UPDATE document_submissions SET risk_score=?,risk_level=?,risk_hold=? WHERE id=? AND"
+            + " status NOT IN ('OPERATIONS','CANCELLED')",
         score,
         level,
         hold,
@@ -222,7 +246,8 @@ final class CaseRisk {
           Store.now(),
           id);
       s.db.update(
-          "UPDATE document_submissions SET status=? WHERE id=?",
+          "UPDATE document_submissions SET status=? WHERE id=? AND status NOT IN"
+              + " ('OPERATIONS','CANCELLED')",
           hold ? "ON_HOLD" : "RESOLUTION_MANAGEMENT",
           id);
     }

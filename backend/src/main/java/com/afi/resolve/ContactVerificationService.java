@@ -185,7 +185,6 @@ public class ContactVerificationService {
                       a,
                       correct ? "CONTACT_OTP_VERIFIED" : "CONTACT_OTP_REJECTED",
                       map("challengeId", request.challengeId(), "revision", c.get("revision")));
-                  if (correct) documents.validate(id, a);
                   return correct;
                 }));
     if (!accepted)
@@ -194,6 +193,7 @@ public class ContactVerificationService {
           "INVALID_OR_EXPIRED_CODE",
           "The code is incorrect, expired, locked, superseded or bound to an older request"
               + " revision");
+    documents.validate(id, a);
     return customers.detail(id, a);
   }
 
@@ -206,7 +206,7 @@ public class ContactVerificationService {
           "VERIFICATION_NOTE_REQUIRED",
           "Record how the synthetic new phone number was independently verified; do not enter OTP"
               + " codes");
-    return tx.execute(
+    tx.executeWithoutResult(
         t -> {
           var c = documents.access(id, a, true);
           documents.editable(c);
@@ -225,7 +225,7 @@ public class ContactVerificationService {
               a,
               "PHONE_VERIFICATION_RECORDED",
               map("revision", request.revision(), "verificationNote", request.verificationNote()));
-          return documents.validate(id, a);
         });
+    return documents.validate(id, a);
   }
 }
