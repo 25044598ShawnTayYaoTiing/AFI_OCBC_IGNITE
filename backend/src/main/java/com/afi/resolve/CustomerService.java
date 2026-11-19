@@ -3,6 +3,7 @@ package com.afi.resolve;
 import static com.afi.resolve.Domain.*;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.*;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.userdetails.*;
@@ -615,6 +616,15 @@ public class CustomerService {
   }
 
   public Object requestStatus(String key, Authentication a) {
+    return requestStatus(key, null, null, null, a);
+  }
+
+  public Object requestStatus(
+      String key,
+      Integer expectedCount,
+      Boolean combineImages,
+      List<String> fileHashes,
+      Authentication a) {
     if (key == null || !key.matches("[A-Za-z0-9_-]{8,100}"))
       throw new ApiException(
           400,
@@ -624,31 +634,96 @@ public class CustomerService {
     boolean inProgress = inFlight.containsKey(customerId + ":" + key);
     var rows =
         s.db.queryForList(
-            "SELECT r.submission_id, r.operation, s.status, s.revision FROM"
-                + " customer_upload_requests r JOIN document_submissions s ON"
+            "SELECT r.submission_id, r.operation, r.created_at AS request_created_at, s.status,"
+                + " s.revision FROM customer_upload_requests r JOIN document_submissions s ON"
                 + " s.id=r.submission_id WHERE r.customer_id=? AND r.request_key=?",
             customerId,
             key);
     if (rows.isEmpty()) {
-      return map("found", false, "inProgress", inProgress);
+      return map("found", false, "inProgress", inProgress, "complete", false, "incomplete", false);
     }
     var row = rows.getFirst();
     String subId = (String) row.get("submission_id");
     String op = Objects.toString(row.get("operation"), "");
-    boolean expectsAttachment = op.contains("/with-documents") || op.startsWith("/submissions");
-    boolean hasUploadedDocs =
-        !expectsAttachment
-            || s.db.queryForObject(
-                    "SELECT COUNT(*) FROM submission_documents WHERE submission_id=? AND"
-                        + " repository_only=FALSE AND document_type<>'SERVICE_REQUEST'",
-                    Integer.class,
-                    subId)
-                > 0;
+    boolean expectsAttachment =
+        op.contains("/with-documents")
+            || "/submissions".equals(op)
+            || op.startsWith("/submissions?")
+            || op.contains("/documents");
+    var uploadedDocs =
+        s.db.queryForList(
+            "SELECT d.id AS doc_id, v.sha256, v.extraction_json, v.created_at AS doc_created_at"
+                + " FROM submission_documents d JOIN document_versions v ON v.document_id=d.id"
+                + " AND v.version=d.current_version WHERE d.submission_id=? AND"
+                + " d.repository_only=FALSE AND d.document_type<>'SERVICE_REQUEST'",
+            subId);
+    Instant reqCreatedAt =
+        row.get("request_created_at") == null ? null : documents.instant(row.get("request_created_at"));
+    boolean followUpOp = op.startsWith("/submissions/");
+    var normalizedHashes =
+        fileHashes == null
+            ? List.<String>of()
+            : fileHashes.stream()
+                .filter(Objects::nonNull)
+                .map(h -> h.trim().toLowerCase(Locale.ROOT))
+                .filter(h -> h.matches("[a-f0-9]{64}"))
+                .toList();
+    int effectiveExpected =
+        normalizedHashes.isEmpty()
+            ? (expectedCount != null && expectedCount > 0 ? expectedCount : 1)
+            : (Boolean.TRUE.equals(combineImages) ? 1 : normalizedHashes.size());
+    boolean hasExpectedDocs;
+    int uploadedDocCount;
+    if (!expectsAttachment) {
+      hasExpectedDocs = true;
+      uploadedDocCount = uploadedDocs.size();
+    } else if (!normalizedHashes.isEmpty()) {
+      var seenHashes = new HashSet<String>();
+      boolean matchedCombined = false;
+      for (var docRow : uploadedDocs) {
+        String docHash = Objects.toString(docRow.get("sha256"), "").toLowerCase(Locale.ROOT);
+        if (!docHash.isBlank()) seenHashes.add(docHash);
+        var ext = s.readMap(Objects.toString(docRow.get("extraction_json"), "{}"));
+        String srcHash = Objects.toString(ext.get("image_source_sha256"), "").toLowerCase(Locale.ROOT);
+        if (!srcHash.isBlank()) seenHashes.add(srcHash);
+        if (Boolean.TRUE.equals(combineImages) && Boolean.TRUE.equals(ext.get("combine_images"))) {
+          int pages =
+              ext.get("conversion_page_count") instanceof Number n
+                  ? n.intValue()
+                  : (ext.get("source_images") instanceof List<?> imgs ? imgs.size() : 0);
+          if (pages == normalizedHashes.size()) matchedCombined = true;
+        }
+      }
+      boolean allHashesPresent = seenHashes.containsAll(normalizedHashes);
+      uploadedDocCount =
+          Boolean.TRUE.equals(combineImages)
+              ? (matchedCombined || allHashesPresent ? 1 : 0)
+              : (int) normalizedHashes.stream().distinct().filter(seenHashes::contains).count();
+      hasExpectedDocs = Boolean.TRUE.equals(combineImages) ? (matchedCombined || allHashesPresent) : allHashesPresent;
+    } else {
+      var matchingDocs =
+          followUpOp && reqCreatedAt != null
+              ? uploadedDocs.stream()
+                  .filter(
+                      d ->
+                          d.get("doc_created_at") == null
+                              || !documents.instant(d.get("doc_created_at")).isBefore(reqCreatedAt))
+                  .toList()
+              : uploadedDocs;
+      uploadedDocCount = matchingDocs.size();
+      hasExpectedDocs = uploadedDocCount >= (Boolean.TRUE.equals(combineImages) ? 1 : effectiveExpected);
+    }
+    boolean complete = !inProgress && hasExpectedDocs;
+    boolean incomplete = !inProgress && expectsAttachment && !hasExpectedDocs;
     return map(
         "found",
         true,
         "inProgress",
         inProgress,
+        "complete",
+        complete,
+        "incomplete",
+        incomplete,
         "submissionId",
         subId,
         "status",
@@ -658,7 +733,11 @@ public class CustomerService {
         "operation",
         op,
         "hasDocuments",
-        hasUploadedDocs,
+        hasExpectedDocs,
+        "uploadedDocumentCount",
+        uploadedDocCount,
+        "expectedDocumentCount",
+        expectsAttachment ? effectiveExpected : 0,
         "pendingVerification",
         documents.hasPendingVerification(subId));
   }

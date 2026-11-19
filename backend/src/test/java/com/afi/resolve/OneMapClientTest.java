@@ -75,10 +75,14 @@ class OneMapClientTest {
     server.expect(requestTo(search540109)).andExpect(header("Authorization", "test-token")).andRespond(withSuccess(rivervale, MediaType.APPLICATION_JSON));
     server.expect(requestTo(search540109)).andExpect(header("Authorization", "test-token")).andRespond(withSuccess(rivervale, MediaType.APPLICATION_JSON));
     server.expect(requestTo(search540109)).andExpect(header("Authorization", "test-token")).andRespond(withSuccess(rivervale, MediaType.APPLICATION_JSON));
+    server.expect(requestTo(search540109)).andExpect(header("Authorization", "test-token")).andRespond(withSuccess(rivervale, MediaType.APPLICATION_JSON));
+    server.expect(requestTo(search540109)).andExpect(header("Authorization", "test-token")).andRespond(withSuccess(rivervale, MediaType.APPLICATION_JSON));
 
     assertThat(client.verifyText("Blk 109 Rivervale Walk, #12-34, S(540109)").status()).isEqualTo("VERIFIED");
     assertThat(client.verifyText("Rivervale Court, 109 Rivervale Walk #12-34 Singapore 540109").status()).isEqualTo("VERIFIED");
+    assertThat(client.verifyText("109 Rivervale Walk 12-34 Singapore 540109").status()).isEqualTo("VERIFIED");
     assertThat(client.verifyText("109 Rivervale Walk 2 #12-34 Singapore 540109").status()).isEqualTo("MISMATCH");
+    assertThat(client.verifyText("109 Rivervale Walk Tower 2 #12-34 Singapore 540109").status()).isEqualTo("INCONCLUSIVE");
     server.verify();
   }
 }

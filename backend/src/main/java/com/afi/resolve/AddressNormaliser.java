@@ -77,10 +77,12 @@ final class AddressNormaliser {
             .replaceAll("\\bS\\s*\\(?\\s*(\\d{6})\\s*\\)?\\b", "SINGAPORE $1")
             .replaceFirst("^BLOCK\\s+|^BLK\\.?\\s+", "")
             .replaceAll("\\b(?:BLOCK|BLK)\\.?\\s+(?=\\d)", "")
-            .replaceAll("\\bUNIT\\s*(?:NO\\.?\\s*)?#?\\s*(?=[A-Z0-9]{1,4}\\s*[-/])", "#")
-            .replaceAll("\\bUNIT\\s*(?:NO\\.?\\s*)?", "")
+            .replaceAll("\\b(?:UNIT|APT|APARTMENT|SUITE|FLAT)\\s*(?:NO\\.?\\s*)?#?\\s*(?=[A-Z0-9]{1,4}\\s*[-/])", "#")
+            .replaceAll("\\b(?:UNIT|APT|APARTMENT|SUITE|FLAT)\\s*(?:NO\\.?\\s*)?", "")
             .replaceAll("#\\s*", "#")
-            .replaceAll("(#[A-Z0-9]+)\\s*[-/]\\s*", "$1-");
+            .replaceAll("(#[A-Z0-9]+)\\s*[-/]\\s*", "$1-")
+            // Support Singapore unit numbers written without '#' after block/street tokens (e.g. "109 Rivervale Walk 12-34").
+            .replaceAll("(?<=[\\s,])(?<!\\bBLK\\s)(?<!\\bBLOCK\\s)(?:NO\\.?\\s+)?((?:B\\d{1,2}|\\d{1,3}))\\s*[-/]\\s*((?:[A-Z]?\\d{1,5}[A-Z]?))(?=[\\s,]|$)", "#$1-$2");
     work = expandAbbreviationsUpper(work);
     work = work.replaceAll("[,.()/]", " ").replaceAll("\\s+", " ").trim();
     work = work.replaceAll("(.*?)\\b(SINGAPORE\\s+\\d{6})\\s+(#\\w+-\\S+)(.*)", "$1 $3 $2 $4");
@@ -151,7 +153,8 @@ final class AddressNormaliser {
       String rawNoPostalUnit =
           rawClean
               .replaceAll("\\b(?:BUILDING\\s*/\\s*ESTATE|BLOCK\\s*/\\s*HOUSE\\s+NO\\.?|BUILDING\\s+NAME|ESTATE\\s+NAME|STREET\\s+NAME|ROAD\\s+NAME|BLOCK\\s+NO\\.?|HOUSE\\s+NO\\.?|POSTAL\\s*CODE|POSTCODE)\\b", " ")
-              .replaceAll("(?:\\bUNIT\\s*(?:NO\\.?\\s*)?)?(?:#|\\bUNIT\\s*(?:NO\\.?\\s*)?)\\s*[A-Z0-9]{1,4}\\s*[-/]\\s*[A-Z0-9]{1,6}", " ")
+              .replaceAll("(?:\\b(?:UNIT|APT|APARTMENT|SUITE|FLAT)\\s*(?:NO\\.?\\s*)?)?(?:#|\\b(?:UNIT|APT|APARTMENT|SUITE|FLAT)\\s*(?:NO\\.?\\s*)?)\\s*[A-Z0-9]{1,4}\\s*[-/]\\s*[A-Z0-9]{1,6}", " ")
+              .replaceAll("(?<=[\\s,])(?<!\\bBLK\\s)(?<!\\bBLOCK\\s)(?:NO\\.?\\s+)?(?:B\\d{1,2}|\\d{1,3})\\s*[-/]\\s*(?:[A-Z]?\\d{1,5}[A-Z]?)(?=[\\s,]|$)", " ")
               .replaceAll("\\bS\\s*\\(\\s*\\d{6}\\s*\\)", " ")
               .replaceAll("\\bS\\s+\\d{6}\\b", " ")
               .replaceAll("\\b(?:SINGAPORE\\s+)?\\d{6}\\b", " ")
@@ -202,12 +205,15 @@ final class AddressNormaliser {
     }
     if (extra.isEmpty() || !endsAtStreetBoundary(shorter)) return false;
     String[] extraTokens = extra.toUpperCase(Locale.ROOT).split(" ");
-    // Numeric suffixes ("2" in "Rivervale Walk 2") or street/directional words ("North", "Way", "Extension")
-    // indicate a distinct street rather than an optional building name.
-    if (extraTokens[0].matches("^\\d+[A-Z]?$")) return false;
-    if (NON_BUILDING_QUALIFIERS.contains(extraTokens[0])) return false;
-    if (extraTokens.length == 1 && NON_BUILDING_QUALIFIERS.contains(extraTokens[0])) return false;
-    return Arrays.stream(extraTokens).anyMatch(tok -> tok.length() >= 2 && tok.matches("^[A-Z]+$"));
+    // Numeric tokens ("2" in "Rivervale Walk 2"), single-letter suffixes, or street/directional
+    // qualifiers anywhere in extra text indicate an unverified or distinct street component.
+    if (extraTokens.length > 6) return false;
+    for (String token : extraTokens) {
+      if (token.length() < 2 || !token.matches("^[A-Z]+$") || NON_BUILDING_QUALIFIERS.contains(token)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private static boolean endsAtStreetBoundary(String streetLower) {

@@ -117,6 +117,13 @@ class ModelExtraction(StrictModel):
     fields: list[ModelEvidenceField] = Field(max_length=30)
     requires_review: bool = Field(description='True only if classification or extraction itself is ambiguous or uncertain. A clearly blank field is a potential completeness issue, not extraction uncertainty. Synthetic signature indicators do not require authenticity judgements.')
     observations: list[Observation] = Field(default_factory=list, max_length=20)
+    uncertain_fields: list[FieldName] = Field(default_factory=list, max_length=30)
+    uncertainty_reasons: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator('uncertainty_reasons')
+    @classmethod
+    def normalise_reasons(cls, values):
+        return [str(v).strip()[:80] for v in values if str(v).strip()]
 
 class Extraction(ModelExtraction):
     fields: list[EvidenceField] = Field(max_length=30)
@@ -124,6 +131,9 @@ class Extraction(ModelExtraction):
     model_document_type: DocumentType | None = None
     quality: Literal['READABLE', 'BLURRY', 'CROPPED', 'INCOMPLETE', 'UNREADABLE'] | None = None
     extraction_issues: list[str] = Field(default_factory=list, max_length=30)
+    extraction_requires_review: bool | None = None
+    classification_uncertain: bool = False
+    assessment_uncertain: bool = False
     method: Literal['GEMINI', 'DETERMINISTIC_FALLBACK', 'HUMAN_REVIEW']
     model: str | None = None
     fallback_reason: str | None = None
@@ -142,6 +152,8 @@ class AssessRequest(StrictModel):
     observations: list[Observation] = Field(default_factory=list, max_length=20)
     notes: str = Field(default='', max_length=3000)
     requires_review: bool = False
+    extraction_requires_review: bool | None = None
+    uncertainty_reasons: list[str] = Field(default_factory=list, max_length=30)
     quality: str | None = Field(default=None, max_length=32)
     extraction_issues: list[str] = Field(default_factory=list, max_length=30)
 
@@ -198,6 +210,88 @@ def is_critical_field(field: str, document_type: str, request_type: str | None =
     if service_key in _SERVICE_CRITICAL_FIELDS:
         return field in _SERVICE_CRITICAL_FIELDS[service_key]
     return True
+
+
+def _mandatory_supporting_missing(
+    doc_type: str, fields: list[EvidenceField], request_type: str | None
+) -> bool:
+    if doc_type != 'SUPPORTING_DOCUMENT' or not request_type:
+        return False
+    service = request_type.strip().upper()
+    present = {f.field for f in fields if getattr(f, 'value', None) and str(f.value).strip()}
+    has_owner = bool(present & _IDENTITY_FIELDS) or 'customer_reference' in present
+    if service in ('ADDRESS_CHANGE', 'RESIDENTIAL_ADDRESS_CHANGE'):
+        return not (
+            has_owner
+            and bool(present & {'mailing_address', 'new_mailing_address', 'residential_address', 'new_residential_address'})
+        )
+    if service == 'TAX_RESIDENCY_UPDATE':
+        return not (has_owner and {'foreign_tax_country', 'tax_identifier'}.issubset(present))
+    return False
+
+
+def _evaluate_extraction_uncertainty(
+    proposed: ModelExtraction,
+    fields: list[EvidenceField],
+    observations: list[Observation],
+    quality: str | None,
+    critical_issues: list[str],
+    optional_issues: list[str],
+    request_type: str | None,
+) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    if quality is not None and quality != 'READABLE':
+        reasons.append('POOR_DOCUMENT_QUALITY')
+    if proposed.document_type == 'UNKNOWN':
+        reasons.append('CLASSIFICATION_UNCERTAIN')
+    if not fields:
+        reasons.append('EMPTY_EXTRACTION')
+    if critical_issues:
+        reasons.append('MANDATORY_EXTRACTION_ISSUE')
+
+    critical_obs = [
+        o for o in observations
+        if o.issue_type in ('UNCERTAIN', 'POTENTIALLY_INCONSISTENT')
+        and is_critical_field(o.field, proposed.document_type, request_type)
+    ]
+    optional_obs = [
+        o for o in observations
+        if o.issue_type in ('UNCERTAIN', 'POTENTIALLY_INCONSISTENT')
+        and not is_critical_field(o.field, proposed.document_type, request_type)
+    ]
+    if critical_obs:
+        reasons.append('CRITICAL_OBSERVATION_UNCERTAIN')
+
+    critical_model_fields = [
+        f for f in proposed.uncertain_fields
+        if is_critical_field(f, proposed.document_type, request_type)
+    ]
+    optional_model_fields = [
+        f for f in proposed.uncertain_fields
+        if not is_critical_field(f, proposed.document_type, request_type)
+    ]
+    if critical_model_fields:
+        reasons.append('CRITICAL_FIELD_UNCERTAIN')
+
+    model_critical_reasons = []
+    for raw in proposed.uncertainty_reasons:
+        code = str(raw).strip().upper()
+        if code and code not in ('OPTIONAL_FIELD_UNCERTAIN', 'OPTIONAL_FIELD_UNVERIFIED'):
+            model_critical_reasons.append(code)
+            if code not in reasons:
+                reasons.append(code)
+
+    model_optional_only = bool(proposed.uncertainty_reasons) and not model_critical_reasons
+    optional_filtered = bool(optional_issues or optional_obs or optional_model_fields or model_optional_only)
+
+    if proposed.requires_review:
+        if _mandatory_supporting_missing(proposed.document_type, fields, request_type):
+            if 'MISSING_MANDATORY_EVIDENCE' not in reasons:
+                reasons.append('MISSING_MANDATORY_EVIDENCE')
+        elif not reasons and not optional_filtered:
+            reasons.append('MODEL_FLAGGED_REVIEW')
+
+    return bool(reasons), reasons
 
 
 class VisualExtraction(ModelExtraction):
@@ -265,7 +359,7 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
                 'On a SUPPORTING_DOCUMENT such as a utility bill or bank statement, map the recipient/billing/premises address to mailing_address unless separate mailing and residential addresses are explicitly contrasted. Do not map a utility Account No. to customer_reference. '
                 'Cite the exact visible label and value on its page. Never infer missing text, dates, identities, consent, signatures or authenticity. '
                 'Use existing/new address fields separately. New Email maps to email, New Mobile to mobile, TIN to tax_identifier. '
-                'Omit unreadable or absent values. Report ambiguity with requires_review=true. '
+                'Omit unreadable or absent values. Report ambiguity with requires_review=true and populate uncertain_fields / uncertainty_reasons (e.g. OPTIONAL_FIELD_UNCERTAIN, CLASSIFICATION_AMBIGUOUS, DOCUMENT_UNREADABLE, UNVERIFIED_CITATION). '
                 'Assess blur, cropping, incomplete pages and unreadable text; quality must describe the worst page. '
                 'Clearly blank fields on an otherwise complete page are missing information, not poor image quality. '
                 'If a group cannot be classified reliably, return UNKNOWN and retain separately grounded fields. No tools, approvals or actions.',
@@ -280,6 +374,7 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
         grouped = {}
         critical_unverified = 0
         critical_issues = []
+        optional_issues = []
         service_key_opt = service_key or None
         for item in proposed.fields:
             try:
@@ -295,6 +390,8 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
                 if is_critical_field(item.field, proposed.document_type, service_key_opt):
                     critical_unverified += 1
                     critical_issues.append(f'unverified:{item.field}')
+                else:
+                    optional_issues.append(f'unverified:{item.field}')
         proposed.fields = []
         for name, items in grouped.items():
             if len({value for _, value in items}) <= 1:
@@ -304,8 +401,16 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
                 for item, _ in items:
                     proposed.observations.append(Observation(field=name, page=item.page,
                         supporting_text=item.supporting_text, issue_type='UNCERTAIN'))
+            else:
+                optional_issues.append(f'conflict:{name}')
         proposed.observations = proposed.observations[:20]
-        fields, observations = normalise(proposed, proposed.pages, request_type=service_key_opt, critical_issues=critical_issues)
+        fields, observations = normalise(
+            proposed,
+            proposed.pages,
+            request_type=service_key_opt,
+            critical_issues=critical_issues,
+            optional_issues=optional_issues,
+        )
         succeeded()
         notes = ('Visual citations were checked against the transcription. Evidence can be reviewed against '
                  'the original. Extraction does not establish authenticity.')
@@ -313,12 +418,21 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
             notes += ' Some of the document could not be read clearly.'
         if critical_unverified:
             notes += f' Omitted {critical_unverified} extraction candidate(s) with unverifiable citations.'
+        extraction_uncertain, uncertainty_reasons = _evaluate_extraction_uncertainty(
+            proposed,
+            fields,
+            observations,
+            proposed.quality,
+            critical_issues,
+            optional_issues,
+            service_key_opt,
+        )
         result = Extraction(document_id=document_id, document_type=proposed.document_type,
             model_document_type=proposed.document_type, quality=proposed.quality,
             extraction_issues=critical_issues,
-            fields=fields, observations=observations, requires_review=(proposed.requires_review or not fields
-                or bool(critical_unverified) or proposed.quality != 'READABLE'
-                or any(item.issue_type == 'UNCERTAIN' for item in observations)), method='GEMINI',
+            extraction_requires_review=extraction_uncertain,
+            uncertainty_reasons=uncertainty_reasons,
+            fields=fields, observations=observations, requires_review=extraction_uncertain, method='GEMINI',
             model=settings.gemini_model,
             notes=notes)
         assessment = _assess_within_budget(
@@ -428,7 +542,13 @@ def source_value(field: str, support: str) -> str | None:
     return None
 
 
-def normalise(proposed: ModelExtraction, pages: list[str], request_type: str | None = None, critical_issues: list[str] | None = None) -> tuple[list[EvidenceField], list[Observation]]:
+def normalise(
+    proposed: ModelExtraction,
+    pages: list[str],
+    request_type: str | None = None,
+    critical_issues: list[str] | None = None,
+    optional_issues: list[str] | None = None,
+) -> tuple[list[EvidenceField], list[Observation]]:
     _normalise_supporting_fields(proposed)
     counts = Counter(item.field for item in proposed.fields)
     fields = []
@@ -440,6 +560,8 @@ def normalise(proposed: ModelExtraction, pages: list[str], request_type: str | N
                 proposed.requires_review = True
                 if critical_issues is not None:
                     critical_issues.append(f'duplicate:{item.field}')
+            elif optional_issues is not None:
+                optional_issues.append(f'duplicate:{item.field}')
             continue
         try:
             verified, missing_fields = normalise_items(
@@ -449,6 +571,8 @@ def normalise(proposed: ModelExtraction, pages: list[str], request_type: str | N
                 proposed.requires_review = True
                 if critical_issues is not None:
                     critical_issues.append(f'unverified:{item.field}')
+            elif optional_issues is not None:
+                optional_issues.append(f'unverified:{item.field}')
             continue
         fields.extend(verified)
         observations.extend(missing_fields)
@@ -575,8 +699,7 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
                 'Return each value as one contiguous verbatim source block, without adding punctuation or labels. Do not append separately labelled postal codes to addresses. Choose email for contact_information when present; do not concatenate email and phone. Return supporting source text containing the label and value, with its exact page. Preserve newlines in citations. '
                 'Omit blank, [BLANK], [NOT COMPLETED], incomplete, missing and not-provided values from fields; cite them as POTENTIALLY_MISSING observations only when that label actually occurs on the PDF. Do not report missing schema fields that are not on this form and never cite a schema label as PDF evidence. '
                 'Do not invent dates, identities, signatures, consent, addresses or policy requirements. A signature indicator does not establish authenticity. '
-                'Clearly missing values are completeness findings, not extraction uncertainty. requires_review is true for ambiguous classification, duplicate/conflicting '
-                'values for the same field, or unreadable evidence. Only approved Spring rules decide violations. No tools or actions.', settings)
+                'Clearly missing values are completeness findings, not extraction uncertainty. requires_review is true for ambiguous classification, duplicate/conflicting values for the same field, or unreadable evidence; populate uncertain_fields and uncertainty_reasons (e.g. OPTIONAL_FIELD_UNCERTAIN, CLASSIFICATION_AMBIGUOUS, CONFLICTING_EVIDENCE). Only approved Spring rules decide violations. No tools or actions.', settings)
         service_key_opt = service_key or None
         _normalise_supporting_fields(proposed)
         # Deduplicate consistent values repeated across distinct pages of multi-page PDFs.
@@ -603,19 +726,36 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
             deduped.extend(items)
         proposed.fields = deduped
         critical_issues = []
-        fields, observations = normalise(proposed, pages, request_type=service_key_opt, critical_issues=critical_issues)
+        optional_issues = []
+        fields, observations = normalise(
+            proposed,
+            pages,
+            request_type=service_key_opt,
+            critical_issues=critical_issues,
+            optional_issues=optional_issues,
+        )
         succeeded()
         logger.info('PDF extraction verified document_id=%s method=GEMINI type=%s fields=%d observations=%d',
                     request.document_id, proposed.document_type, len(fields), len(observations))
         notes = 'Live Gemini extraction with normalised fields and independently grounded page citations. Approved Spring rules determine validity.'
         if critical_issues:
             notes += f' Omitted {len(critical_issues)} extraction candidate(s) with unverified citations or conflicts.'
+        extraction_uncertain, uncertainty_reasons = _evaluate_extraction_uncertainty(
+            proposed,
+            fields,
+            observations,
+            'READABLE',
+            critical_issues,
+            optional_issues,
+            service_key_opt,
+        )
         result = Extraction(document_id=request.document_id, document_type=proposed.document_type,
             model_document_type=proposed.document_type, quality='READABLE',
             extraction_issues=critical_issues,
+            extraction_requires_review=extraction_uncertain,
+            uncertainty_reasons=uncertainty_reasons,
             fields=fields, observations=observations,
-            requires_review=(proposed.requires_review or not fields
-                or any(item.issue_type == 'UNCERTAIN' for item in observations)),
+            requires_review=extraction_uncertain,
             method='GEMINI', model=settings.gemini_model,
             notes=notes)
         assessment = _assess_within_budget([(raw, 'application/pdf')], settings, overall_deadline, request.request_type, request.context)
@@ -654,10 +794,16 @@ def assess_document(request: AssessRequest, settings: Settings) -> dict:
     proxy = SimpleNamespace(
         document_type=request.document_type,
         model_document_type=request.document_type,
-        fields=[SimpleNamespace(field=name) for name in request.fields],
+        fields=[SimpleNamespace(field=name, value='EXTRACTED') for name in request.fields],
         observations=request.observations,
         notes=request.notes,
-        requires_review=request.requires_review,
+        requires_review=(
+            request.extraction_requires_review
+            if request.extraction_requires_review is not None
+            else request.requires_review
+        ),
+        extraction_requires_review=request.extraction_requires_review,
+        uncertainty_reasons=list(request.uncertainty_reasons),
         quality=request.quality,
         extraction_issues=request.extraction_issues,
     )
@@ -666,5 +812,9 @@ def assess_document(request: AssessRequest, settings: Settings) -> dict:
         'document_id': request.document_id,
         'document_type': reconciled.document_type,
         'requires_review': bool(reconciled.requires_review),
+        'extraction_requires_review': bool(getattr(reconciled, 'extraction_requires_review', False)),
+        'classification_uncertain': bool(getattr(reconciled, 'classification_uncertain', False)),
+        'assessment_uncertain': bool(getattr(reconciled, 'assessment_uncertain', False)),
+        'uncertainty_reasons': list(getattr(reconciled, 'uncertainty_reasons', [])),
         'decision': reconciled.decision,
     }

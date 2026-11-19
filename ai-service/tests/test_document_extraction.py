@@ -334,3 +334,79 @@ def test_assess_endpoint_refreshes_decision_without_rerunning_extraction(client,
     assert body['decision']['answers']['request_corroboration']['choice'] == 'consistent'
     assert body['decision']['gating_min_confidence'] == 0.95
     assert body['decision']['advisory_min_confidence'] == 0.91
+
+
+def test_optional_field_flag_with_model_requires_review_true_does_not_escalate(monkeypatch):
+    page = 'Utility Bill\nAccount Holder: Alex Tan\nBilling Address: 109 Rivervale Walk Singapore 540109'
+    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(
+        is_encrypted=False, trailer={'/Root': {}}, pages=[TextPage(page)]))
+    monkeypatch.setattr(d, 'generate', lambda *args: d.ModelExtraction(
+        document_type='SUPPORTING_DOCUMENT',
+        requires_review=True,
+        uncertain_fields=['contact_information'],
+        uncertainty_reasons=['OPTIONAL_FIELD_UNCERTAIN'],
+        fields=[
+            d.ModelEvidenceField(field='customer_name', value='Alex Tan', page=1, supporting_text='Account Holder: Alex Tan'),
+            d.ModelEvidenceField(field='mailing_address', value='109 Rivervale Walk Singapore 540109', page=1, supporting_text='Billing Address: 109 Rivervale Walk Singapore 540109'),
+            d.ModelEvidenceField(field='contact_information', value='1800-000-0000', page=1, supporting_text='Hotline: 1800-000-0000'),
+        ]))
+    monkeypatch.setattr(d.document_decisions, 'assess', lambda *args: {
+        'model': 'gemini-decision-1', 'outcome': 'ASSESSED', 'request_type': 'ADDRESS_CHANGE',
+        'answers': {
+            'classification': {'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.95, 'probabilities': {'SUPPORTING_DOCUMENT': 0.95}},
+            'readable': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+            'review_route': {'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.95, 'probabilities': {'continue_checks': 0.95}},
+            'consistency': {'type': 'score', 'confidence': 0.95, 'score': 2.0, 'probabilities': {'0': 0.01, '1': 0.04, '2': 0.95}},
+            'service_relevance': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+        },
+    })
+    res = d.extract(d.ExtractRequest(
+        document_id='bill-opt', pdf_base64=base64.b64encode(b'%PDF-bill').decode(), request_type='ADDRESS_CHANGE',
+    ), Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
+    assert not res.extraction_requires_review
+    assert not res.requires_review
+    assert res.uncertainty_reasons == []
+
+
+def test_assess_endpoint_preserves_extraction_uncertainty_and_clears_contextual(client, headers, monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test')
+    monkeypatch.setattr(d.document_decisions, 'assess', lambda media, settings, req_type, ctx: {
+        'model': 'gemini-decision-1', 'outcome': 'ASSESSED', 'request_type': req_type,
+        'answers': {
+            'classification': {'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.96, 'probabilities': {'SUPPORTING_DOCUMENT': 0.96}},
+            'readable': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+            'review_route': {'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.95, 'probabilities': {'continue_checks': 0.95}},
+            'consistency': {'type': 'score', 'confidence': 0.95, 'score': 2.0, 'probabilities': {'0': 0.01, '1': 0.04, '2': 0.95}},
+            'service_relevance': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+        },
+    })
+    res_clear = client.post('/documents/assess', headers=headers, json={
+        'document_id': 'doc-clear',
+        'document_type': 'SUPPORTING_DOCUMENT',
+        'pdf_base64': base64.b64encode(b'%PDF-1.4 test').decode(),
+        'request_type': 'ADDRESS_CHANGE',
+        'fields': ['customer_name', 'mailing_address'],
+        'requires_review': False,
+        'extraction_requires_review': False,
+    })
+    assert res_clear.status_code == 200
+    assert res_clear.json()['requires_review'] is False
+    assert res_clear.json()['extraction_requires_review'] is False
+
+    res_keep = client.post('/documents/assess', headers=headers, json={
+        'document_id': 'doc-keep',
+        'document_type': 'SUPPORTING_DOCUMENT',
+        'pdf_base64': base64.b64encode(b'%PDF-1.4 test').decode(),
+        'request_type': 'ADDRESS_CHANGE',
+        'fields': ['customer_name', 'mailing_address'],
+        'requires_review': True,
+        'extraction_requires_review': True,
+        'uncertainty_reasons': ['POOR_DOCUMENT_QUALITY'],
+        'quality': 'BLURRY',
+    })
+    assert res_keep.status_code == 200
+    body = res_keep.json()
+    assert body['decision']['outcome'] == 'PASSED'
+    assert body['extraction_requires_review'] is True
+    assert body['requires_review'] is True
+    assert 'POOR_DOCUMENT_QUALITY' in body['uncertainty_reasons']

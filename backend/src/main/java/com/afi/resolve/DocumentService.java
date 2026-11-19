@@ -1252,6 +1252,62 @@ public class DocumentService {
     return CustomerSessions.hash(s.json(new TreeMap<>(context)));
   }
 
+  private static final ThreadLocal<List<String>> assessUncertaintyReasons = new ThreadLocal<>();
+
+  @SuppressWarnings("unchecked")
+  private static boolean hasIntrinsicExtractionMarkers(Map<String, Object> extraction) {
+    String quality = Objects.toString(extraction.get("quality"), "");
+    if (!quality.isBlank() && !"READABLE".equals(quality)) return true;
+    if (extraction.get("extraction_issues") instanceof List<?> issues && !issues.isEmpty()) return true;
+    if (extraction.get("fields") instanceof List<?> fields && fields.isEmpty()
+        && "GEMINI".equals(extraction.get("method"))) return true;
+    if (extraction.get("observations") instanceof List<?> obs) {
+      for (var item : obs) {
+        if (item instanceof Map<?, ?> m) {
+          String issue = Objects.toString(m.get("issue_type"), "");
+          if ("UNCERTAIN".equals(issue) || "POTENTIALLY_INCONSISTENT".equals(issue)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  private static boolean intrinsicExtractionUncertain(Map<String, Object> extraction) {
+    if (extraction.get("extraction_requires_review") instanceof Boolean explicit) {
+      return explicit || hasIntrinsicExtractionMarkers(extraction);
+    }
+    if (hasIntrinsicExtractionMarkers(extraction)) return true;
+    if (extraction.get("decision") instanceof Map<?, ?> dec) {
+      String outcome = Objects.toString(dec.get("outcome"), "");
+      if ("PASSED".equals(outcome)) {
+        return Boolean.TRUE.equals(extraction.get("requires_review"));
+      }
+      return false;
+    }
+    return Boolean.TRUE.equals(extraction.get("requires_review"));
+  }
+
+  @SuppressWarnings("unchecked")
+  private static List<String> intrinsicUncertaintyReasons(Map<String, Object> extraction) {
+    var result = new ArrayList<String>();
+    if (extraction.get("uncertainty_reasons") instanceof List<?> raw) {
+      for (var item : raw) {
+        String code = Objects.toString(item, "").trim();
+        if (code.isBlank()
+            || "IDENTITY_CONTRADICTION".equals(code)
+            || "CLASSIFICATION_UNCERTAIN".equals(code)
+            || "DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT".equals(code)) {
+          continue;
+        }
+        if (!result.contains(code)) result.add(code);
+      }
+    }
+    if (hasIntrinsicExtractionMarkers(extraction) && result.isEmpty()) {
+      result.add("MANDATORY_EXTRACTION_ISSUE");
+    }
+    return result;
+  }
+
   JsonNode assessDecision(
       byte[] bytes,
       String documentId,
@@ -1281,6 +1337,9 @@ public class DocumentService {
       if (observations != null) payload.put("observations", observations);
       if (notes != null) payload.put("notes", notes);
       payload.put("requires_review", requiresReview);
+      payload.put("extraction_requires_review", requiresReview);
+      var reasons = assessUncertaintyReasons.get();
+      if (reasons != null && !reasons.isEmpty()) payload.put("uncertainty_reasons", reasons);
       if (quality != null && !quality.isBlank()) payload.put("quality", quality);
       if (extractionIssues != null) payload.put("extraction_issues", extractionIssues);
       String body =
@@ -1354,18 +1413,29 @@ public class DocumentService {
                   422, "EXTRACTION_FAILED", "Extracted page references exceed the converted PDF page count");
         }
       }
-      if ((item.combineImages() || item.fromImages())
-          && !"PASSED".equals(extracted.path("decision").path("outcome").asText())) {
-        metadata.put("requires_review", true);
-      }
       String effectiveType = prePolicyType;
       if ("DIGITAL_EFORM".equals(captureMethod) && !"SUPPORTING_DOCUMENT".equals(prePolicyType)) {
         effectiveType = "UNKNOWN";
         metadata.put("classification_overridden_reason", "DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT");
-        metadata.put("requires_review", true);
       }
       metadata.put("document_type", effectiveType);
       metadata.put("effective_document_type", effectiveType);
+      String decisionOutcome = extracted.path("decision").path("outcome").asText("");
+      boolean extUncertain =
+          extracted.has("extraction_requires_review")
+              ? extracted.path("extraction_requires_review").asBoolean(false)
+              : intrinsicExtractionUncertain(s.readMap(metadata.toString()));
+      boolean classUncertain =
+          "UNKNOWN".equals(effectiveType) || extracted.path("classification_uncertain").asBoolean(false);
+      boolean assessUncertain =
+          (!decisionOutcome.isBlank() && !"PASSED".equals(decisionOutcome))
+              || extracted.path("assessment_uncertain").asBoolean(false);
+      boolean effectiveReview =
+          extUncertain || classUncertain || assessUncertain || extracted.path("requires_review").asBoolean(false);
+      metadata.put("extraction_requires_review", extUncertain);
+      metadata.put("classification_uncertain", classUncertain);
+      metadata.put("assessment_uncertain", assessUncertain);
+      metadata.put("requires_review", effectiveReview);
       String nextType = effectiveType;
       if (item.replacement()) {
         String previousType = Objects.toString(item.previousDocType(), "UNKNOWN");
@@ -1458,6 +1528,18 @@ public class DocumentService {
                         "sourcePageCount",
                         item.fromImages() ? item.sourcePageCount() : 0);
                 var decisionNode = metadata.path("decision");
+                if (decisionNode.has("gating_pass_probability")
+                    && decisionNode.get("gating_pass_probability").isNumber()) {
+                  auditDetails.put(
+                      "decisionGatingPassProbability",
+                      decisionNode.get("gating_pass_probability").asDouble());
+                }
+                if (decisionNode.has("model_min_confidence")
+                    && decisionNode.get("model_min_confidence").isNumber()) {
+                  auditDetails.put(
+                      "decisionModelMinConfidence",
+                      decisionNode.get("model_min_confidence").asDouble());
+                }
                 if (decisionNode.has("gating_min_confidence") && decisionNode.get("gating_min_confidence").isNumber()) {
                   auditDetails.put("decisionGatingMinConfidence", decisionNode.get("gating_min_confidence").asDouble());
                 }
@@ -2531,10 +2613,13 @@ public class DocumentService {
                 var extraction = s.readMap(Objects.toString(doc.get("extraction_json"), "{}"));
                 if (!"GEMINI".equals(extraction.get("method"))
                     || Boolean.TRUE.equals(extraction.get("pending_verification"))) continue;
-                if (!(extraction.get("decision") instanceof Map<?, ?> dec)
-                    || "UNAVAILABLE".equals(dec.get("outcome"))) continue;
+                if (!(extraction.get("decision") instanceof Map<?, ?> dec)) continue;
                 String storedFp = Objects.toString(dec.get("context_fingerprint"), "");
-                if (fp.equals(storedFp) && !Boolean.TRUE.equals(dec.get("stale"))) continue;
+                boolean needsRetry =
+                    Boolean.TRUE.equals(dec.get("stale"))
+                        || Boolean.TRUE.equals(dec.get("unavailable"))
+                        || "UNAVAILABLE".equals(dec.get("outcome"));
+                if (fp.equals(storedFp) && !needsRetry) continue;
                 String storageKey = Objects.toString(extraction.get("storage_key"), "");
                 if (storageKey.isBlank()) continue;
                 var row = new LinkedHashMap<>(doc);
@@ -2563,38 +2648,56 @@ public class DocumentService {
       int version = ((Number) doc.get("current_version")).intValue();
       String storageKey = (String) doc.get("storageKey");
       var extraction = (Map<String, Object>) doc.get("extraction");
-      byte[] bytes;
+      boolean intrinsicUncertain = intrinsicExtractionUncertain(extraction);
+      List<String> intrinsicReasons = intrinsicUncertaintyReasons(extraction);
+      byte[] bytes = null;
+      boolean readFailed = false;
       try {
         bytes = storage.read(storageKey);
       } catch (Exception readError) {
-        continue;
+        readFailed = true;
       }
-      var fieldNames =
-          s.db.queryForList(
-              "SELECT field_name FROM extracted_fields WHERE version_id=?",
-              String.class,
-              versionId);
+      JsonNode assessed = null;
+      if (!readFailed && bytes != null) {
+        var fieldNames =
+            s.db.queryForList(
+                "SELECT field_name FROM extracted_fields WHERE version_id=?",
+                String.class,
+                versionId);
+        String modelDocType =
+            Objects.toString(
+                extraction.get("model_document_type"),
+                Objects.toString(doc.get("document_type"), "UNKNOWN"));
+        assessUncertaintyReasons.set(intrinsicReasons);
+        try {
+          assessed =
+              assessDecision(
+                  bytes,
+                  docId,
+                  modelDocType,
+                  fieldNames,
+                  extraction.get("observations"),
+                  Objects.toString(extraction.get("notes"), ""),
+                  intrinsicUncertain,
+                  Objects.toString(extraction.get("quality"), ""),
+                  extraction.get("extraction_issues"),
+                  ctx);
+        } finally {
+          assessUncertaintyReasons.remove();
+        }
+      }
+      final boolean sourceReadFailed = readFailed;
+      final JsonNode finalAssessed = assessed;
       String modelDocType =
           Objects.toString(
               extraction.get("model_document_type"),
               Objects.toString(doc.get("document_type"), "UNKNOWN"));
-      JsonNode assessed =
-          assessDecision(
-              bytes,
-              docId,
-              modelDocType,
-              fieldNames,
-              extraction.get("observations"),
-              Objects.toString(extraction.get("notes"), ""),
-              Boolean.TRUE.equals(extraction.get("requires_review")),
-              Objects.toString(extraction.get("quality"), ""),
-              extraction.get("extraction_issues"),
-              ctx);
       s.inTxVoid(
           () -> {
             var currentCase = access(id, a, true);
             if ("OPERATIONS".equals(currentCase.get("status"))
                 || "CANCELLED".equals(currentCase.get("status"))) return;
+            if (((Number) currentCase.get("revision")).intValue() != revision) return;
             var docRows =
                 s.db.queryForList(
                     "SELECT current_version,document_type FROM submission_documents WHERE id=? AND"
@@ -2606,8 +2709,11 @@ public class DocumentService {
               return;
             var verRows =
                 s.db.queryForList(
-                    "SELECT extraction_json FROM document_versions WHERE id=? FOR UPDATE",
-                    versionId);
+                    "SELECT id,extraction_json FROM document_versions WHERE id=? AND document_id=?"
+                        + " AND version=? FOR UPDATE",
+                    versionId,
+                    docId,
+                    version);
             if (verRows.isEmpty()) return;
             com.fasterxml.jackson.databind.node.ObjectNode root;
             try {
@@ -2618,16 +2724,18 @@ public class DocumentService {
             } catch (com.fasterxml.jackson.core.JsonProcessingException ex) {
               throw new IllegalStateException("Invalid extraction JSON", ex);
             }
-            if (assessed != null
-                && assessed.has("decision")
-                && !"UNAVAILABLE".equals(assessed.path("decision").path("outcome").asText(""))) {
+            if (finalAssessed != null
+                && finalAssessed.has("decision")
+                && !"UNAVAILABLE".equals(finalAssessed.path("decision").path("outcome").asText(""))) {
               var newDecision =
-                  (com.fasterxml.jackson.databind.node.ObjectNode) assessed.get("decision").deepCopy();
+                  (com.fasterxml.jackson.databind.node.ObjectNode)
+                      finalAssessed.get("decision").deepCopy();
               newDecision.put("context_revision", revision);
               newDecision.put("context_fingerprint", fp);
               newDecision.put("stale", false);
+              newDecision.put("unavailable", false);
               root.set("decision", newDecision);
-              String assessedType = assessed.path("document_type").asText(modelDocType);
+              String assessedType = finalAssessed.path("document_type").asText(modelDocType);
               String effectiveType =
                   "DIGITAL_EFORM".equals(captureMethod) && !"SUPPORTING_DOCUMENT".equals(assessedType)
                       ? "UNKNOWN"
@@ -2635,8 +2743,33 @@ public class DocumentService {
               root.put("model_document_type", modelDocType);
               root.put("document_type", effectiveType);
               root.put("effective_document_type", effectiveType);
-              if (assessed.path("requires_review").asBoolean(false) || "UNKNOWN".equals(effectiveType)) {
-                root.put("requires_review", true);
+              if ("UNKNOWN".equals(effectiveType) && !"UNKNOWN".equals(assessedType)) {
+                root.put("classification_overridden_reason", "DIGITAL_EFORM_REQUIRES_SUPPORTING_DOCUMENT");
+              } else {
+                root.remove("classification_overridden_reason");
+              }
+              boolean extUncertain =
+                  intrinsicUncertain
+                      || finalAssessed.path("extraction_requires_review").asBoolean(false);
+              boolean classUncertain =
+                  "UNKNOWN".equals(effectiveType)
+                      || "UNKNOWN".equals(assessedType)
+                      || finalAssessed.path("classification_uncertain").asBoolean(false);
+              String outcome = newDecision.path("outcome").asText("PASSED");
+              boolean assessUncertain =
+                  !"PASSED".equals(outcome)
+                      || finalAssessed.path("assessment_uncertain").asBoolean(false);
+              boolean effectiveRequiresReview =
+                  extUncertain
+                      || classUncertain
+                      || assessUncertain
+                      || finalAssessed.path("requires_review").asBoolean(false);
+              root.put("extraction_requires_review", extUncertain);
+              root.put("classification_uncertain", classUncertain);
+              root.put("assessment_uncertain", assessUncertain);
+              root.put("requires_review", effectiveRequiresReview);
+              if (finalAssessed.has("uncertainty_reasons") && finalAssessed.get("uncertainty_reasons").isArray()) {
+                root.set("uncertainty_reasons", finalAssessed.get("uncertainty_reasons").deepCopy());
               }
               s.db.update(
                   "UPDATE submission_documents SET document_type=? WHERE id=? AND current_version=?",
@@ -2656,7 +2789,21 @@ public class DocumentService {
                       "revision",
                       revision,
                       "decisionOutcome",
-                      newDecision.path("outcome").asText(""));
+                      newDecision.path("outcome").asText(""),
+                      "requiresReview",
+                      effectiveRequiresReview);
+              if (newDecision.has("gating_pass_probability")
+                  && newDecision.get("gating_pass_probability").isNumber()) {
+                auditMap.put(
+                    "decisionGatingPassProbability",
+                    newDecision.get("gating_pass_probability").asDouble());
+              }
+              if (newDecision.has("model_min_confidence")
+                  && newDecision.get("model_min_confidence").isNumber()) {
+                auditMap.put(
+                    "decisionModelMinConfidence",
+                    newDecision.get("model_min_confidence").asDouble());
+              }
               if (newDecision.has("min_confidence") && newDecision.get("min_confidence").isNumber()) {
                 auditMap.put("decisionMinConfidence", newDecision.get("min_confidence").asDouble());
               }
@@ -2668,13 +2815,23 @@ public class DocumentService {
               }
               event(id, a, "DECISION_REFRESHED", auditMap);
             } else if (root.get("decision") instanceof com.fasterxml.jackson.databind.node.ObjectNode oldDecision) {
+              String prevOutcome = oldDecision.path("outcome").asText("");
+              if (!prevOutcome.isBlank() && !"UNAVAILABLE".equals(prevOutcome)) {
+                oldDecision.put("previous_outcome", prevOutcome);
+              }
+              oldDecision.put("outcome", "UNAVAILABLE");
               oldDecision.put("stale", true);
+              oldDecision.put("unavailable", true);
               oldDecision.put("stale_for_revision", revision);
               oldDecision.put(
                   "stale_reason",
-                  ai == null || ai.client == null
-                      ? "ASSESSMENT_NOT_CONFIGURED"
-                      : "PROVIDER_UNAVAILABLE");
+                  sourceReadFailed
+                      ? "SOURCE_UNAVAILABLE"
+                      : (ai == null || ai.client == null
+                          ? "ASSESSMENT_NOT_CONFIGURED"
+                          : "PROVIDER_UNAVAILABLE"));
+              root.put("assessment_uncertain", true);
+              root.put("requires_review", true);
               s.db.update(
                   "UPDATE document_versions SET extraction_json=? WHERE id=?",
                   root.toString(),

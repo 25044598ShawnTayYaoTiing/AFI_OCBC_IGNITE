@@ -1024,4 +1024,435 @@ class StageTwoReliabilityTest {
       customerService.flightLockTimeout = prevTimeout;
     }
   }
+
+  @Test
+  void postStageThreePatchRegressionSuite() throws Exception {
+    // 1. Address normalisation: unprefixed unit matching and canonical OneMap priority over unverified buildings
+    var policy = new BankingServicePolicy(documents, s);
+    var rivervaleCandidate =
+        new OneMapClient.Candidate(
+            "cand-rv",
+            "109",
+            "RIVERVALE WALK",
+            "RIVERVALE COURT",
+            "109 RIVERVALE WALK RIVERVALE COURT SINGAPORE 540109",
+            "540109",
+            1.3821,
+            103.9012,
+            "ONEMAP_LIVE");
+    assertThat(
+            policy.compareAddress(
+                "109 Rivervale Walk 12-34 Singapore 540109",
+                "540109",
+                "109 Rivervale Walk #12-34 S(540109)",
+                "540109",
+                List.of(rivervaleCandidate)))
+        .containsEntry("matched", "true");
+    assertThat(
+            policy.compareAddress(
+                "109 Rivervale Walk, Fake Plaza, #12-34, Singapore 540109",
+                "540109",
+                "109 Rivervale Walk #12-34 Singapore 540109",
+                "540109",
+                List.of(rivervaleCandidate)))
+        .containsEntry("matched", "false");
+    assertThat(
+            policy.compareAddress(
+                "109 Rivervale Walk Tower 2 #12-34 Singapore 540109",
+                "540109",
+                "109 Rivervale Walk #12-34 Singapore 540109",
+                "540109",
+                List.of()))
+        .containsEntry("matched", "false");
+
+    // 2a. Contextual refresh clears previously resolved contextual uncertainty
+    doAnswer(
+            call -> {
+              var n =
+                  extractedNode(
+                      (String) call.getArgument(1),
+                      "SUPPORTING_DOCUMENT",
+                      true,
+                      map(
+                          "customer_name", "Alex Tan",
+                          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+              n.put("method", "GEMINI");
+              n.put("extraction_requires_review", false);
+              n.put("classification_uncertain", false);
+              n.put("assessment_uncertain", true);
+              var dec = n.putObject("decision");
+              dec.put("model", "gemini-decision-1");
+              dec.put("outcome", "UNCERTAIN");
+              dec.put("gating_pass_probability", 0.72);
+              dec.put("gating_min_confidence", 0.72);
+              dec.put("model_min_confidence", 0.91);
+              dec.put("min_confidence", 0.72);
+              dec.put("confidence_band", "MEDIUM");
+              dec.putObject("answers")
+                  .putObject("request_corroboration")
+                  .put("choice", "address_differs")
+                  .put("confidence", 0.89);
+              return n;
+            })
+        .when(documents)
+        .extraction(any(byte[].class), anyString());
+
+    doAnswer(
+            call -> {
+              var resp = s.json.createObjectNode();
+              resp.put("document_id", (String) call.getArgument(1));
+              resp.put("document_type", "SUPPORTING_DOCUMENT");
+              resp.put("requires_review", false);
+              resp.put("extraction_requires_review", false);
+              resp.put("classification_uncertain", false);
+              resp.put("assessment_uncertain", false);
+              var dec = resp.putObject("decision");
+              dec.put("model", "gemini-decision-1");
+              dec.put("outcome", "PASSED");
+              dec.put("gating_pass_probability", 0.94);
+              dec.put("gating_min_confidence", 0.94);
+              dec.put("model_min_confidence", 0.94);
+              dec.put("min_confidence", 0.94);
+              dec.put("confidence_band", "HIGH");
+              dec.putObject("answers")
+                  .putObject("request_corroboration")
+                  .put("choice", "consistent")
+                  .put("confidence", 0.96);
+              return resp;
+            })
+        .when(documents)
+        .assessDecision(any(), anyString(), anyString(), any(), any(), any(), anyBoolean(), any(), any(), any());
+
+    var clearCase =
+        json(
+            mvc.perform(
+                    multipart("/api/customer/eforms/with-documents")
+                        .file(
+                            new MockMultipartFile(
+                                "form",
+                                "form.json",
+                                "application/json",
+                                s.json(addressForm("298B Sengkang East Way, #99-99", "543298"))
+                                    .getBytes(StandardCharsets.UTF_8)))
+                        .file(
+                            new MockMultipartFile(
+                                "files",
+                                "bill-clear-ctx.pdf",
+                                "application/pdf",
+                                "%PDF-CLEAR-CTX".getBytes(StandardCharsets.US_ASCII)))
+                        .header("Authorization", "Bearer " + token)
+                        .header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(status().isOk())
+                .andReturn());
+    String clearId = clearCase.path("submission").path("id").asText();
+    int clearRev = clearCase.path("submission").path("revision").asInt();
+
+    var fixClear = addressForm("298B Sengkang East Way, #12-34", "543298");
+    fixClear.put("expectedRevision", clearRev);
+    var cleared =
+        json(
+            mvc.perform(
+                    post("/api/customer/submissions/" + clearId + "/eform")
+                        .header("Authorization", "Bearer " + token)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content(s.json(fixClear)))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(cleared.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    var rmCleared =
+        json(
+            mvc.perform(
+                    get("/api/documents/submissions/" + clearId)
+                        .with(httpBasic("reviewer", "reviewer-demo")))
+                .andExpect(status().isOk())
+                .andReturn());
+    var clearedDoc = findUploadedDoc(rmCleared.path("documents"));
+    assertThat(clearedDoc.path("extraction").path("requires_review").asBoolean()).isFalse();
+    assertThat(clearedDoc.path("extraction").path("assessment_uncertain").asBoolean()).isFalse();
+
+    // 2b. Genuine extraction uncertainty is preserved even when contextual assessment passes
+    doAnswer(
+            call -> {
+              var n =
+                  extractedNode(
+                      (String) call.getArgument(1),
+                      "SUPPORTING_DOCUMENT",
+                      true,
+                      map(
+                          "customer_name", "Alex Tan",
+                          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+              n.put("method", "GEMINI");
+              n.put("quality", "BLURRY");
+              n.put("extraction_requires_review", true);
+              n.put("classification_uncertain", false);
+              n.put("assessment_uncertain", false);
+              n.putArray("uncertainty_reasons").add("POOR_DOCUMENT_QUALITY");
+              var dec = n.putObject("decision");
+              dec.put("model", "gemini-decision-1");
+              dec.put("outcome", "PASSED");
+              dec.put("gating_pass_probability", 0.92);
+              dec.put("min_confidence", 0.92);
+              return n;
+            })
+        .when(documents)
+        .extraction(any(byte[].class), anyString());
+
+    var extUncertainCase =
+        json(
+            mvc.perform(
+                    multipart("/api/customer/eforms/with-documents")
+                        .file(
+                            new MockMultipartFile(
+                                "form",
+                                "form.json",
+                                "application/json",
+                                s.json(addressForm("298B Sengkang East Way, #88-88", "543298"))
+                                    .getBytes(StandardCharsets.UTF_8)))
+                        .file(
+                            new MockMultipartFile(
+                                "files",
+                                "bill-blurry.pdf",
+                                "application/pdf",
+                                "%PDF-BLURRY".getBytes(StandardCharsets.US_ASCII)))
+                        .header("Authorization", "Bearer " + token)
+                        .header("Idempotency-Key", UUID.randomUUID().toString()))
+                .andExpect(status().isOk())
+                .andReturn());
+    String extUncId = extUncertainCase.path("submission").path("id").asText();
+    int extUncRev = extUncertainCase.path("submission").path("revision").asInt();
+
+    var fixExtUnc = addressForm("298B Sengkang East Way, #12-34", "543298");
+    fixExtUnc.put("expectedRevision", extUncRev);
+    mvc.perform(
+            post("/api/customer/submissions/" + extUncId + "/eform")
+                .header("Authorization", "Bearer " + token)
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(s.json(fixExtUnc)))
+        .andExpect(status().isOk());
+    var rmExtUnc =
+        json(
+            mvc.perform(
+                    get("/api/documents/submissions/" + extUncId)
+                        .with(httpBasic("reviewer", "reviewer-demo")))
+                .andExpect(status().isOk())
+                .andReturn());
+    var preservedDoc = findUploadedDoc(rmExtUnc.path("documents"));
+    assertThat(preservedDoc.path("extraction").path("extraction_requires_review").asBoolean())
+        .isTrue();
+    assertThat(preservedDoc.path("extraction").path("requires_review").asBoolean()).isTrue();
+
+    // 2c & 2d. Unavailable marking on failed reassessment + concurrent revision abort check
+    doAnswer(
+            call -> {
+              var n =
+                  extractedNode(
+                      (String) call.getArgument(1),
+                      "SUPPORTING_DOCUMENT",
+                      false,
+                      map(
+                          "customer_name", "Alex Tan",
+                          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+              n.put("method", "GEMINI");
+              n.put("extraction_requires_review", false);
+              var dec = n.putObject("decision");
+              dec.put("model", "gemini-decision-1");
+              dec.put("outcome", "PASSED");
+              dec.put("gating_pass_probability", 0.93);
+              dec.put("min_confidence", 0.93);
+              return n;
+            })
+        .when(documents)
+        .extraction(any(byte[].class), anyString());
+
+    byte[] statusPdfBytes = "%PDF-UNAVAIL-AND-STATUS".getBytes(StandardCharsets.US_ASCII);
+    String statusKey = UUID.randomUUID().toString();
+    var unavailInit =
+        json(
+            mvc.perform(
+                    multipart("/api/customer/eforms/with-documents")
+                        .file(
+                            new MockMultipartFile(
+                                "form",
+                                "form.json",
+                                "application/json",
+                                s.json(addressForm("298B Sengkang East Way, #77-77", "543298"))
+                                    .getBytes(StandardCharsets.UTF_8)))
+                        .file(
+                            new MockMultipartFile(
+                                "files", "bill-unavail.pdf", "application/pdf", statusPdfBytes))
+                        .header("Authorization", "Bearer " + token)
+                        .header("Idempotency-Key", statusKey))
+                .andExpect(status().isOk())
+                .andReturn());
+    String unavailId = unavailInit.path("submission").path("id").asText();
+    int unavailRev = unavailInit.path("submission").path("revision").asInt();
+
+    doAnswer(call -> null)
+        .when(documents)
+        .assessDecision(any(), anyString(), anyString(), any(), any(), any(), anyBoolean(), any(), any(), any());
+    var fixUnavail = addressForm("298B Sengkang East Way, #12-34", "543298");
+    fixUnavail.put("expectedRevision", unavailRev);
+    mvc.perform(
+            post("/api/customer/submissions/" + unavailId + "/eform")
+                .header("Authorization", "Bearer " + token)
+                .header("Idempotency-Key", UUID.randomUUID().toString())
+                .contentType("application/json")
+                .content(s.json(fixUnavail)))
+        .andExpect(status().isOk());
+    var rmUnavail =
+        json(
+            mvc.perform(
+                    get("/api/documents/submissions/" + unavailId)
+                        .with(httpBasic("reviewer", "reviewer-demo")))
+                .andExpect(status().isOk())
+                .andReturn());
+    var unavailDoc = findUploadedDoc(rmUnavail.path("documents"));
+    assertThat(unavailDoc.path("extraction").path("decision").path("outcome").asText())
+        .isEqualTo("UNAVAILABLE");
+    assertThat(unavailDoc.path("extraction").path("decision").path("unavailable").asBoolean())
+        .isTrue();
+    assertThat(unavailDoc.path("extraction").path("decision").path("stale").asBoolean()).isTrue();
+    assertThat(unavailDoc.path("extraction").path("decision").path("previous_outcome").asText())
+        .isEqualTo("PASSED");
+    assertThat(unavailDoc.path("extraction").path("assessment_uncertain").asBoolean()).isTrue();
+    assertThat(unavailDoc.path("extraction").path("requires_review").asBoolean()).isTrue();
+
+    // Concurrent revision guard: simulate another transaction bumping revision during assessDecision
+    doAnswer(
+            call -> {
+              s.db.update("UPDATE document_submissions SET revision=revision+10 WHERE id=?", unavailId);
+              var resp = s.json.createObjectNode();
+              resp.put("document_id", (String) call.getArgument(1));
+              resp.put("document_type", "SUPPORTING_DOCUMENT");
+              resp.put("requires_review", false);
+              var dec = resp.putObject("decision");
+              dec.put("model", "gemini-decision-1");
+              dec.put("outcome", "PASSED");
+              dec.put("gating_pass_probability", 0.99);
+              dec.put("min_confidence", 0.99);
+              return resp;
+            })
+        .when(documents)
+        .assessDecision(any(), anyString(), anyString(), any(), any(), any(), anyBoolean(), any(), any(), any());
+    var adminAuth =
+        new UsernamePasswordAuthenticationToken(
+            "reviewer", "", List.of(new SimpleGrantedAuthority("ROLE_REVIEWER")));
+    documents.refreshContextualAssessmentsIfNeeded(unavailId, adminAuth);
+    var rmAfterRace =
+        json(
+            mvc.perform(
+                    get("/api/documents/submissions/" + unavailId)
+                        .with(httpBasic("reviewer", "reviewer-demo")))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(
+            findUploadedDoc(rmAfterRace.path("documents"))
+                .path("extraction")
+                .path("decision")
+                .path("outcome")
+                .asText())
+        .isEqualTo("UNAVAILABLE");
+
+    // 3. Interrupted multipart status verification: complete vs incomplete vs missing hash vs JSON edit
+    String pdfSha =
+        HexFormat.of()
+            .formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(statusPdfBytes));
+    String wrongSha = "0".repeat(64);
+    var completeStatus =
+        json(
+            mvc.perform(
+                    get("/api/customer/requests/" + statusKey + "/status")
+                        .param("expectedCount", "1")
+                        .param("combineImages", "false")
+                        .param("fileHashes", pdfSha)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(completeStatus.path("found").asBoolean()).isTrue();
+    assertThat(completeStatus.path("complete").asBoolean()).isTrue();
+    assertThat(completeStatus.path("incomplete").asBoolean()).isFalse();
+    assertThat(completeStatus.path("hasDocuments").asBoolean()).isTrue();
+    assertThat(completeStatus.path("uploadedDocumentCount").asInt()).isEqualTo(1);
+
+    var mismatchHashStatus =
+        json(
+            mvc.perform(
+                    get("/api/customer/requests/" + statusKey + "/status")
+                        .param("expectedCount", "1")
+                        .param("combineImages", "false")
+                        .param("fileHashes", wrongSha)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(mismatchHashStatus.path("found").asBoolean()).isTrue();
+    assertThat(mismatchHashStatus.path("complete").asBoolean()).isFalse();
+    assertThat(mismatchHashStatus.path("incomplete").asBoolean()).isTrue();
+    assertThat(mismatchHashStatus.path("hasDocuments").asBoolean()).isFalse();
+    assertThat(mismatchHashStatus.path("uploadedDocumentCount").asInt()).isZero();
+
+    // JSON-only follow-up edit key on a submission without new attachments should report complete
+    var noDocsForm = addressForm("1 Fictional Road", "018983");
+    noDocsForm.put("requestType", "ADDITIONAL_ACCOUNT");
+    noDocsForm.put("accountType", "CURRENT");
+    noDocsForm.put("currency", "EUR");
+    var accEdit =
+        json(
+            mvc.perform(
+                    post("/api/customer/eforms")
+                        .header("Authorization", "Bearer " + token)
+                        .header("Idempotency-Key", UUID.randomUUID().toString())
+                        .contentType("application/json")
+                        .content(s.json(noDocsForm)))
+                .andExpect(status().isOk())
+                .andReturn());
+    String accSubId = accEdit.path("submission").path("id").asText();
+    int accRev = accEdit.path("submission").path("revision").asInt();
+    var accUpdateForm = new LinkedHashMap<>(noDocsForm);
+    accUpdateForm.put("expectedRevision", accRev);
+    accUpdateForm.put("sourceOfFunds", "Salary");
+    String jsonEditKey = UUID.randomUUID().toString();
+    mvc.perform(
+            post("/api/customer/submissions/" + accSubId + "/eform")
+                .header("Authorization", "Bearer " + token)
+                .header("Idempotency-Key", jsonEditKey)
+                .contentType("application/json")
+                .content(s.json(accUpdateForm)))
+        .andExpect(status().isOk());
+    var jsonEditStatus =
+        json(
+            mvc.perform(
+                    get("/api/customer/requests/" + jsonEditKey + "/status")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(jsonEditStatus.path("complete").asBoolean()).isTrue();
+    assertThat(jsonEditStatus.path("incomplete").asBoolean()).isFalse();
+
+    // Partial multipart state: eForm row committed with /eforms/with-documents operation but 0 documents uploaded
+    String partialKey = UUID.randomUUID().toString();
+    s.db.update(
+        "INSERT INTO customer_upload_requests(customer_id,request_key,operation,fingerprint,submission_id,created_at) VALUES(?,?,?,?,?,?)",
+        customer,
+        partialKey,
+        "/eforms/with-documents",
+        "fp-" + partialKey,
+        accSubId,
+        Instant.now());
+    var partialStatus =
+        json(
+            mvc.perform(
+                    get("/api/customer/requests/" + partialKey + "/status")
+                        .param("expectedCount", "1")
+                        .param("combineImages", "false")
+                        .param("fileHashes", pdfSha)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(partialStatus.path("found").asBoolean()).isTrue();
+    assertThat(partialStatus.path("complete").asBoolean()).isFalse();
+    assertThat(partialStatus.path("incomplete").asBoolean()).isTrue();
+    assertThat(partialStatus.path("hasDocuments").asBoolean()).isFalse();
+  }
 }

@@ -216,3 +216,67 @@ def test_tax_certificate_reconciliation_preserves_unrelated_extraction_uncertain
     reconcile(inconsistent_obs, {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': base_answers}, 0.80)
     assert inconsistent_obs.document_type == 'SUPPORTING_DOCUMENT'
     assert inconsistent_obs.requires_review is True
+
+
+def test_gating_pass_probability_separated_from_high_model_confidence_rejection():
+    extraction = SimpleNamespace(document_type='SUPPORTING_DOCUMENT', requires_review=False, fields=[])
+    answers = {
+        'classification': {'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.96,
+                           'probabilities': {'SUPPORTING_DOCUMENT': 0.96, 'UNKNOWN': 0.04}},
+        'readable': {'type': 'noul', 'confidence': 0.94, 'noul': 0.06},
+        'review_route': {'type': 'choice', 'choice': 'manual_review', 'confidence': 0.95,
+                         'probabilities': {'continue_checks': 0.05, 'manual_review': 0.95}},
+        'consistency': {'type': 'score', 'confidence': 0.90, 'score': 0.1,
+                        'probabilities': {'0': 0.90, '1': 0.08, '2': 0.02}},
+        'service_relevance': {'type': 'noul', 'confidence': 0.93, 'noul': 0.07},
+    }
+    res = reconcile(extraction, {'outcome': 'ASSESSED', 'answers': answers}, 0.80)
+    assert res.decision['outcome'] == 'UNCERTAIN'
+    assert res.decision['model_min_confidence'] == 0.90
+    assert res.decision['model_confidence_band'] == 'HIGH'
+    assert res.decision['gating_pass_probability'] == 0.02
+    assert res.decision['gating_min_confidence'] == 0.02
+    assert res.decision['min_confidence'] == 0.02
+    assert res.decision['confidence_band'] == 'LOW'
+    assert res.decision['failed_criteria'] == ['readable', 'review_route', 'consistency', 'service_relevance']
+    assert res.requires_review is True
+
+
+def test_tax_cert_reconciliation_preserves_identity_contradiction_with_extracted_name():
+    answers = {
+        'classification': {'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.93,
+                           'probabilities': {'SUPPORTING_DOCUMENT': 0.93, 'TAX_RESIDENCY': 0.07}},
+        'readable': {'type': 'noul', 'confidence': 0.96, 'noul': 0.96},
+        'review_route': {'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.95,
+                         'probabilities': {'continue_checks': 0.95, 'manual_review': 0.05}},
+        'consistency': {'type': 'score', 'confidence': 0.94, 'score': 1.9,
+                        'probabilities': {'0': 0.01, '1': 0.05, '2': 0.94}},
+        'service_relevance': {'type': 'noul', 'confidence': 0.93, 'noul': 0.93},
+        'holder_matches_profile': {'type': 'noul', 'confidence': 0.95, 'noul': 0.05},
+        'request_corroboration': {'type': 'choice', 'choice': 'identity_differs', 'confidence': 0.92,
+                                  'probabilities': {'consistent': 0.05, 'identity_differs': 0.92}},
+    }
+    extraction = SimpleNamespace(
+        document_type='TAX_RESIDENCY',
+        requires_review=True,
+        uncertainty_reasons=['MODEL_FLAGGED_REVIEW'],
+        fields=[
+            SimpleNamespace(field='customer_name', value='Wrong Person'),
+            SimpleNamespace(field='foreign_tax_country', value='Australia'),
+            SimpleNamespace(field='tax_identifier', value='AUS-QA-02-8741'),
+        ],
+        observations=[],
+        notes='Live Gemini extraction',
+        quality='READABLE',
+        extraction_issues=[],
+    )
+    res = reconcile(
+        extraction,
+        {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': answers},
+        0.80,
+    )
+    assert res.document_type == 'SUPPORTING_DOCUMENT'
+    assert res.decision['outcome'] == 'UNCERTAIN'
+    assert 'holder_matches_profile' in res.decision['failed_criteria']
+    assert 'IDENTITY_CONTRADICTION' in res.uncertainty_reasons
+    assert res.requires_review is True

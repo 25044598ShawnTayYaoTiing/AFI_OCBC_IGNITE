@@ -278,16 +278,27 @@ final class BankingServicePolicy {
           "detail",
           "Postal code differs: document shows " + aParts.postal() + " vs requested " + bParts.postal() + ".");
     }
-    boolean verifiedCandidateMatch =
+    boolean hasOneMapBlockEvidence =
         verifiedCandidates != null
             && !verifiedCandidates.isEmpty()
+            && !aParts.block().isEmpty()
+            && verifiedCandidates.stream()
+                .anyMatch(
+                    candidate ->
+                        aParts.block().equalsIgnoreCase(candidate.block())
+                            && ((aParts.postal().isEmpty() && bParts.postal().isEmpty())
+                                || aParts.postal().equals(candidate.postalCode())
+                                || bParts.postal().equals(candidate.postalCode())));
+    boolean verifiedCandidateMatch =
+        hasOneMapBlockEvidence
             && verifiedCandidates.stream()
                 .anyMatch(
                     candidate ->
                         AddressNormaliser.matchesCandidate(aParts, candidate)
                             && AddressNormaliser.matchesCandidate(bParts, candidate));
     boolean safeComponentMatch =
-        !aParts.block().isEmpty()
+        !hasOneMapBlockEvidence
+            && !aParts.block().isEmpty()
             && Objects.equals(aParts.block(), bParts.block())
             && !aParts.postal().isEmpty()
             && aParts.postal().equals(bParts.postal())

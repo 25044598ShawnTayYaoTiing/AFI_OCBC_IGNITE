@@ -45,24 +45,42 @@ export function answerConfidence(answer?: DecisionAnswer | null): number | null 
   return null;
 }
 
-export function minimumDecisionConfidence(decision?: DecisionAssessment | null): number | null {
-  if (!decision || decision.outcome === "UNAVAILABLE") return null;
+export function gatingPassProbability(decision?: DecisionAssessment | null): number | null {
+  if (!decision || decision.outcome === "UNAVAILABLE" || decision.unavailable) return null;
+  if (typeof decision.gating_pass_probability === "number" && Number.isFinite(decision.gating_pass_probability)) {
+    return decision.gating_pass_probability;
+  }
+  const gateProbs = Object.values(decision.gate_probabilities ?? {}).filter(
+    (value): value is number => typeof value === "number" && Number.isFinite(value),
+  );
+  if (gateProbs.length) return Math.min(...gateProbs);
   if (typeof decision.gating_min_confidence === "number" && Number.isFinite(decision.gating_min_confidence)) {
     return decision.gating_min_confidence;
   }
-  const gatingValues = Object.entries(decision.answers ?? {})
-    .filter(([key]) => GATING_KEYS.has(key))
-    .map(([, ans]) => answerConfidence(ans))
-    .filter((value): value is number => value !== null);
-  if (gatingValues.length) return Math.min(...gatingValues);
   if (typeof decision.min_confidence === "number" && Number.isFinite(decision.min_confidence)) {
     return decision.min_confidence;
   }
   return null;
 }
 
+export function modelMinConfidence(decision?: DecisionAssessment | null): number | null {
+  if (!decision || decision.outcome === "UNAVAILABLE" || decision.unavailable) return null;
+  if (typeof decision.model_min_confidence === "number" && Number.isFinite(decision.model_min_confidence)) {
+    return decision.model_min_confidence;
+  }
+  const gatingValues = Object.entries(decision.answers ?? {})
+    .filter(([key]) => GATING_KEYS.has(key))
+    .map(([, ans]) => answerConfidence(ans))
+    .filter((value): value is number => value !== null);
+  return gatingValues.length ? Math.min(...gatingValues) : null;
+}
+
+export function minimumDecisionConfidence(decision?: DecisionAssessment | null): number | null {
+  return gatingPassProbability(decision);
+}
+
 export function advisoryDecisionConfidence(decision?: DecisionAssessment | null): number | null {
-  if (!decision || decision.outcome === "UNAVAILABLE") return null;
+  if (!decision || decision.outcome === "UNAVAILABLE" || decision.unavailable) return null;
   if (typeof decision.advisory_min_confidence === "number" && Number.isFinite(decision.advisory_min_confidence)) {
     return decision.advisory_min_confidence;
   }
@@ -161,27 +179,35 @@ export function DecisionAssessmentPanel({
   currentRevision?: number;
 }) {
   const threshold = decision.threshold ?? 0.8;
-  const minConf = minimumDecisionConfidence(decision);
-  const advisoryConf = advisoryDecisionConfidence(decision);
-  const band = minConf !== null ? confidenceTone(minConf, threshold) : null;
+  const unavailable = decision.outcome === "UNAVAILABLE" || Boolean(decision.unavailable);
+  const staleForRevision =
+    !unavailable &&
+    (Boolean(decision.stale) ||
+      (typeof currentRevision === "number" &&
+        typeof decision.context_revision === "number" &&
+        decision.context_revision !== currentRevision));
+  const passProb = staleForRevision ? null : gatingPassProbability(decision);
+  const modelConf = staleForRevision ? null : modelMinConfidence(decision);
+  const advisoryConf = staleForRevision ? null : advisoryDecisionConfidence(decision);
+  const passBand = passProb !== null ? confidenceTone(passProb, threshold) : null;
+  const modelBand = modelConf !== null ? confidenceTone(modelConf, threshold) : null;
   const advisoryBand = advisoryConf !== null ? confidenceTone(advisoryConf, threshold) : null;
   const entries = Object.entries(decision.answers ?? {});
-  const staleForRevision =
-    Boolean(decision.stale) ||
-    (typeof currentRevision === "number" &&
-      typeof decision.context_revision === "number" &&
-      decision.context_revision !== currentRevision);
+  const failedSet = new Set(decision.failed_criteria ?? []);
+  const gateFailures = decision.gate_failures ?? [];
 
   return (
     <section className="d1-panel" aria-label="Decision 1 assessment">
       <div className="d1-header">
         <div>
           <strong className="d1-title">
-            {decision.outcome === "UNAVAILABLE"
+            {unavailable
               ? "AI evidence assessment unavailable"
-              : decision.outcome === "PASSED"
-                ? "Decision 1 verified"
-                : "Decision 1 flagged for review"}
+              : staleForRevision
+                ? "AI evidence assessment stale (refresh pending)"
+                : decision.outcome === "PASSED"
+                  ? "Decision 1 verified"
+                  : "Decision 1 flagged for review"}
           </strong>
           <span className="d1-meta">
             {decision.model ?? "gemini-decision-1"} · Threshold {pct(threshold)}
@@ -192,34 +218,67 @@ export function DecisionAssessmentPanel({
               : ""}
           </span>
         </div>
-        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
-          {minConf !== null && band && (
-            <span className={`d1-conf-pill is-${band}`}>
-              Gating confidence {pct(minConf, 1)}
-            </span>
-          )}
-          {advisoryConf !== null && advisoryBand && (
-            <span className={`d1-conf-pill is-${advisoryBand}`}>
-              Advisory match {pct(advisoryConf, 1)}
-            </span>
-          )}
-        </div>
+        {!unavailable && !staleForRevision && (
+          <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {passProb !== null && passBand && (
+              <span className={`d1-conf-pill is-${passBand}`}>
+                Pass probability {pct(passProb, 1)}
+              </span>
+            )}
+            {modelConf !== null && modelBand && (
+              <span className={`d1-conf-pill is-${modelBand}`}>
+                Model confidence {pct(modelConf, 1)}
+              </span>
+            )}
+            {advisoryConf !== null && advisoryBand && (
+              <span className={`d1-conf-pill is-${advisoryBand}`}>
+                Advisory match {pct(advisoryConf, 1)}
+              </span>
+            )}
+          </div>
+        )}
       </div>
-      {staleForRevision && (
+      {unavailable ? (
+        <p className="field-hint" style={{ marginTop: "0.35rem" }}>
+          AI evidence assessment could not be refreshed{decision.previous_outcome ? ` (previous ${decision.previous_outcome} invalidated)` : ""}. Deterministic checks and manual review remain authoritative.
+        </p>
+      ) : staleForRevision ? (
         <p className="field-hint" style={{ marginTop: "0.35rem" }}>
           Context assessment is from an earlier revision and awaiting refresh. Deterministic checks remain authoritative.
         </p>
+      ) : null}
+      {!unavailable && !staleForRevision && (gateFailures.length > 0 || failedSet.size > 0) && (
+        <p className="field-hint" style={{ marginTop: "0.35rem" }}>
+          Failed criteria:{" "}
+          {gateFailures.length > 0
+            ? gateFailures
+                .map((f) => `${QUESTION_LABELS[f.criterion] ?? formatOption(f.criterion)} (${pct(f.actual, 1)} vs ${pct(f.threshold, 0)})`)
+                .join("; ")
+            : Array.from(failedSet)
+                .map((c) => QUESTION_LABELS[c] ?? formatOption(c))
+                .join(", ")}
+        </p>
       )}
 
-      {entries.length > 0 && (
-        <details className="d1-details" open={decision.outcome !== "PASSED"}>
+      {!unavailable && entries.length > 0 && (
+        <details className="d1-details" open={!staleForRevision && decision.outcome !== "PASSED"}>
           <summary>
-            Probability breakdown ({entries.length} checks)
+            Probability breakdown ({entries.length} checks{staleForRevision ? ", prior revision" : ""})
           </summary>
           <div className="d1-grid">
             {entries.map(([key, answer]) => {
               const conf = answerConfidence(answer);
-              const tone = conf !== null ? confidenceTone(conf, threshold) : "low";
+              const gateProb = typeof decision.gate_probabilities?.[key] === "number"
+                ? decision.gate_probabilities[key]
+                : null;
+              const failed = failedSet.has(key);
+              const tone = failed
+                ? "low"
+                : gateProb !== null
+                  ? confidenceTone(gateProb, threshold)
+                  : conf !== null
+                    ? confidenceTone(conf, threshold)
+                    : "low";
               const roleTag = ADVISORY_KEYS.has(key) ? "Advisory" : "Gating";
               return (
                 <div key={key} className="d1-card">
@@ -227,8 +286,12 @@ export function DecisionAssessmentPanel({
                     <span className="d1-q">
                       {QUESTION_LABELS[key] ?? formatOption(key)} · <small>{roleTag}</small>
                     </span>
-                    {conf !== null && (
-                      <span className={`d1-conf-mini is-${tone}`}>{pct(conf, 0)}</span>
+                    {(gateProb !== null || conf !== null) && (
+                      <span className={`d1-conf-mini is-${tone}`}>
+                        {gateProb !== null && conf !== null && Math.abs(gateProb - conf) >= 0.005
+                          ? `Pass ${pct(gateProb, 0)} · Conf ${pct(conf, 0)}`
+                          : pct((gateProb ?? conf)!, 0)}
+                      </span>
                     )}
                   </div>
                   <div className="d1-choice">{answerHeadline(answer)}</div>

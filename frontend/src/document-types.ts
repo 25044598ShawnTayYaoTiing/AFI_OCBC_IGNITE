@@ -56,20 +56,34 @@ export interface DecisionAnswer {
   probabilities?: Record<string, number>;
   legend?: Record<string, string>;
 }
+export interface DecisionGateFailure {
+  criterion: string;
+  actual: number;
+  threshold: number;
+  detail: string;
+}
 export interface DecisionAssessment {
   model?: string;
   outcome: "PASSED" | "UNCERTAIN" | "UNAVAILABLE";
   threshold?: number;
   min_confidence?: number;
   confidence_band?: "HIGH" | "MEDIUM" | "LOW";
+  gating_pass_probability?: number;
   gating_min_confidence?: number;
   gating_confidence_band?: "HIGH" | "MEDIUM" | "LOW";
+  model_min_confidence?: number;
+  model_confidence_band?: "HIGH" | "MEDIUM" | "LOW";
   advisory_min_confidence?: number;
   advisory_confidence_band?: "HIGH" | "MEDIUM" | "LOW";
+  gate_probabilities?: Record<string, number>;
+  failed_criteria?: string[];
+  gate_failures?: DecisionGateFailure[];
   reconciled_from?: string;
   context_revision?: number;
   stale?: boolean;
   stale_for_revision?: number;
+  unavailable?: boolean;
+  previous_outcome?: string;
   elapsed_ms?: number;
   usage?: { total_input_tokens?: number };
   answers?: Record<string, DecisionAnswer>;
@@ -86,6 +100,10 @@ export interface Doc {
   extraction: {
     method: string;
     requires_review: boolean;
+    extraction_requires_review?: boolean;
+    classification_uncertain?: boolean;
+    assessment_uncertain?: boolean;
+    uncertainty_reasons?: string[];
     document_type?: string;
     effective_document_type?: string;
     model_document_type?: string;

@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Detail } from "../document-types";
 import { dateTime, label, post } from "../api";
 import { ErrorBox, Panel } from "../components";
-import { advisoryDecisionConfidence, minimumDecisionConfidence } from "./DecisionAssessmentPanel";
+import { advisoryDecisionConfidence, gatingPassProbability, modelMinConfidence } from "./DecisionAssessmentPanel";
 
 export function RiskInvestigation({
   detail,
@@ -97,9 +97,25 @@ export function RiskInvestigation({
                       ? "Reviewer confirmation required"
                       : "Verified"}
                     {(() => {
-                      const minConf = minimumDecisionConfidence(document.extraction.decision);
-                      const advConf = advisoryDecisionConfidence(document.extraction.decision);
-                      return `${minConf !== null ? ` · Gating confidence ${(minConf * 100).toFixed(0)}%` : ""}${advConf !== null ? ` · Advisory ${(advConf * 100).toFixed(0)}%` : ""}`;
+                      const dec = document.extraction.decision;
+                      if (!dec) return "";
+                      if (dec.outcome === "UNAVAILABLE" || dec.unavailable) {
+                        return " · AI assessment unavailable";
+                      }
+                      const stale =
+                        Boolean(dec.stale) ||
+                        (typeof dec.context_revision === "number" &&
+                          dec.context_revision !== detail.submission.revision);
+                      if (stale) {
+                        return " · AI assessment awaiting refresh";
+                      }
+                      const passProb = gatingPassProbability(dec);
+                      const modelConf = modelMinConfidence(dec);
+                      const advConf = advisoryDecisionConfidence(dec);
+                      const failed = dec.failed_criteria?.length
+                        ? ` · Failed: ${dec.failed_criteria.join(", ")}`
+                        : "";
+                      return `${passProb !== null ? ` · Pass probability ${(passProb * 100).toFixed(0)}%` : ""}${modelConf !== null ? ` · Model confidence ${(modelConf * 100).toFixed(0)}%` : ""}${advConf !== null ? ` · Advisory ${(advConf * 100).toFixed(0)}%` : ""}${failed}`;
                     })()}
                   </p>
                 ))}

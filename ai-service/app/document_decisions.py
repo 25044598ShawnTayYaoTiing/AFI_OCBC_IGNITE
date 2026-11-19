@@ -265,37 +265,84 @@ def _question_confidences(answers, keys):
     return values
 
 
-def _has_unrelated_extraction_uncertainty(extraction, holder_match, threshold):
+def _gate_pass_probabilities(answers):
+    probs = {}
+    classification = answers.get('classification')
+    if isinstance(classification, dict):
+        choice = classification.get('choice')
+        probs['classification'] = (
+            0.0 if choice in (None, 'UNKNOWN')
+            else float((classification.get('probabilities') or {}).get(choice, 0.0))
+        )
+    readable = answers.get('readable')
+    if isinstance(readable, dict):
+        probs['readable'] = float(readable.get('noul', 0.0))
+    route = answers.get('review_route')
+    if isinstance(route, dict):
+        probs['review_route'] = float((route.get('probabilities') or {}).get('continue_checks', 0.0))
+    consistency = answers.get('consistency')
+    if isinstance(consistency, dict):
+        probs['consistency'] = float((consistency.get('probabilities') or {}).get('2', 0.0))
+    service_relevance = answers.get('service_relevance')
+    if isinstance(service_relevance, dict):
+        probs['service_relevance'] = float(service_relevance.get('noul', 0.0))
+    return probs
+
+
+def _identity_contradicted(answers, threshold):
+    holder_match = answers.get('holder_matches_profile')
+    if isinstance(holder_match, dict) and holder_match.get('noul', 1.0) <= (1.0 - threshold):
+        return True
+    corroboration = answers.get('request_corroboration')
+    if (
+        isinstance(corroboration, dict)
+        and corroboration.get('choice') == 'identity_differs'
+        and confidence_of(corroboration) >= threshold
+    ):
+        return True
+    return False
+
+
+def _unrelated_uncertainty_reasons(extraction, answers, threshold):
+    reasons = []
+    if _identity_contradicted(answers, threshold):
+        reasons.append('IDENTITY_CONTRADICTION')
     observations = getattr(extraction, 'observations', None) or []
     if any(
         getattr(item, 'issue_type', None) in ('UNCERTAIN', 'POTENTIALLY_INCONSISTENT')
         for item in observations
     ):
-        return True
+        reasons.append('CRITICAL_OBSERVATION_UNCERTAIN')
     if any(
         getattr(item, 'issue_type', None) == 'POTENTIALLY_MISSING'
         and getattr(item, 'field', None) in ('customer_name', *_MANDATORY_TAX_CERT_FIELDS)
         for item in observations
     ):
-        return True
-    notes = getattr(extraction, 'notes', None) or ''
-    if any(marker in notes for marker in _UNCERTAIN_NOTE_MARKERS):
-        return True
+        reasons.append('MISSING_MANDATORY_TAX_EVIDENCE')
     quality = getattr(extraction, 'quality', None)
     if quality is not None and quality != 'READABLE':
-        return True
+        reasons.append('POOR_DOCUMENT_QUALITY')
     if getattr(extraction, 'extraction_issues', None):
-        return True
-    field_names = {
-        getattr(f, 'field', None)
+        reasons.append('MANDATORY_EXTRACTION_ISSUE')
+
+    structured_reasons = getattr(extraction, 'uncertainty_reasons', None)
+    if structured_reasons is not None:
+        for reason in structured_reasons:
+            if reason not in ('CLASSIFICATION_UNCERTAIN', 'MODEL_FLAGGED_REVIEW') and reason not in reasons:
+                reasons.append(reason)
+    else:
+        notes = getattr(extraction, 'notes', None) or ''
+        if any(marker in notes for marker in _UNCERTAIN_NOTE_MARKERS):
+            reasons.append('UNVERIFIED_EXTRACTION_NOTES')
+
+    field_values = {
+        getattr(f, 'field', None): str(getattr(f, 'value', '') or '').strip()
         for f in (getattr(extraction, 'fields', None) or [])
     }
-    if not set(_MANDATORY_TAX_CERT_FIELDS).issubset(field_names):
-        return True
-    has_owner = 'customer_name' in field_names or (
-        isinstance(holder_match, dict) and holder_match.get('noul', 0) >= threshold
-    )
-    return not has_owner
+    if not all(field_values.get(name) for name in ('customer_name', *_MANDATORY_TAX_CERT_FIELDS)):
+        if 'MISSING_MANDATORY_TAX_EVIDENCE' not in reasons:
+            reasons.append('MISSING_MANDATORY_TAX_EVIDENCE')
+    return reasons
 
 
 def reconcile(extraction, assessment, threshold):
@@ -314,11 +361,18 @@ def reconcile(extraction, assessment, threshold):
     holder_match = answers.get('holder_matches_profile')
 
     gating_confidences = _question_confidences(answers, GATING_QUESTIONS)
+    gate_probs = _gate_pass_probabilities(answers)
     if gating_confidences:
-        gating_min = round(min(gating_confidences), 4)
-        assessment['gating_min_confidence'] = gating_min
-        assessment['gating_confidence_band'] = confidence_band(gating_min, threshold)
-        assessment['min_confidence'] = gating_min
+        model_min = round(min(gating_confidences), 4)
+        assessment['model_min_confidence'] = model_min
+        assessment['model_confidence_band'] = confidence_band(model_min, threshold)
+    if gate_probs:
+        pass_min = round(min(gate_probs.values()), 4)
+        assessment['gate_probabilities'] = {k: round(v, 4) for k, v in gate_probs.items()}
+        assessment['gating_pass_probability'] = pass_min
+        assessment['gating_min_confidence'] = pass_min
+        assessment['gating_confidence_band'] = confidence_band(pass_min, threshold)
+        assessment['min_confidence'] = pass_min
         assessment['confidence_band'] = assessment['gating_confidence_band']
 
     advisory_confidences = _question_confidences(answers, ADVISORY_QUESTIONS)
@@ -327,18 +381,79 @@ def reconcile(extraction, assessment, threshold):
         assessment['advisory_min_confidence'] = advisory_min
         assessment['advisory_confidence_band'] = confidence_band(advisory_min, threshold)
 
-    decision_gates_ok = (
-        classification['choice'] != 'UNKNOWN'
-        and classification['probabilities'].get(classification['choice'], 0) >= threshold
-        and classification['confidence'] >= threshold
-        and readable['noul'] >= threshold
-        and readable['confidence'] >= threshold
-        and route['choice'] == 'continue_checks'
-        and route['probabilities'].get('continue_checks', 0) >= threshold
-        and route['confidence'] >= threshold
-        and consistency['probabilities'].get('2', 0) >= threshold
-        and ('confidence' not in consistency or consistency['confidence'] >= threshold)
+    gate_failures = []
+    if (
+        classification['choice'] == 'UNKNOWN'
+        or gate_probs.get('classification', 0.0) < threshold
+        or classification['confidence'] < threshold
+    ):
+        gate_failures.append({
+            'criterion': 'classification',
+            'actual': round(min(gate_probs.get('classification', 0.0), classification['confidence']), 4),
+            'threshold': threshold,
+            'detail': 'Classification certainty is below threshold or UNKNOWN.',
+        })
+    if readable['noul'] < threshold or confidence_of(readable) < threshold:
+        gate_failures.append({
+            'criterion': 'readable',
+            'actual': round(float(readable['noul']), 4),
+            'threshold': threshold,
+            'detail': 'Document readability probability is below threshold.',
+        })
+    if (
+        route['choice'] != 'continue_checks'
+        or gate_probs.get('review_route', 0.0) < threshold
+        or route['confidence'] < threshold
+    ):
+        gate_failures.append({
+            'criterion': 'review_route',
+            'actual': round(gate_probs.get('review_route', 0.0), 4),
+            'threshold': threshold,
+            'detail': 'Review route continue_checks probability is below threshold.',
+        })
+    if (
+        gate_probs.get('consistency', 0.0) < threshold
+        or ('confidence' in consistency and consistency['confidence'] < threshold)
+    ):
+        gate_failures.append({
+            'criterion': 'consistency',
+            'actual': round(gate_probs.get('consistency', 0.0), 4),
+            'threshold': threshold,
+            'detail': 'Internal consistency score-2 probability is below threshold.',
+        })
+    if isinstance(service_relevance, dict) and (
+        service_relevance.get('noul', 0.0) < 0.5 or confidence_of(service_relevance) < threshold
+    ):
+        gate_failures.append({
+            'criterion': 'service_relevance',
+            'actual': round(float(service_relevance.get('noul', 0.0)), 4),
+            'threshold': threshold,
+            'detail': 'Service relevance passing probability is below threshold.',
+        })
+
+    failed_criteria = [entry['criterion'] for entry in gate_failures]
+    decision_gates_ok = not any(
+        c in ('classification', 'readable', 'review_route', 'consistency')
+        for c in failed_criteria
     )
+
+    structured_reasons = getattr(extraction, 'uncertainty_reasons', None)
+    if structured_reasons is not None:
+        extraction_reasons = list(structured_reasons)
+    else:
+        extraction_reasons = []
+        if getattr(extraction, 'quality', None) not in (None, 'READABLE'):
+            extraction_reasons.append('POOR_DOCUMENT_QUALITY')
+        if getattr(extraction, 'extraction_issues', None):
+            extraction_reasons.append('MANDATORY_EXTRACTION_ISSUE')
+        if any(
+            getattr(item, 'issue_type', None) in ('UNCERTAIN', 'POTENTIALLY_INCONSISTENT')
+            for item in (getattr(extraction, 'observations', None) or [])
+        ):
+            extraction_reasons.append('CRITICAL_OBSERVATION_UNCERTAIN')
+        if getattr(extraction, 'requires_review', False):
+            extraction_reasons.append('MODEL_FLAGGED_REVIEW')
+
     tax_cert_reconcilable = (
         decision_gates_ok
         and classification['choice'] == 'SUPPORTING_DOCUMENT'
@@ -356,25 +471,67 @@ def reconcile(extraction, assessment, threshold):
                 pass
         assessment['reconciled_from'] = extraction.document_type
         extraction.document_type = 'SUPPORTING_DOCUMENT'
-        if not _has_unrelated_extraction_uncertainty(extraction, holder_match, threshold):
-            extraction.requires_review = False
+        unrelated = _unrelated_uncertainty_reasons(extraction, answers, threshold)
+        if not unrelated:
+            extraction_reasons = [
+                r for r in extraction_reasons
+                if r not in ('CLASSIFICATION_UNCERTAIN', 'MODEL_FLAGGED_REVIEW')
+            ]
+        else:
+            for r in unrelated:
+                if r not in extraction_reasons:
+                    extraction_reasons.append(r)
 
-    uncertain = (
-        not decision_gates_ok
-        or classification['choice'] != extraction.document_type
+    if classification['choice'] != extraction.document_type:
+        gate_failures.append({
+            'criterion': 'classification_agreement',
+            'actual': round(gate_probs.get('classification', 0.0), 4),
+            'threshold': threshold,
+            'detail': f"Decision 1 ({classification['choice']}) differs from extraction ({extraction.document_type}).",
+        })
+        failed_criteria.append('classification_agreement')
+
+    if _identity_contradicted(answers, threshold):
+        holder_noul = holder_match.get('noul', 0.0) if isinstance(holder_match, dict) else 0.0
+        gate_failures.append({
+            'criterion': 'holder_matches_profile',
+            'actual': round(float(holder_noul), 4),
+            'threshold': threshold,
+            'detail': 'Decision 1 reported contradictory account-holder identity.',
+        })
+        failed_criteria.append('holder_matches_profile')
+        if 'IDENTITY_CONTRADICTION' not in extraction_reasons:
+            extraction_reasons.append('IDENTITY_CONTRADICTION')
+
+    extraction_uncertain = bool(extraction_reasons)
+    classification_uncertain = (
+        extraction.document_type == 'UNKNOWN'
+        or 'classification' in failed_criteria
+        or 'classification_agreement' in failed_criteria
     )
-    if isinstance(service_relevance, dict) and (
-        service_relevance.get('noul', 0) < 0.5 or confidence_of(service_relevance) < threshold
-    ):
-        uncertain = True
-    has_extracted_name = any(getattr(f, 'field', None) == 'customer_name' for f in (getattr(extraction, 'fields', None) or []))
-    if (isinstance(holder_match, dict) and not has_extracted_name
-            and holder_match.get('noul', 1.0) <= (1.0 - threshold)):
-        uncertain = True
+    assessment_uncertain = bool(failed_criteria)
 
-    if uncertain:
-        extraction.requires_review = True
-        assessment['outcome'] = 'UNCERTAIN'
-    else:
-        assessment['outcome'] = 'PASSED'
+    assessment['failed_criteria'] = failed_criteria
+    assessment['gate_failures'] = gate_failures
+    assessment['outcome'] = 'UNCERTAIN' if assessment_uncertain else 'PASSED'
+
+    try:
+        extraction.extraction_requires_review = extraction_uncertain
+    except AttributeError:
+        pass
+    try:
+        extraction.classification_uncertain = classification_uncertain
+    except AttributeError:
+        pass
+    try:
+        extraction.assessment_uncertain = assessment_uncertain
+    except AttributeError:
+        pass
+    try:
+        extraction.uncertainty_reasons = extraction_reasons
+    except AttributeError:
+        pass
+    extraction.requires_review = bool(
+        extraction_uncertain or classification_uncertain or assessment_uncertain
+    )
     return extraction

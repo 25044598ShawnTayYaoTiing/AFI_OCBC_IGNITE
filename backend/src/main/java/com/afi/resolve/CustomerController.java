@@ -129,8 +129,13 @@ public class CustomerController {
 
   @GetMapping("/requests/{key}/status")
   @PreAuthorize("hasRole('CUSTOMER')")
-  public Object requestStatus(@PathVariable String key, Authentication a) {
-    return customers.requestStatus(key, a);
+  public Object requestStatus(
+      @PathVariable String key,
+      @RequestParam(required = false) Integer expectedCount,
+      @RequestParam(required = false) Boolean combineImages,
+      @RequestParam(required = false) List<String> fileHashes,
+      Authentication a) {
+    return customers.requestStatus(key, expectedCount, combineImages, fileHashes, a);
   }
 
   @GetMapping("/submissions/{id}/corrections")
