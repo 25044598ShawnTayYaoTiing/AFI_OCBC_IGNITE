@@ -47,8 +47,10 @@ class OneMapClientTest {
   }
 
   @Test void verifiesPdfStreetAndPostalButNotUnitOrOccupancy() {
-    auth(); search(RESULTS); search(RESULTS);
+    auth(); search(RESULTS); search(RESULTS); search(RESULTS); search(RESULTS);
     assertThat(client.verifyText("640 Rowell Rd #12-34 Singapore 200640").status()).isEqualTo("VERIFIED");
+    assertThat(client.verifyText("640 Rowell Road, Unit #12-34, Singapore 200640").status()).isEqualTo("VERIFIED");
+    assertThat(client.verifyText("640 Rowell Road, #12-34\nBuilding / estate\nSingapore 200640").status()).isEqualTo("VERIFIED");
     assertThat(client.verifyText("99 Wrong Road Singapore 200640").status()).isEqualTo("MISMATCH"); server.verify();
   }
 

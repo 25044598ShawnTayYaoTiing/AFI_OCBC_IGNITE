@@ -376,6 +376,45 @@ class StageTwoReliabilityTest {
         "SELECT risk_score,risk_level FROM document_submissions WHERE id=?", accId);
     assertThat(((Number) accRow.get("risk_score")).intValue()).isEqualTo(30);
     assertThat(accRow.get("risk_level")).isEqualTo("MEDIUM");
+
+    // 6. Standard profile without date_of_birth approves additional CURRENT USD account autonomously
+    s.db.update("UPDATE customer_profiles SET risk_rating='STANDARD', date_of_birth=NULL WHERE customer_id=?", customer);
+    var stdAccForm = addressForm("1 Fictional Road", "018983");
+    stdAccForm.put("requestType", "ADDITIONAL_ACCOUNT");
+    stdAccForm.put("accountType", "CURRENT");
+    stdAccForm.put("currency", "USD");
+    stdAccForm.put("sourceOfFunds", "Salary savings");
+    var stdAccRes = json(mvc.perform(
+        post("/api/customer/eforms")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(stdAccForm)))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(stdAccRes.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+
+    // 7. Address with "Unit #12-34" and utility bill with "Building / estate" and no customer_reference auto-approves
+    when(oneMap.verifyText(contains("540109"))).thenReturn(
+        new OneMapClient.Verification("VERIFIED", "ONEMAP_LIVE", "Matched",
+            "109 Rivervale Walk, Rivervale Court, Unit #12-34, Singapore 540109", "540109", null, List.of(), Instant.now()));
+    doAnswer(call -> extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+        "customer_name", "Alex Tan",
+        "mailing_address", "109 RIVERVALE WALK, #12-34\nBuilding / estate\nRIVERVALE COURT, SINGAPORE 540109",
+        "postal_code", "540109")))
+        .when(documents).extraction(any(byte[].class), anyString());
+    var unitForm = addressForm("109 Rivervale Walk, Rivervale Court, Unit #12-34", "540109");
+    var unitRes = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(unitForm).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-unit.pdf", "application/pdf",
+                "%PDF-UNIT-ESTATE".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(unitRes.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
   }
 
   @Test

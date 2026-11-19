@@ -207,8 +207,11 @@ public class OneMapClient {
   }
 
   static String normalizedBase(String address, String postal) {
-    return normal(address.replaceAll("(?i)(?:#|UNIT\\s*)\\s*\\d{1,4}\\s*[-/]\\s*[A-Z0-9]{1,6}", " ")
-        .replace(postal, " ").replaceAll("(?i)\\b(?:SINGAPORE|POSTAL\\s*CODE|POSTCODE|BLOCK|BLK)\\b", " "));
+    return normal(
+        address
+            .replaceAll("(?i)(?:\\bUNIT\\s*(?:NO\\.?\\s*)?)?(?:#|\\bUNIT\\s*(?:NO\\.?\\s*)?)\\s*[A-Z0-9]{1,4}\\s*[-/]\\s*[A-Z0-9]{1,6}", " ")
+            .replace(postal, " ")
+            .replaceAll("(?i)\\b(?:BUILDING\\s*/\\s*ESTATE|BLOCK\\s*/\\s*HOUSE\\s+NO\\.?|BUILDING\\s+NAME|ESTATE\\s+NAME|STREET\\s+NAME|ROAD\\s+NAME|BLOCK\\s+NO\\.?|HOUSE\\s+NO\\.?|UNIT\\s+NO\\.?|SINGAPORE|POSTAL\\s*CODE|POSTCODE|BLOCK|BLK)\\b", " "));
   }
 
   static String clean(String value) { return Normalizer.normalize(Objects.toString(value, ""), Normalizer.Form.NFKC).replaceAll("\\s+", " ").trim(); }

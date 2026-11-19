@@ -119,8 +119,8 @@ public class DocumentService {
         "PACKAGE",
         "PROFILE_MATCH",
         "mailing_address",
-        "Confirm your profile mailing address or provide a supporting PDF with your customer"
-            + " reference and the declared new address.");
+        "Confirm your profile mailing address or provide a supporting PDF showing your name and the"
+            + " declared new address.");
     seed(
         "PROFILE_IDENTITY",
         "Identity must match the customer profile",

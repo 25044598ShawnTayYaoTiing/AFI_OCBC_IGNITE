@@ -104,8 +104,8 @@ final class BankingServicePolicy {
                 "PACKAGE",
                 "SERVICE",
                 "",
-                "Upload a supporting PDF with your customer reference and the requested address, or"
-                    + " foreign tax jurisdiction and TIN where required."),
+                "Upload a supporting PDF showing your name and the requested address, or foreign"
+                    + " tax jurisdiction and TIN where required."),
             List.of(
                 "SERVICE_CONTACT_VERIFIED",
                 "Contact update requires email OTP verification",
@@ -231,13 +231,14 @@ final class BankingServicePolicy {
 
   String addressText(Object value) {
     return workflow.normal(value)
+        .replaceAll("\\b(?:building\\s*/\\s*estate|block\\s*/\\s*house\\s+no\\.?|building\\s+name|estate\\s+name|street\\s+name|road\\s+name|block\\s+no\\.?|house\\s+no\\.?|postal\\s+code|postcode)\\b", " ")
         .replaceAll("\\bs\\s*\\(\\s*(\\d{6})\\s*\\)", "singapore $1")
         .replaceAll("\\bs\\s+(\\d{6})\\b", "singapore $1")
         .replaceFirst("^block\\s+|^blk\\.?\\s+", "")
         .replaceAll("\\b(?:block|blk)\\.?\\s+(?=\\d)", "")
-        .replaceAll("\\bunit\\s*(?:no\\.?\\s*)?#?\\s*(?=\\d+\\s*-)", "#")
+        .replaceAll("\\bunit\\s*(?:no\\.?\\s*)?#?\\s*(?=[a-z0-9]{1,4}\\s*-)", "#")
         .replaceAll("#\\s*", "#")
-        .replaceAll("(#\\d+)\\s*-\\s*", "$1-")
+        .replaceAll("(#\\w+)\\s*[-/]\\s*", "$1-")
         .replaceAll("\\brd\\b", "road")
         .replaceAll("\\bave\\b", "avenue")
         .replaceAll("\\bst\\b", "street")
@@ -254,9 +255,9 @@ final class BankingServicePolicy {
         .replaceAll("\\bnth\\b", "north")
         .replaceAll("\\bsth\\b", "south")
         .replaceAll("\\bctr\\b", "centre")
-        .replaceAll("[,.()]", " ")
+        .replaceAll("[,.()/]", " ")
         .replaceAll("\\s+", " ")
-        .replaceAll("(.*?)\\b(singapore\\s+\\d{6})\\s+(#\\d+-\\S+)(.*)", "$1 $3 $2 $4")
+        .replaceAll("(.*?)\\b(singapore\\s+\\d{6})\\s+(#\\w+-\\S+)(.*)", "$1 $3 $2 $4")
         .replaceAll("\\s+", " ")
         .trim();
   }
@@ -274,7 +275,7 @@ final class BankingServicePolicy {
     }
     work = work.replaceAll("\\bsingapore\\b", " ");
     String unit = "";
-    var unitMatcher = java.util.regex.Pattern.compile("#(\\d+)-([a-z0-9]+)").matcher(work);
+    var unitMatcher = java.util.regex.Pattern.compile("#([a-z0-9]+)-([a-z0-9]+)").matcher(work);
     if (unitMatcher.find()) {
       unit = "#" + stripLeadingZeros(unitMatcher.group(1)) + "-" + stripLeadingZeros(unitMatcher.group(2));
       work = work.substring(0, unitMatcher.start()) + " " + work.substring(unitMatcher.end());
@@ -326,7 +327,14 @@ final class BankingServicePolicy {
           "detail",
           "Postal code differs: document shows " + a.postal() + " vs requested " + b.postal() + ".");
     }
-    if (!Objects.equals(a.block(), b.block()) || !Objects.equals(a.street(), b.street())) {
+    boolean samePostalStreetAndOptionalBuilding =
+        !a.block().isEmpty()
+            && Objects.equals(a.block(), b.block())
+            && !a.postal().isEmpty()
+            && a.postal().equals(b.postal())
+            && (a.street().startsWith(b.street() + " ") || b.street().startsWith(a.street() + " "));
+    if (!Objects.equals(a.block(), b.block())
+        || (!Objects.equals(a.street(), b.street()) && !samePostalStreetAndOptionalBuilding)) {
       return map(
           "matched",
           "false",
@@ -390,7 +398,7 @@ final class BankingServicePolicy {
                 + " customer_eforms f ON f.submission_id=d.id AND f.version=(SELECT"
                 + " COALESCE(MAX(version),0) FROM customer_eforms mf WHERE mf.submission_id=d.id)"
                 + " WHERE d.customer_id=? AND d.id<>? AND d.category='ADDITIONAL_ACCOUNT' AND"
-                + " d.status<>'CANCELLED' ORDER BY d.created_at DESC",
+                + " d.status NOT IN ('CANCELLED','REJECTED') ORDER BY d.created_at DESC",
             customerId,
             submissionId)) {
       String payloadJson = Objects.toString(row.get("payload_json"), "");
@@ -522,7 +530,6 @@ final class BankingServicePolicy {
                         && !Objects.toString(profile.get("residential_address"), "").isBlank()
                         && !Objects.toString(profile.get("nationality"), "").isBlank()
                         && !Objects.toString(profile.get("occupation"), "").isBlank()
-                        && profile.get("date_of_birth") != null
                         && !Set.of("HIGH", "PROHIBITED", "RESTRICTED").contains(profileRisk);
                 if (!profileComplete) {
                   evidence.add(
@@ -532,8 +539,13 @@ final class BankingServicePolicy {
                           "field_value",
                           profileRisk.isBlank() ? "INCOMPLETE" : profileRisk,
                           "supporting_text",
-                          "Customer profile does not meet autonomous eligibility requirements for"
-                              + " an additional account."));
+                          Set.of("HIGH", "PROHIBITED", "RESTRICTED").contains(profileRisk)
+                              ? "Customer risk rating ("
+                                  + profileRisk
+                                  + ") requires Resolution Management review for an additional"
+                                  + " account."
+                              : "Customer profile is missing core KYC details required for an"
+                                  + " additional account."));
                 }
                 String duplicateId =
                     formatOk
@@ -750,8 +762,8 @@ final class BankingServicePolicy {
                       "page_number",
                       1,
                       "supporting_text",
-                      "Supporting document does not display a matching customer name or reference"
-                          + " to confirm account-holder ownership."));
+                      "Supporting document does not display the account-holder name to confirm"
+                          + " ownership."));
             }
           }
           String requestedPostal = addressChange ? addressValue(docs, category, "postal_code") : "";

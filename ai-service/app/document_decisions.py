@@ -177,6 +177,7 @@ def _validate_answer(question, answer):
 
 
 def assess(media, settings, request_type=None, context=None):
+    service_key = (request_type or (context.get('request_type') if isinstance(context, dict) else '') or '').strip().upper()
     if not settings.gemini_api_key or not media:
         return {'model': MODEL, 'outcome': 'UNAVAILABLE'}
     active_questions = build_questions(request_type, context)
@@ -211,6 +212,8 @@ def assess(media, settings, request_type=None, context=None):
                 'answers': {key: answers[key] for key in active_questions},
                 'elapsed_ms': elapsed_ms,
             }
+            if service_key:
+                result['request_type'] = service_key
             if isinstance(body.get('usage'), dict):
                 result['usage'] = body['usage']
             return result
@@ -257,18 +260,42 @@ def reconcile(extraction, assessment, threshold):
         assessment['min_confidence'] = min_conf
         assessment['confidence_band'] = confidence_band(min_conf, threshold)
 
+    decision_gates_ok = (
+        classification['choice'] != 'UNKNOWN'
+        and classification['probabilities'].get(classification['choice'], 0) >= threshold
+        and classification['confidence'] >= threshold
+        and readable['noul'] >= threshold
+        and readable['confidence'] >= threshold
+        and route['choice'] == 'continue_checks'
+        and route['probabilities'].get('continue_checks', 0) >= threshold
+        and route['confidence'] >= threshold
+        and consistency['probabilities'].get('2', 0) >= threshold
+        and ('confidence' not in consistency or consistency['confidence'] >= threshold)
+    )
+    tax_cert_reconcilable = (
+        decision_gates_ok
+        and classification['choice'] == 'SUPPORTING_DOCUMENT'
+        and extraction.document_type == 'TAX_RESIDENCY'
+        and assessment.get('request_type') == 'TAX_RESIDENCY_UPDATE'
+        and isinstance(service_relevance, dict)
+        and service_relevance.get('noul', 0) >= 0.5
+        and confidence_of(service_relevance) >= threshold
+    )
+    if tax_cert_reconcilable:
+        assessment['reconciled_from'] = extraction.document_type
+        extraction.document_type = 'SUPPORTING_DOCUMENT'
+        has_uncertain_obs = any(
+            getattr(item, 'issue_type', None) == 'UNCERTAIN'
+            for item in (getattr(extraction, 'observations', None) or [])
+        )
+        has_fields = bool(getattr(extraction, 'fields', None))
+        has_omitted = 'Omitted ' in (getattr(extraction, 'notes', None) or '')
+        if has_fields and not has_uncertain_obs and not has_omitted:
+            extraction.requires_review = False
+
     uncertain = (
-        classification['choice'] == 'UNKNOWN'
+        not decision_gates_ok
         or classification['choice'] != extraction.document_type
-        or classification['probabilities'].get(classification['choice'], 0) < threshold
-        or classification['confidence'] < threshold
-        or readable['noul'] < threshold
-        or readable['confidence'] < threshold
-        or route['choice'] != 'continue_checks'
-        or route['probabilities'].get('continue_checks', 0) < threshold
-        or route['confidence'] < threshold
-        or consistency['probabilities'].get('2', 0) < threshold
-        or ('confidence' in consistency and consistency['confidence'] < threshold)
     )
     if isinstance(service_relevance, dict) and (
         service_relevance.get('noul', 0) < 0.5 or confidence_of(service_relevance) < threshold

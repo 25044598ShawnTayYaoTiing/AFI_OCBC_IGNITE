@@ -365,7 +365,7 @@ public class CustomerService {
         }
       }
       if ("support_identity_missing".equals(e.get("field_name"))) {
-        return "Your supporting document does not display a matching customer name or reference."
+        return "Your supporting document does not display the account-holder name."
             + " Please upload a document clearly showing your account-holder name and details.";
       }
       if ("duplicate_application".equals(e.get("field_name"))

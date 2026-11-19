@@ -91,3 +91,47 @@ def test_service_and_db_questions_and_real_min_confidence_gating():
     assert res3.requires_review
 
     assert confidence_of({'type': 'noul', 'noul': 0.12}) == pytest.approx(0.88)
+
+
+def test_decision1_tax_certificate_classification_overrides_tax_self_declaration_overlap():
+    extraction = SimpleNamespace(
+        document_type='TAX_RESIDENCY',
+        requires_review=True,
+        fields=[
+            SimpleNamespace(field='customer_name', value='User 2'),
+            SimpleNamespace(field='foreign_tax_country', value='Australia'),
+            SimpleNamespace(field='tax_identifier', value='AUS-QA-02-8741'),
+        ],
+        observations=[],
+        notes='Live Gemini extraction',
+    )
+    answers = {
+        'classification': {
+            'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.85,
+            'probabilities': {'SUPPORTING_DOCUMENT': 0.85, 'TAX_RESIDENCY': 0.12, 'UNKNOWN': 0.03},
+        },
+        'readable': {'type': 'noul', 'confidence': 0.96, 'noul': 0.96},
+        'review_route': {
+            'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.97,
+            'probabilities': {'continue_checks': 0.97, 'manual_review': 0.03},
+        },
+        'consistency': {
+            'type': 'score', 'confidence': 0.96, 'score': 1.95,
+            'probabilities': {'0': 0.01, '1': 0.03, '2': 0.96},
+        },
+        'service_relevance': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+        'holder_matches_profile': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+        'request_corroboration': {
+            'type': 'choice', 'choice': 'consistent', 'confidence': 0.97,
+            'probabilities': {'consistent': 0.97, 'incomplete': 0.03},
+        },
+    }
+    res = reconcile(
+        extraction,
+        {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': answers},
+        0.70,
+    )
+    assert res.document_type == 'SUPPORTING_DOCUMENT'
+    assert res.decision['outcome'] == 'PASSED'
+    assert res.decision['reconciled_from'] == 'TAX_RESIDENCY'
+    assert not res.requires_review
