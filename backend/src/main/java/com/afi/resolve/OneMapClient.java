@@ -194,34 +194,28 @@ public class OneMapClient {
     String base = normalizedBase(address, postal);
     for (var candidate : lookup.candidates()) {
       String street = normal(candidate.block() + " " + candidate.road());
-      String withBuilding = normal(street + " " + candidate.building());
-      String buildingFirst = normal(candidate.building() + " " + street);
-      if (base.equals(street) || base.equals(withBuilding) || base.equals(buildingFirst))
+      String building = normal(candidate.building());
+      String withBuilding = building.isEmpty() ? street : normal(street + " " + building);
+      String buildingFirst = building.isEmpty() ? street : normal(building + " " + street);
+      String blockBuildingRoad = building.isEmpty() ? street : normal(candidate.block() + " " + building + " " + candidate.road());
+      if (base.equals(street)
+          || (!building.isEmpty()
+              && (base.equals(withBuilding) || base.equals(buildingFirst) || base.equals(blockBuildingRoad))))
         return result("VERIFIED", "The extracted building and street match live OneMap records for this postal code. Unit number and occupancy are not verified.", address, lookup, candidate);
     }
     // A missing/abbreviated/unstructured value is not evidence of a conflict.
-    boolean clearStreet = base.matches("^\\d+[A-Z]? .*(?:ROAD|STREET|AVENUE|DRIVE|LANE|CRESCENT|CLOSE|WALK|PLACE|TERRACE|BOULEVARD)(?: \\d+)?$");
+    boolean clearStreet = AddressNormaliser.isClearStreetText(base);
     return result(clearStreet && lookup.complete() ? "MISMATCH" : "INCONCLUSIVE",
         clearStreet && lookup.complete() ? "The extracted block or street conflicts with OneMap records for this postal code. Obtain a corrected address."
             : "The extracted address cannot be matched conclusively. Check the original PDF and confirm the address manually.", address, lookup, null);
   }
 
   static String normalizedBase(String address, String postal) {
-    return normal(
-        address
-            .replaceAll("(?i)(?:\\bUNIT\\s*(?:NO\\.?\\s*)?)?(?:#|\\bUNIT\\s*(?:NO\\.?\\s*)?)\\s*[A-Z0-9]{1,4}\\s*[-/]\\s*[A-Z0-9]{1,6}", " ")
-            .replace(postal, " ")
-            .replaceAll("(?i)\\b(?:BUILDING\\s*/\\s*ESTATE|BLOCK\\s*/\\s*HOUSE\\s+NO\\.?|BUILDING\\s+NAME|ESTATE\\s+NAME|STREET\\s+NAME|ROAD\\s+NAME|BLOCK\\s+NO\\.?|HOUSE\\s+NO\\.?|UNIT\\s+NO\\.?|SINGAPORE|POSTAL\\s*CODE|POSTCODE|BLOCK|BLK)\\b", " "));
+    return AddressNormaliser.oneMapBase(address, postal);
   }
 
-  static String clean(String value) { return Normalizer.normalize(Objects.toString(value, ""), Normalizer.Form.NFKC).replaceAll("\\s+", " ").trim(); }
-  static String normal(String value) {
-    return clean(value).toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9 ]", " ")
-        .replaceAll("\\bRD\\b", "ROAD").replaceAll("\\bST\\b", "STREET")
-        .replaceAll("\\bAVE\\b", "AVENUE").replaceAll("\\bDR\\b", "DRIVE")
-        .replaceAll("\\bCRES\\b", "CRESCENT").replaceAll("\\bCL\\b", "CLOSE")
-        .replaceAll("\\s+", " ").trim();
-  }
+  static String clean(String value) { return AddressNormaliser.clean(value); }
+  static String normal(String value) { return AddressNormaliser.canonicalPlainUpper(value); }
 
   Verification result(String status, String message, String address, Search lookup, Candidate selected) {
     return new Verification(status, "UNAVAILABLE".equals(status) ? "ONEMAP_UNAVAILABLE" : "ONEMAP_LIVE",

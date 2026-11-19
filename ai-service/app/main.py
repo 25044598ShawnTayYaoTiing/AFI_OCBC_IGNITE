@@ -11,7 +11,7 @@ from app.config import Settings
 from app.investigation.service import investigate
 from app.schemas import InvestigationRequest, InvestigationResponse, SimulationRequest, SimulationResponse
 from app.simulation.engine import simulate
-from app.documents import ExtractRequest, Extraction, extract
+from app.documents import AssessRequest, ExtractRequest, Extraction, assess_document, extract
 from app.image_conversion import ImageConversionRequest, convert_images
 from app.document_intelligence import InvestigationRequest as DocumentInvestigationRequest, InvestigationResult as DocumentInvestigationResult, investigate_documents, status as document_ai_status
 
@@ -58,6 +58,11 @@ def health() -> dict[str, str]:
 @app.post('/documents/extract', response_model=Extraction, dependencies=[Depends(require_service_key)], tags=['documents'])
 def extract_document(request: ExtractRequest, settings: Annotated[Settings, Depends(get_settings)]) -> Extraction:
     return extract(request, settings)
+
+
+@app.post('/documents/assess', dependencies=[Depends(require_service_key)], tags=['documents'])
+def assess_document_endpoint(request: AssessRequest, settings: Annotated[Settings, Depends(get_settings)]):
+    return assess_document(request, settings)
 
 
 @app.post('/documents/convert-images', dependencies=[Depends(require_service_key)], tags=['documents'])

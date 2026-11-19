@@ -85,6 +85,23 @@ _CORROBORATION_KEYS = (
     'email',
     'mobile',
 )
+GATING_QUESTIONS = (
+    'classification',
+    'readable',
+    'review_route',
+    'consistency',
+    'service_relevance',
+)
+ADVISORY_QUESTIONS = (
+    'holder_matches_profile',
+    'request_corroboration',
+)
+_MANDATORY_TAX_CERT_FIELDS = ('foreign_tax_country', 'tax_identifier')
+_UNCERTAIN_NOTE_MARKERS = (
+    'Omitted ',
+    'could not be read clearly',
+    'could not be verified',
+)
 
 
 def confidence_of(answer):
@@ -237,6 +254,50 @@ def probability(value):
     return type(value) in (int, float) and 0 <= value <= 1
 
 
+def _question_confidences(answers, keys):
+    values = []
+    for key in keys:
+        ans = answers.get(key)
+        if isinstance(ans, dict) and (
+            isinstance(ans.get('confidence'), (int, float)) or ans.get('type') == 'noul'
+        ):
+            values.append(confidence_of(ans))
+    return values
+
+
+def _has_unrelated_extraction_uncertainty(extraction, holder_match, threshold):
+    observations = getattr(extraction, 'observations', None) or []
+    if any(
+        getattr(item, 'issue_type', None) in ('UNCERTAIN', 'POTENTIALLY_INCONSISTENT')
+        for item in observations
+    ):
+        return True
+    if any(
+        getattr(item, 'issue_type', None) == 'POTENTIALLY_MISSING'
+        and getattr(item, 'field', None) in ('customer_name', *_MANDATORY_TAX_CERT_FIELDS)
+        for item in observations
+    ):
+        return True
+    notes = getattr(extraction, 'notes', None) or ''
+    if any(marker in notes for marker in _UNCERTAIN_NOTE_MARKERS):
+        return True
+    quality = getattr(extraction, 'quality', None)
+    if quality is not None and quality != 'READABLE':
+        return True
+    if getattr(extraction, 'extraction_issues', None):
+        return True
+    field_names = {
+        getattr(f, 'field', None)
+        for f in (getattr(extraction, 'fields', None) or [])
+    }
+    if not set(_MANDATORY_TAX_CERT_FIELDS).issubset(field_names):
+        return True
+    has_owner = 'customer_name' in field_names or (
+        isinstance(holder_match, dict) and holder_match.get('noul', 0) >= threshold
+    )
+    return not has_owner
+
+
 def reconcile(extraction, assessment, threshold):
     assessment = dict(assessment)
     assessment['threshold'] = threshold
@@ -252,13 +313,19 @@ def reconcile(extraction, assessment, threshold):
     service_relevance = answers.get('service_relevance')
     holder_match = answers.get('holder_matches_profile')
 
-    confidences = [confidence_of(ans) for ans in answers.values() if isinstance(ans, dict) and (
-        isinstance(ans.get('confidence'), (int, float)) or ans.get('type') == 'noul'
-    )]
-    if confidences:
-        min_conf = round(min(confidences), 4)
-        assessment['min_confidence'] = min_conf
-        assessment['confidence_band'] = confidence_band(min_conf, threshold)
+    gating_confidences = _question_confidences(answers, GATING_QUESTIONS)
+    if gating_confidences:
+        gating_min = round(min(gating_confidences), 4)
+        assessment['gating_min_confidence'] = gating_min
+        assessment['gating_confidence_band'] = confidence_band(gating_min, threshold)
+        assessment['min_confidence'] = gating_min
+        assessment['confidence_band'] = assessment['gating_confidence_band']
+
+    advisory_confidences = _question_confidences(answers, ADVISORY_QUESTIONS)
+    if advisory_confidences:
+        advisory_min = round(min(advisory_confidences), 4)
+        assessment['advisory_min_confidence'] = advisory_min
+        assessment['advisory_confidence_band'] = confidence_band(advisory_min, threshold)
 
     decision_gates_ok = (
         classification['choice'] != 'UNKNOWN'
@@ -282,15 +349,14 @@ def reconcile(extraction, assessment, threshold):
         and confidence_of(service_relevance) >= threshold
     )
     if tax_cert_reconcilable:
+        if getattr(extraction, 'model_document_type', None) is None:
+            try:
+                extraction.model_document_type = extraction.document_type
+            except AttributeError:
+                pass
         assessment['reconciled_from'] = extraction.document_type
         extraction.document_type = 'SUPPORTING_DOCUMENT'
-        has_uncertain_obs = any(
-            getattr(item, 'issue_type', None) == 'UNCERTAIN'
-            for item in (getattr(extraction, 'observations', None) or [])
-        )
-        has_fields = bool(getattr(extraction, 'fields', None))
-        has_omitted = 'Omitted ' in (getattr(extraction, 'notes', None) or '')
-        if has_fields and not has_uncertain_obs and not has_omitted:
+        if not _has_unrelated_extraction_uncertainty(extraction, holder_match, threshold):
             extraction.requires_review = False
 
     uncertain = (

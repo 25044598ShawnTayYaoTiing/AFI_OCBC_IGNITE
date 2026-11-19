@@ -6,6 +6,7 @@ import logging
 import re
 import time
 from collections import Counter
+from types import SimpleNamespace
 from typing import Literal
 from fastapi import HTTPException
 from pydantic import Field, field_validator
@@ -120,11 +121,83 @@ class ModelExtraction(StrictModel):
 class Extraction(ModelExtraction):
     fields: list[EvidenceField] = Field(max_length=30)
     document_id: str
+    model_document_type: DocumentType | None = None
+    quality: Literal['READABLE', 'BLURRY', 'CROPPED', 'INCOMPLETE', 'UNREADABLE'] | None = None
+    extraction_issues: list[str] = Field(default_factory=list, max_length=30)
     method: Literal['GEMINI', 'DETERMINISTIC_FALLBACK', 'HUMAN_REVIEW']
     model: str | None = None
     fallback_reason: str | None = None
     notes: str
     decision: dict | None = None
+
+
+class AssessRequest(StrictModel):
+    document_id: str = Field(min_length=1, max_length=64)
+    document_type: DocumentType
+    pdf_base64: str | None = Field(default=None, max_length=23_000_000)
+    images_base64: list[str] = Field(default_factory=list, max_length=10)
+    request_type: str | None = Field(default=None, max_length=64)
+    context: dict[str, str] | None = None
+    fields: list[str] = Field(default_factory=list, max_length=30)
+    observations: list[Observation] = Field(default_factory=list, max_length=20)
+    notes: str = Field(default='', max_length=3000)
+    requires_review: bool = False
+    quality: str | None = Field(default=None, max_length=32)
+    extraction_issues: list[str] = Field(default_factory=list, max_length=30)
+
+    @field_validator('context')
+    @classmethod
+    def check_context(cls, value):
+        return ExtractRequest.check_context(value)
+
+
+_IDENTITY_FIELDS = frozenset({'customer_name', 'identity_number'})
+_ADDRESS_FIELDS = frozenset({
+    'mailing_address', 'new_mailing_address', 'postal_code', 'mailing_postal_code', 'new_mailing_postal_code',
+    'residential_address', 'new_residential_address', 'residential_postal_code', 'new_residential_postal_code',
+})
+_SERVICE_CRITICAL_FIELDS = {
+    'ADDRESS_CHANGE': _IDENTITY_FIELDS | frozenset({
+        'customer_reference', 'request_type', 'signature_indicator', 'declaration_date',
+        'mailing_address', 'new_mailing_address', 'postal_code', 'mailing_postal_code', 'new_mailing_postal_code',
+        'residential_address',
+    }),
+    'RESIDENTIAL_ADDRESS_CHANGE': _IDENTITY_FIELDS | frozenset({
+        'customer_reference', 'request_type', 'signature_indicator', 'declaration_date',
+        'residential_address', 'new_residential_address', 'postal_code', 'residential_postal_code', 'new_residential_postal_code',
+    }),
+    'TAX_RESIDENCY_UPDATE': _IDENTITY_FIELDS | frozenset({
+        'customer_reference', 'request_type', 'signature_indicator', 'declaration_date',
+        'tax_residency', 'foreign_tax_country', 'tax_identifier', 'tax_declaration',
+    }),
+    'ADDITIONAL_ACCOUNT': _IDENTITY_FIELDS | frozenset({
+        'customer_reference', 'request_type', 'signature_indicator', 'declaration_date',
+        'account_type', 'currency', 'source_of_funds', 'required_selection',
+    }),
+    'CONTACT_UPDATE': _IDENTITY_FIELDS | frozenset({
+        'customer_reference', 'request_type', 'signature_indicator', 'declaration_date',
+        'email', 'mobile', 'contact_information',
+    }),
+}
+_SUPPORTING_CRITICAL_DEFAULT = _IDENTITY_FIELDS | _ADDRESS_FIELDS | frozenset({'foreign_tax_country', 'tax_identifier'})
+
+
+def is_critical_field(field: str, document_type: str, request_type: str | None = None) -> bool:
+    """Return True when extraction uncertainty in this field must trigger manual review."""
+    if document_type == 'UNKNOWN':
+        return True
+    service_key = (request_type or '').strip().upper()
+    if document_type == 'SUPPORTING_DOCUMENT':
+        if service_key in ('ADDRESS_CHANGE', 'RESIDENTIAL_ADDRESS_CHANGE'):
+            return field in (_IDENTITY_FIELDS | _ADDRESS_FIELDS)
+        if service_key == 'TAX_RESIDENCY_UPDATE':
+            return field in (_IDENTITY_FIELDS | {'foreign_tax_country', 'tax_identifier'})
+        if service_key in _SERVICE_CRITICAL_FIELDS:
+            return field in (_SERVICE_CRITICAL_FIELDS[service_key] - {'customer_reference', 'request_type', 'signature_indicator', 'declaration_date'})
+        return field in _SUPPORTING_CRITICAL_DEFAULT
+    if service_key in _SERVICE_CRITICAL_FIELDS:
+        return field in _SERVICE_CRITICAL_FIELDS[service_key]
+    return True
 
 
 class VisualExtraction(ModelExtraction):
@@ -205,7 +278,9 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
         # Repeated headers on multi-page forms are common. Keep consistent values once;
         # conflicting repetitions remain explicit review observations, never a chosen guess.
         grouped = {}
-        unverified = 0
+        critical_unverified = 0
+        critical_issues = []
+        service_key_opt = service_key or None
         for item in proposed.fields:
             try:
                 if item.page > page_count:
@@ -217,27 +292,32 @@ def extract_visual(document_id, media, page_count, settings, request_type=None, 
                     raise ValueError('Citation does not identify the extracted field')
                 grouped.setdefault(item.field, []).append((item, value))
             except ValueError:
-                unverified += 1
+                if is_critical_field(item.field, proposed.document_type, service_key_opt):
+                    critical_unverified += 1
+                    critical_issues.append(f'unverified:{item.field}')
         proposed.fields = []
         for name, items in grouped.items():
             if len({value for _, value in items}) <= 1:
                 proposed.fields.append(items[0][0])
-            else:
+            elif is_critical_field(name, proposed.document_type, service_key_opt):
+                critical_issues.append(f'conflict:{name}')
                 for item, _ in items:
                     proposed.observations.append(Observation(field=name, page=item.page,
                         supporting_text=item.supporting_text, issue_type='UNCERTAIN'))
         proposed.observations = proposed.observations[:20]
-        fields, observations = normalise(proposed, proposed.pages)
+        fields, observations = normalise(proposed, proposed.pages, request_type=service_key_opt, critical_issues=critical_issues)
         succeeded()
         notes = ('Visual citations were checked against the transcription. Evidence can be reviewed against '
                  'the original. Extraction does not establish authenticity.')
         if proposed.quality != 'READABLE':
             notes += ' Some of the document could not be read clearly.'
-        if unverified:
-            notes += f' Omitted {unverified} extraction candidate(s) with unverifiable citations.'
+        if critical_unverified:
+            notes += f' Omitted {critical_unverified} extraction candidate(s) with unverifiable citations.'
         result = Extraction(document_id=document_id, document_type=proposed.document_type,
+            model_document_type=proposed.document_type, quality=proposed.quality,
+            extraction_issues=critical_issues,
             fields=fields, observations=observations, requires_review=(proposed.requires_review or not fields
-                or bool(unverified) or proposed.quality != 'READABLE'
+                or bool(critical_unverified) or proposed.quality != 'READABLE'
                 or any(item.issue_type == 'UNCERTAIN' for item in observations)), method='GEMINI',
             model=settings.gemini_model,
             notes=notes)
@@ -348,20 +428,27 @@ def source_value(field: str, support: str) -> str | None:
     return None
 
 
-def normalise(proposed: ModelExtraction, pages: list[str]) -> tuple[list[EvidenceField], list[Observation]]:
+def normalise(proposed: ModelExtraction, pages: list[str], request_type: str | None = None, critical_issues: list[str] | None = None) -> tuple[list[EvidenceField], list[Observation]]:
     _normalise_supporting_fields(proposed)
     counts = Counter(item.field for item in proposed.fields)
     fields = []
     _, observations = normalise_items(proposed.model_copy(update={'fields': []}), pages)
     for item in proposed.fields:
+        critical = is_critical_field(item.field, proposed.document_type, request_type)
         if counts[item.field] > 1:
-            proposed.requires_review = True
+            if critical:
+                proposed.requires_review = True
+                if critical_issues is not None:
+                    critical_issues.append(f'duplicate:{item.field}')
             continue
         try:
             verified, missing_fields = normalise_items(
                 proposed.model_copy(update={'fields': [item], 'observations': []}), pages)
         except ValueError:
-            proposed.requires_review = True
+            if critical:
+                proposed.requires_review = True
+                if critical_issues is not None:
+                    critical_issues.append(f'unverified:{item.field}')
             continue
         fields.extend(verified)
         observations.extend(missing_fields)
@@ -438,7 +525,9 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
             reject(422, 'INVALID_IMAGE', 'Send either one PDF or ordered image pages, not both.')
         media = [types.Part.from_bytes(data=raw, mime_type=mime)
                  for raw, mime in decode_images(request.images_base64)]
-        return extract_visual(request.document_id, media, len(media), settings, request.request_type, request.context)
+        if request.request_type or request.context:
+            return extract_visual(request.document_id, media, len(media), settings, request.request_type, request.context)
+        return extract_visual(request.document_id, media, len(media), settings)
     try:
         raw = base64.b64decode(request.pdf_base64, validate=True)
         if not raw or len(raw) > (16 if request.converted_from_images else 10) * 1024 * 1024 or not raw.startswith(b'%PDF-'):
@@ -457,8 +546,10 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
     except Exception:
         reject(422, 'INVALID_PDF', 'Use a readable, unencrypted PDF of at most 10 MB and 30 pages.')
     if request.converted_from_images or any(not page.strip() for page in pages) or any(has_visual_resources(page) for page in reader.pages):
-        return extract_visual(request.document_id,
-            [types.Part.from_bytes(data=raw, mime_type='application/pdf')], len(pages), settings, request.request_type, request.context)
+        media_pdf = [types.Part.from_bytes(data=raw, mime_type='application/pdf')]
+        if request.request_type or request.context:
+            return extract_visual(request.document_id, media_pdf, len(pages), settings, request.request_type, request.context)
+        return extract_visual(request.document_id, media_pdf, len(pages), settings)
     if not settings.gemini_api_key:
         reject(503, 'AI_NOT_CONFIGURED', 'Configure Gemini to extract document evidence.')
     overall_deadline = time.monotonic() + _EXTRACT_TOTAL_BUDGET_S
@@ -486,14 +577,47 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
                 'Do not invent dates, identities, signatures, consent, addresses or policy requirements. A signature indicator does not establish authenticity. '
                 'Clearly missing values are completeness findings, not extraction uncertainty. requires_review is true for ambiguous classification, duplicate/conflicting '
                 'values for the same field, or unreadable evidence. Only approved Spring rules decide violations. No tools or actions.', settings)
-        fields, observations = normalise(proposed, pages)
+        service_key_opt = service_key or None
+        _normalise_supporting_fields(proposed)
+        # Deduplicate consistent values repeated across distinct pages of multi-page PDFs.
+        by_field = {}
+        for item in proposed.fields:
+            by_field.setdefault(item.field, []).append(item)
+        deduped = []
+        for name, items in by_field.items():
+            if len(items) > 1 and len({item.page for item in items}) > 1:
+                grounded = []
+                for item in items:
+                    if item.page <= len(pages):
+                        try:
+                            support = quote_in(item.supporting_text, pages[item.page - 1])
+                            val = source_value(item.field, support) or _supporting_fallback(
+                                proposed.document_type, item.field, item.value, support)
+                            if val is not None:
+                                grounded.append((item, val))
+                        except ValueError:
+                            pass
+                if len(grounded) == len(items) and len({v for _, v in grounded}) == 1:
+                    deduped.append(items[0])
+                    continue
+            deduped.extend(items)
+        proposed.fields = deduped
+        critical_issues = []
+        fields, observations = normalise(proposed, pages, request_type=service_key_opt, critical_issues=critical_issues)
         succeeded()
         logger.info('PDF extraction verified document_id=%s method=GEMINI type=%s fields=%d observations=%d',
                     request.document_id, proposed.document_type, len(fields), len(observations))
+        notes = 'Live Gemini extraction with normalised fields and independently grounded page citations. Approved Spring rules determine validity.'
+        if critical_issues:
+            notes += f' Omitted {len(critical_issues)} extraction candidate(s) with unverified citations or conflicts.'
         result = Extraction(document_id=request.document_id, document_type=proposed.document_type,
-            fields=fields, observations=observations, requires_review=proposed.requires_review or not fields,
+            model_document_type=proposed.document_type, quality='READABLE',
+            extraction_issues=critical_issues,
+            fields=fields, observations=observations,
+            requires_review=(proposed.requires_review or not fields
+                or any(item.issue_type == 'UNCERTAIN' for item in observations)),
             method='GEMINI', model=settings.gemini_model,
-            notes='Live Gemini extraction with normalised fields and independently grounded page citations. Approved Spring rules determine validity.')
+            notes=notes)
         assessment = _assess_within_budget([(raw, 'application/pdf')], settings, overall_deadline, request.request_type, request.context)
         return document_decisions.reconcile(result, assessment, settings.decision_threshold)
     except HTTPException:
@@ -507,3 +631,40 @@ def extract(request: ExtractRequest, settings: Settings) -> Extraction:
                 fields=[], requires_review=True, method='GEMINI',
                 notes='AI output could not be verified. Review the original document.')
         reject(503, 'AI_SERVICE_ERROR', 'The AI provider is unavailable, timed out or rejected the request. No document was accepted. Check AI Integration status and retry.')
+
+
+def assess_document(request: AssessRequest, settings: Settings) -> dict:
+    """Re-run Decision 1 assessment against updated request context without re-running extraction."""
+    if request.images_base64:
+        if request.pdf_base64 is not None:
+            reject(422, 'INVALID_IMAGE', 'Send either one PDF or ordered image pages, not both.')
+        media = [(raw, mime) for raw, mime in decode_images(request.images_base64)]
+    elif request.pdf_base64 is not None:
+        try:
+            raw = base64.b64decode(request.pdf_base64, validate=True)
+            if not raw or len(raw) > 16 * 1024 * 1024 or not raw.startswith(b'%PDF-'):
+                raise ValueError('Invalid PDF')
+            media = [(raw, 'application/pdf')]
+        except Exception:
+            reject(422, 'INVALID_PDF', 'Use a readable, unencrypted PDF.')
+    else:
+        reject(422, 'INVALID_REQUEST', 'Provide either PDF or image bytes.')
+    overall_deadline = time.monotonic() + 22.0
+    assessment = _assess_within_budget(media, settings, overall_deadline, request.request_type, request.context)
+    proxy = SimpleNamespace(
+        document_type=request.document_type,
+        model_document_type=request.document_type,
+        fields=[SimpleNamespace(field=name) for name in request.fields],
+        observations=request.observations,
+        notes=request.notes,
+        requires_review=request.requires_review,
+        quality=request.quality,
+        extraction_issues=request.extraction_issues,
+    )
+    reconciled = document_decisions.reconcile(proxy, assessment, settings.decision_threshold)
+    return {
+        'document_id': request.document_id,
+        'document_type': reconciled.document_type,
+        'requires_review': bool(reconciled.requires_review),
+        'decision': reconciled.decision,
+    }

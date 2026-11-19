@@ -21,6 +21,19 @@ const OPTION_LABELS: Record<string, string> = {
   incomplete: "Insufficient details",
 };
 
+const GATING_KEYS = new Set([
+  "classification",
+  "readable",
+  "review_route",
+  "consistency",
+  "service_relevance",
+]);
+
+const ADVISORY_KEYS = new Set([
+  "holder_matches_profile",
+  "request_corroboration",
+]);
+
 export function answerConfidence(answer?: DecisionAnswer | null): number | null {
   if (!answer) return null;
   if (typeof answer.confidence === "number" && Number.isFinite(answer.confidence)) {
@@ -34,13 +47,30 @@ export function answerConfidence(answer?: DecisionAnswer | null): number | null 
 
 export function minimumDecisionConfidence(decision?: DecisionAssessment | null): number | null {
   if (!decision || decision.outcome === "UNAVAILABLE") return null;
+  if (typeof decision.gating_min_confidence === "number" && Number.isFinite(decision.gating_min_confidence)) {
+    return decision.gating_min_confidence;
+  }
+  const gatingValues = Object.entries(decision.answers ?? {})
+    .filter(([key]) => GATING_KEYS.has(key))
+    .map(([, ans]) => answerConfidence(ans))
+    .filter((value): value is number => value !== null);
+  if (gatingValues.length) return Math.min(...gatingValues);
   if (typeof decision.min_confidence === "number" && Number.isFinite(decision.min_confidence)) {
     return decision.min_confidence;
   }
-  const values = Object.values(decision.answers ?? {})
-    .map((ans) => answerConfidence(ans))
+  return null;
+}
+
+export function advisoryDecisionConfidence(decision?: DecisionAssessment | null): number | null {
+  if (!decision || decision.outcome === "UNAVAILABLE") return null;
+  if (typeof decision.advisory_min_confidence === "number" && Number.isFinite(decision.advisory_min_confidence)) {
+    return decision.advisory_min_confidence;
+  }
+  const advisoryValues = Object.entries(decision.answers ?? {})
+    .filter(([key]) => ADVISORY_KEYS.has(key))
+    .map(([, ans]) => answerConfidence(ans))
     .filter((value): value is number => value !== null);
-  return values.length ? Math.min(...values) : null;
+  return advisoryValues.length ? Math.min(...advisoryValues) : null;
 }
 
 function confidenceTone(confidence: number, threshold = 0.8): "high" | "medium" | "low" {
@@ -123,11 +153,24 @@ function answerHeadline(answer: DecisionAnswer): string {
   return "Assessed";
 }
 
-export function DecisionAssessmentPanel({ decision }: { decision: DecisionAssessment }) {
+export function DecisionAssessmentPanel({
+  decision,
+  currentRevision,
+}: {
+  decision: DecisionAssessment;
+  currentRevision?: number;
+}) {
   const threshold = decision.threshold ?? 0.8;
   const minConf = minimumDecisionConfidence(decision);
+  const advisoryConf = advisoryDecisionConfidence(decision);
   const band = minConf !== null ? confidenceTone(minConf, threshold) : null;
+  const advisoryBand = advisoryConf !== null ? confidenceTone(advisoryConf, threshold) : null;
   const entries = Object.entries(decision.answers ?? {});
+  const staleForRevision =
+    Boolean(decision.stale) ||
+    (typeof currentRevision === "number" &&
+      typeof decision.context_revision === "number" &&
+      decision.context_revision !== currentRevision);
 
   return (
     <section className="d1-panel" aria-label="Decision 1 assessment">
@@ -142,18 +185,31 @@ export function DecisionAssessmentPanel({ decision }: { decision: DecisionAssess
           </strong>
           <span className="d1-meta">
             {decision.model ?? "gemini-decision-1"} · Threshold {pct(threshold)}
+            {typeof decision.context_revision === "number" ? ` · Rev ${decision.context_revision}` : ""}
             {typeof decision.elapsed_ms === "number" ? ` · ${(decision.elapsed_ms / 1000).toFixed(2)}s` : ""}
             {typeof decision.usage?.total_input_tokens === "number"
               ? ` · ${decision.usage.total_input_tokens.toLocaleString()} tok`
               : ""}
           </span>
         </div>
-        {minConf !== null && band && (
-          <span className={`d1-conf-pill is-${band}`}>
-            Min confidence {pct(minConf, 1)}
-          </span>
-        )}
+        <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {minConf !== null && band && (
+            <span className={`d1-conf-pill is-${band}`}>
+              Gating confidence {pct(minConf, 1)}
+            </span>
+          )}
+          {advisoryConf !== null && advisoryBand && (
+            <span className={`d1-conf-pill is-${advisoryBand}`}>
+              Advisory match {pct(advisoryConf, 1)}
+            </span>
+          )}
+        </div>
       </div>
+      {staleForRevision && (
+        <p className="field-hint" style={{ marginTop: "0.35rem" }}>
+          Context assessment is from an earlier revision and awaiting refresh. Deterministic checks remain authoritative.
+        </p>
+      )}
 
       {entries.length > 0 && (
         <details className="d1-details" open={decision.outcome !== "PASSED"}>
@@ -164,10 +220,13 @@ export function DecisionAssessmentPanel({ decision }: { decision: DecisionAssess
             {entries.map(([key, answer]) => {
               const conf = answerConfidence(answer);
               const tone = conf !== null ? confidenceTone(conf, threshold) : "low";
+              const roleTag = ADVISORY_KEYS.has(key) ? "Advisory" : "Gating";
               return (
                 <div key={key} className="d1-card">
                   <div className="d1-card-top">
-                    <span className="d1-q">{QUESTION_LABELS[key] ?? formatOption(key)}</span>
+                    <span className="d1-q">
+                      {QUESTION_LABELS[key] ?? formatOption(key)} · <small>{roleTag}</small>
+                    </span>
                     {conf !== null && (
                       <span className={`d1-conf-mini is-${tone}`}>{pct(conf, 0)}</span>
                     )}

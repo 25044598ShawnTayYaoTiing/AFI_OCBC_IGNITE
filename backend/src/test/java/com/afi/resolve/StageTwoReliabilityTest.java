@@ -696,4 +696,332 @@ class StageTwoReliabilityTest {
         String.class, subId);
     assertThat(auditDetails).contains("0.87", "HIGH");
   }
+
+  @Test
+  void stageThreeAddressMatchingOneMapOutageAndRiskDeduplication() throws Exception {
+    // 1. Safe address comparison: optional building allowed, distinct street suffix ("Rivervale Walk 2") rejected
+    var policy = new BankingServicePolicy(documents, s);
+    assertThat(policy.compareAddress(
+        "109 Rivervale Walk, Rivervale Court, #12-34, Singapore 540109", "540109",
+        "109 Rivervale Walk, #12-34, S(540109)", "540109"))
+        .containsEntry("matched", "true");
+    assertThat(policy.compareAddress(
+        "Rivervale Court, Blk 109 Rivervale Walk #12-34 Singapore 540109", "540109",
+        "109 Rivervale Walk, #12-34, Singapore 540109", "540109"))
+        .containsEntry("matched", "true");
+    assertThat(policy.compareAddress(
+        "109 Rivervale Walk 2 #12-34 Singapore 540109", "540109",
+        "109 Rivervale Walk #12-34 Singapore 540109", "540109"))
+        .containsEntry("matched", "false")
+        .containsEntry("reason", "STREET_MISMATCH");
+    var verifiedCandidate = new OneMapClient.Candidate(
+        "cand-1", "109", "RIVERVALE WALK", "RIVERVALE COURT",
+        "109 RIVERVALE WALK RIVERVALE COURT SINGAPORE 540109", "540109", 1.38, 103.90, "ONEMAP_LIVE");
+    assertThat(policy.compareAddress(
+        "109 Rivervale Walk 2 #12-34 Singapore 540109", "540109",
+        "109 Rivervale Walk #12-34 Singapore 540109", "540109", List.of(verifiedCandidate)))
+        .containsEntry("matched", "false");
+    assertThat(policy.compareAddress(
+        "109 Rivervale Walk, Rivervale Court, #12-34, Singapore 540109", "540109",
+        "109 Rivervale Walk #12-34 Singapore 540109", "540109", List.of(verifiedCandidate)))
+        .containsEntry("matched", "true");
+
+    // 2. Temporary OneMap outage triggers PENDING_VALIDATION (not RM escalation), blocks approval, and recovers on retry
+    AtomicBoolean oneMapDown = new AtomicBoolean(true);
+    when(oneMap.verifyText(contains("543298"))).thenAnswer(call -> oneMapDown.get()
+        ? new OneMapClient.Verification("UNAVAILABLE", "ONEMAP_UNAVAILABLE", "Outage",
+            call.getArgument(0), "543298", null, List.of(), Instant.now())
+        : new OneMapClient.Verification("VERIFIED", "ONEMAP_LIVE", "Matched",
+            call.getArgument(0), "543298", null, List.of(), Instant.now()));
+    doAnswer(call -> extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+        "customer_name", "Alex Tan",
+        "customer_reference", reference,
+        "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298")))
+        .when(documents).extraction(any(byte[].class), anyString());
+
+    var pendingRes = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(addressForm("298B Sengkang East Way, #12-34", "543298")).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-onemap.pdf", "application/pdf",
+                "%PDF-ONEMAP-OUTAGE".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isAccepted())
+        .andReturn());
+    String pendingSubId = pendingRes.path("submission").path("id").asText();
+    assertThat(pendingRes.path("submission").path("status").asText()).isEqualTo("PENDING_VALIDATION");
+    assertThat(pendingRes.path("processing").path("pendingVerification").asBoolean()).isTrue();
+    assertThat(s.db.queryForObject(
+        "SELECT COUNT(*) FROM correction_tasks WHERE submission_id=? AND status='ESCALATED'",
+        Integer.class, pendingSubId)).isZero();
+
+    int rev = pendingRes.path("submission").path("revision").asInt();
+    mvc.perform(post("/api/documents/submissions/" + pendingSubId + "/approve")
+            .with(httpBasic("reviewer", "reviewer-demo"))
+            .contentType("application/json")
+            .content(s.json(map("revision", rev))))
+        .andExpect(status().isConflict());
+
+    oneMapDown.set(false);
+    var recovered = json(mvc.perform(
+        post("/api/customer/submissions/" + pendingSubId + "/retry-validation")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(recovered.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    assertThat(recovered.path("processing").path("pendingVerification").asBoolean()).isFalse();
+
+    // 3. OneMap MISMATCH contributes ADDRESS_CONFLICT once without duplicating SERVICE_SUPPORT ADDRESS_CONFLICT
+    when(oneMap.verifyText(contains("543999"))).thenReturn(
+        new OneMapClient.Verification("MISMATCH", "ONEMAP_LIVE", "Street mismatch",
+            "99 Wrong Way Singapore 543999", "543999", null, List.of(), Instant.now()));
+    doAnswer(call -> extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+        "customer_name", "Alex Tan",
+        "mailing_address", "298B Sengkang East Way #12-34 Singapore 543298")))
+        .when(documents).extraction(any(byte[].class), anyString());
+    var mismatchRes = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(addressForm("99 Wrong Way #12-34", "543999")).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-mismatch.pdf", "application/pdf",
+                "%PDF-ONEMAP-MISMATCH".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+    String mismatchId = mismatchRes.path("submission").path("id").asText();
+    var rmDetail = json(mvc.perform(
+        get("/api/documents/submissions/" + mismatchId)
+            .with(httpBasic("reviewer", "reviewer-demo")))
+        .andExpect(status().isOk())
+        .andReturn());
+    var contributions = rmDetail.path("riskAssessment").path("contributions");
+    assertThat(contributions.size()).isEqualTo(1);
+    assertThat(contributions.get(0).path("issue").asText()).isEqualTo("ADDRESS_CONFLICT");
+    assertThat(rmDetail.path("riskAssessment").path("score").asInt()).isEqualTo(20);
+  }
+
+  @Test
+  void stageThreeClassificationConsistencyAdditionalAccountsFlightTimeoutAndContextualRefresh()
+      throws Exception {
+    // 1. Consistent classification: DIGITAL_EFORM non-supporting document is persisted as UNKNOWN while preserving model_document_type
+    doAnswer(call -> {
+      var n = extractedNode((String) call.getArgument(1), "TAX_RESIDENCY", false, map(
+          "customer_name", "Alex Tan",
+          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+      n.put("method", "GEMINI");
+      return n;
+    }).when(documents).extraction(any(byte[].class), anyString());
+
+    var nonSupport = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(addressForm("298B Sengkang East Way, #12-34", "543298")).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "wrong-form.pdf", "application/pdf",
+                "%PDF-WRONG-DOC".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+    String classSubId = nonSupport.path("submission").path("id").asText();
+    assertThat(nonSupport.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
+    var rmClass = json(mvc.perform(
+        get("/api/documents/submissions/" + classSubId)
+            .with(httpBasic("reviewer", "reviewer-demo")))
+        .andExpect(status().isOk())
+        .andReturn());
+    var docNode = findUploadedDoc(rmClass.path("documents"));
+    assertThat(docNode.path("document_type").asText()).isEqualTo("UNKNOWN");
+    assertThat(docNode.path("extraction").path("document_type").asText()).isEqualTo("UNKNOWN");
+    assertThat(docNode.path("extraction").path("model_document_type").asText()).isEqualTo("TAX_RESIDENCY");
+    assertThat(s.db.queryForObject(
+        "SELECT document_type FROM submission_documents WHERE id=?",
+        String.class, docNode.path("id").asText())).isEqualTo("UNKNOWN");
+
+    // 2. Additional account: routed OPERATIONS request does NOT block a new request of same type/currency; active unrouted request DOES
+    var accForm = addressForm("1 Fictional Road", "018983");
+    accForm.put("requestType", "ADDITIONAL_ACCOUNT");
+    accForm.put("accountType", "SAVINGS");
+    accForm.put("currency", "SGD");
+    var firstAcc = json(mvc.perform(
+        post("/api/customer/eforms")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(accForm)))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(firstAcc.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+
+    var secondAcc = json(mvc.perform(
+        post("/api/customer/eforms")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(accForm)))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(secondAcc.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+
+    // Now test active unrouted CURRENT USD request (missing sourceOfFunds -> CORRECTION_REQUIRED) blocks a duplicate active CURRENT USD
+    var currentMissingFunds = addressForm("1 Fictional Road", "018983");
+    currentMissingFunds.put("requestType", "ADDITIONAL_ACCOUNT");
+    currentMissingFunds.put("accountType", "CURRENT");
+    currentMissingFunds.put("currency", "USD");
+    var activeAcc = json(mvc.perform(
+        post("/api/customer/eforms")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(currentMissingFunds)))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(activeAcc.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
+
+    var dupAccForm = new LinkedHashMap<>(currentMissingFunds);
+    dupAccForm.put("sourceOfFunds", "Salary");
+    var dupAcc = json(mvc.perform(
+        post("/api/customer/eforms")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(dupAccForm)))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(dupAcc.path("submission").path("status").asText()).isEqualTo("RESOLUTION_MANAGEMENT");
+
+    // 3. Request status check endpoint for safe idempotency recovery
+    String missingKey = UUID.randomUUID().toString();
+    var absent = json(mvc.perform(
+        get("/api/customer/requests/" + missingKey + "/status")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(absent.path("found").asBoolean()).isFalse();
+
+    String presentKey = UUID.randomUUID().toString();
+    var createdForCheck = json(mvc.perform(
+        post("/api/customer/eforms")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", presentKey)
+            .contentType("application/json")
+            .content(s.json(accForm)))
+        .andExpect(status().isOk())
+        .andReturn());
+    var foundStatus = json(mvc.perform(
+        get("/api/customer/requests/" + presentKey + "/status")
+            .header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(foundStatus.path("found").asBoolean()).isTrue();
+    assertThat(foundStatus.path("submissionId").asText())
+        .isEqualTo(createdForCheck.path("submission").path("id").asText());
+
+    // 4. Contextual Decision 1 refresh on eForm edit (calls assessDecision only when context changes)
+    doAnswer(call -> {
+      var n = extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
+          "customer_name", "Alex Tan",
+          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+      n.put("method", "GEMINI");
+      var dec = n.putObject("decision");
+      dec.put("model", "gemini-decision-1");
+      dec.put("outcome", "PASSED");
+      dec.put("gating_min_confidence", 0.94);
+      dec.put("min_confidence", 0.94);
+      dec.put("confidence_band", "HIGH");
+      var ans = dec.putObject("answers");
+      ans.putObject("request_corroboration").put("choice", "address_differs").put("confidence", 0.88);
+      return n;
+    }).when(documents).extraction(any(byte[].class), anyString());
+
+    var refreshCount = new java.util.concurrent.atomic.AtomicInteger();
+    doAnswer(call -> {
+      refreshCount.incrementAndGet();
+      var resp = s.json.createObjectNode();
+      resp.put("document_id", (String) call.getArgument(1));
+      resp.put("document_type", "SUPPORTING_DOCUMENT");
+      resp.put("requires_review", false);
+      var dec = resp.putObject("decision");
+      dec.put("model", "gemini-decision-1");
+      dec.put("outcome", "PASSED");
+      dec.put("gating_min_confidence", 0.95);
+      dec.put("min_confidence", 0.95);
+      dec.put("confidence_band", "HIGH");
+      dec.putObject("answers").putObject("request_corroboration").put("choice", "consistent").put("confidence", 0.96);
+      return resp;
+    }).when(documents).assessDecision(any(), anyString(), anyString(), any(), any(), any(), anyBoolean(), any(), any(), any());
+
+    var initialEditCase = json(mvc.perform(
+        multipart("/api/customer/eforms/with-documents")
+            .file(new MockMultipartFile("form", "form.json", "application/json",
+                s.json(addressForm("298B Sengkang East Way, #99-99", "543298")).getBytes(StandardCharsets.UTF_8)))
+            .file(new MockMultipartFile("files", "bill-ctx-refresh.pdf", "application/pdf",
+                "%PDF-CTX-REFRESH".getBytes(StandardCharsets.US_ASCII)))
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString()))
+        .andExpect(status().isOk())
+        .andReturn());
+    String editSubId = initialEditCase.path("submission").path("id").asText();
+    int editRev = initialEditCase.path("submission").path("revision").asInt();
+    assertThat(refreshCount.get()).isZero();
+
+    // Validating without changing eForm context must NOT call assessDecision
+    mvc.perform(post("/api/documents/submissions/" + editSubId + "/validate")
+            .with(httpBasic("reviewer", "reviewer-demo")))
+        .andExpect(status().isOk());
+    assertThat(refreshCount.get()).isZero();
+
+    // Updating eForm mailingAddress refreshes Decision 1 once for the new revision
+    var fixedForm = addressForm("298B Sengkang East Way, #12-34", "543298");
+    fixedForm.put("expectedRevision", editRev);
+    var updatedCase = json(mvc.perform(
+        post("/api/customer/submissions/" + editSubId + "/eform")
+            .header("Authorization", "Bearer " + token)
+            .header("Idempotency-Key", UUID.randomUUID().toString())
+            .contentType("application/json")
+            .content(s.json(fixedForm)))
+        .andExpect(status().isOk())
+        .andReturn());
+    assertThat(updatedCase.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    assertThat(refreshCount.get()).isEqualTo(1);
+    var refreshedRm = json(mvc.perform(
+        get("/api/documents/submissions/" + editSubId)
+            .with(httpBasic("reviewer", "reviewer-demo")))
+        .andExpect(status().isOk())
+        .andReturn());
+    var refreshedDec = findUploadedDoc(refreshedRm.path("documents")).path("extraction").path("decision");
+    assertThat(refreshedDec.path("answers").path("request_corroboration").path("choice").asText())
+        .isEqualTo("consistent");
+    assertThat(refreshedDec.path("context_revision").asInt())
+        .isEqualTo(updatedCase.path("submission").path("revision").asInt());
+  }
+
+  private JsonNode findUploadedDoc(JsonNode documentsNode) {
+    for (var d : documentsNode) {
+      if (!"DIGITAL_EFORM".equals(d.path("extraction").path("method").asText())) return d;
+    }
+    return documentsNode.get(0);
+  }
+
+  @Test
+  void flightLockTimeoutReturnsBoundedProcessingStatus(
+      @Autowired CustomerService customerService) throws Exception {
+    var prevTimeout = customerService.flightLockTimeout;
+    customerService.flightLockTimeout = java.time.Duration.ofMillis(80);
+    String flightKey = "flight-test-" + UUID.randomUUID();
+    var flight = customerService.startFlight(flightKey);
+    try {
+      assertThatThrownBy(() -> customerService.withFlightLock(flightKey, () -> {}))
+          .isInstanceOf(ApiException.class)
+          .satisfies(ex -> {
+            ApiException apiEx = (ApiException) ex;
+            assertThat(apiEx.status()).isEqualTo(503);
+            assertThat(apiEx.code()).isEqualTo("REQUEST_IN_PROGRESS");
+          });
+    } finally {
+      customerService.finishFlight(flightKey, flight);
+      customerService.flightLockTimeout = prevTimeout;
+    }
+  }
 }

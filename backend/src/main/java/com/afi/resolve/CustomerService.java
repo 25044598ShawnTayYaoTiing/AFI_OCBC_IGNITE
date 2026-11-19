@@ -24,6 +24,7 @@ public class CustomerService {
 
   private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Void>> inFlight =
       new java.util.concurrent.ConcurrentHashMap<>();
+  java.time.Duration flightLockTimeout = java.time.Duration.ofSeconds(25);
 
   java.util.concurrent.CompletableFuture<Void> startFlight(String flightKey) {
     var flight = new java.util.concurrent.CompletableFuture<Void>();
@@ -398,13 +399,19 @@ public class CustomerService {
                   "new_mailing_postal_code",
                   "new_residential_postal_code")
               : Set.of("foreign_tax_country", "tax_identifier");
+      boolean hasMissingRequiredInfo =
+          evidence.stream()
+              .anyMatch(
+                  e ->
+                      "supporting_document_status".equals(e.get("field_name"))
+                          && "MISSING_REQUIRED_INFORMATION".equals(e.get("field_value")));
       boolean hasExtractedTargetField =
           evidence.stream()
               .anyMatch(
                   e ->
                       supportIds.contains(e.get("document_id"))
                           && targetFields.contains(Objects.toString(e.get("field_name"), "")));
-      if (hasExtractedTargetField) {
+      if (hasExtractedTargetField && !hasMissingRequiredInfo) {
         return address
             ? "The address in your supporting document does not match your requested "
                 + addressLabel
@@ -566,12 +573,34 @@ public class CustomerService {
   }
 
   void withFlightLock(String flightKey, FlightWork work) throws Exception {
+    long deadlineNanos = System.nanoTime() + Math.max(1L, flightLockTimeout.toNanos());
     while (true) {
       var running = inFlight.get(flightKey);
       if (running != null) {
+        long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0L) {
+          throw new ApiException(
+              503,
+              "REQUEST_IN_PROGRESS",
+              "Your earlier request is still being processed. Wait a moment and retry safely.");
+        }
         try {
-          running.get(95, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (Exception ignored) {}
+          running.get(remainingNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+          Thread.currentThread().interrupt();
+          throw new ApiException(
+              503,
+              "REQUEST_IN_PROGRESS",
+              "Request processing was interrupted. Retry safely.");
+        } catch (java.util.concurrent.TimeoutException timedOut) {
+          throw new ApiException(
+              503,
+              "REQUEST_IN_PROGRESS",
+              "Your earlier request is still being processed. Wait a moment and retry safely.");
+        } catch (java.util.concurrent.ExecutionException
+            | java.util.concurrent.CancellationException ignored) {
+          // Original flight finished; re-check remaining budget and acquire lock cleanly.
+        }
         continue;
       }
       var flight = new java.util.concurrent.CompletableFuture<Void>();
@@ -580,10 +609,58 @@ public class CustomerService {
         work.run();
         return;
       } finally {
-        flight.complete(null);
-        inFlight.remove(flightKey, flight);
+        finishFlight(flightKey, flight);
       }
     }
+  }
+
+  public Object requestStatus(String key, Authentication a) {
+    if (key == null || !key.matches("[A-Za-z0-9_-]{8,100}"))
+      throw new ApiException(
+          400,
+          "INVALID_KEY",
+          "Supply an Idempotency-Key of 8–100 letters, digits, hyphens or underscores");
+    String customerId = (String) customer(a, false).get("id");
+    boolean inProgress = inFlight.containsKey(customerId + ":" + key);
+    var rows =
+        s.db.queryForList(
+            "SELECT r.submission_id, r.operation, s.status, s.revision FROM"
+                + " customer_upload_requests r JOIN document_submissions s ON"
+                + " s.id=r.submission_id WHERE r.customer_id=? AND r.request_key=?",
+            customerId,
+            key);
+    if (rows.isEmpty()) {
+      return map("found", false, "inProgress", inProgress);
+    }
+    var row = rows.getFirst();
+    String subId = (String) row.get("submission_id");
+    String op = Objects.toString(row.get("operation"), "");
+    boolean expectsAttachment = op.contains("/with-documents") || op.startsWith("/submissions");
+    boolean hasUploadedDocs =
+        !expectsAttachment
+            || s.db.queryForObject(
+                    "SELECT COUNT(*) FROM submission_documents WHERE submission_id=? AND"
+                        + " repository_only=FALSE AND document_type<>'SERVICE_REQUEST'",
+                    Integer.class,
+                    subId)
+                > 0;
+    return map(
+        "found",
+        true,
+        "inProgress",
+        inProgress,
+        "submissionId",
+        subId,
+        "status",
+        "ON_HOLD".equals(row.get("status")) ? "RESOLUTION_MANAGEMENT" : row.get("status"),
+        "revision",
+        row.get("revision"),
+        "operation",
+        op,
+        "hasDocuments",
+        hasUploadedDocs,
+        "pendingVerification",
+        documents.hasPendingVerification(subId));
   }
 
   void recoverPendingValidation(String id, boolean allowRepositoryCopy, Authentication a)
@@ -771,8 +848,7 @@ public class CustomerService {
                       "CUSTOMER_PORTAL",
                       "operation",
                       initial ? "INTAKE" : replace == null ? "ADD" : "REPLACE"));
-              var flight = new java.util.concurrent.CompletableFuture<Void>();
-              inFlight.put(c.get("id") + ":" + key, flight);
+              var flight = startFlight(c.get("id") + ":" + key);
               return map(
                   "replayed", false,
                   "submissionId", submissionId,
@@ -833,10 +909,7 @@ public class CustomerService {
       completeUpload(id, initial, key, a);
       return detail(id, a);
     } finally {
-      if (flight != null) {
-        flight.complete(null);
-        inFlight.remove(flightKey, flight);
-      }
+      finishFlight(flightKey, flight);
     }
   }
 

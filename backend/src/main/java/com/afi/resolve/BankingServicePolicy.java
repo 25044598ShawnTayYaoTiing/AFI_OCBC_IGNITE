@@ -224,91 +224,42 @@ final class BankingServicePolicy {
         && !trimmed.matches("(?i)^(?:n/?a|none|nil|unknown|pending|-+)$");
   }
 
-  private static String stripLeadingZeros(String token) {
-    String stripped = token.replaceFirst("^0+(?=\\d)", "");
-    return stripped.isEmpty() ? token : stripped;
-  }
-
   String addressText(Object value) {
-    return workflow.normal(value)
-        .replaceAll("\\b(?:building\\s*/\\s*estate|block\\s*/\\s*house\\s+no\\.?|building\\s+name|estate\\s+name|street\\s+name|road\\s+name|block\\s+no\\.?|house\\s+no\\.?|postal\\s+code|postcode)\\b", " ")
-        .replaceAll("\\bs\\s*\\(\\s*(\\d{6})\\s*\\)", "singapore $1")
-        .replaceAll("\\bs\\s+(\\d{6})\\b", "singapore $1")
-        .replaceFirst("^block\\s+|^blk\\.?\\s+", "")
-        .replaceAll("\\b(?:block|blk)\\.?\\s+(?=\\d)", "")
-        .replaceAll("\\bunit\\s*(?:no\\.?\\s*)?#?\\s*(?=[a-z0-9]{1,4}\\s*-)", "#")
-        .replaceAll("#\\s*", "#")
-        .replaceAll("(#\\w+)\\s*[-/]\\s*", "$1-")
-        .replaceAll("\\brd\\b", "road")
-        .replaceAll("\\bave\\b", "avenue")
-        .replaceAll("\\bst\\b", "street")
-        .replaceAll("\\bdr\\b", "drive")
-        .replaceAll("\\bcres\\b", "crescent")
-        .replaceAll("\\bpl\\b", "place")
-        .replaceAll("\\bln\\b", "lane")
-        .replaceAll("\\bter\\b", "terrace")
-        .replaceAll("\\bblvd\\b", "boulevard")
-        .replaceAll("\\bjln\\b", "jalan")
-        .replaceAll("\\blor\\b", "lorong")
-        .replaceAll("\\bbt\\b", "bukit")
-        .replaceAll("\\bupp\\b", "upper")
-        .replaceAll("\\bnth\\b", "north")
-        .replaceAll("\\bsth\\b", "south")
-        .replaceAll("\\bctr\\b", "centre")
-        .replaceAll("[,.()/]", " ")
-        .replaceAll("\\s+", " ")
-        .replaceAll("(.*?)\\b(singapore\\s+\\d{6})\\s+(#\\w+-\\S+)(.*)", "$1 $3 $2 $4")
-        .replaceAll("\\s+", " ")
-        .trim();
+    return AddressNormaliser.canonicalUpper(Objects.toString(value, "")).toLowerCase(Locale.ROOT);
   }
 
   AddressParts parseAddress(Object value, String fallbackPostal) {
-    String norm = addressText(value);
-    String work = norm;
-    String postal = "";
-    var postalMatcher = java.util.regex.Pattern.compile("\\b(?:singapore\\s+)?(\\d{6})\\b").matcher(work);
-    while (postalMatcher.find()) postal = postalMatcher.group(1);
-    if (!postal.isEmpty()) {
-      work = work.replaceAll("\\b(?:singapore\\s+)?\\d{6}\\b", " ");
-    } else if (fallbackPostal != null && fallbackPostal.trim().matches("\\d{6}")) {
-      postal = fallbackPostal.trim();
-    }
-    work = work.replaceAll("\\bsingapore\\b", " ");
-    String unit = "";
-    var unitMatcher = java.util.regex.Pattern.compile("#([a-z0-9]+)-([a-z0-9]+)").matcher(work);
-    if (unitMatcher.find()) {
-      unit = "#" + stripLeadingZeros(unitMatcher.group(1)) + "-" + stripLeadingZeros(unitMatcher.group(2));
-      work = work.substring(0, unitMatcher.start()) + " " + work.substring(unitMatcher.end());
-    }
-    work = work.replaceAll("\\s+", " ").trim();
-    String block = "";
-    String street = work;
-    var blockMatcher = java.util.regex.Pattern.compile("^(\\d+[a-z]?)\\s+(.+)$").matcher(work);
-    if (blockMatcher.matches()) {
-      block = blockMatcher.group(1);
-      street = blockMatcher.group(2).trim();
-    }
-    return new AddressParts(block, street, unit, postal, norm);
+    var parts = AddressNormaliser.parse(value, fallbackPostal);
+    return new AddressParts(parts.block(), parts.street(), parts.unit(), parts.postal(), parts.normalised());
   }
 
   Map<String, Object> compareAddress(
       Object actualValue, String actualPostal, Object requestedValue, String requestedPostal) {
-    var a = parseAddress(actualValue, actualPostal);
-    var b = parseAddress(requestedValue, requestedPostal);
-    if (a.normalised().isEmpty() || b.normalised().isEmpty()) {
+    return compareAddress(actualValue, actualPostal, requestedValue, requestedPostal, List.of());
+  }
+
+  Map<String, Object> compareAddress(
+      Object actualValue,
+      String actualPostal,
+      Object requestedValue,
+      String requestedPostal,
+      List<OneMapClient.Candidate> verifiedCandidates) {
+    var aParts = AddressNormaliser.parse(actualValue, actualPostal);
+    var bParts = AddressNormaliser.parse(requestedValue, requestedPostal);
+    if (aParts.normalised().isEmpty() || bParts.normalised().isEmpty()) {
       return map("matched", "false", "reason", "ADDRESS_MISSING", "detail", "Address value missing.");
     }
-    if (!Objects.equals(a.unit(), b.unit())) {
-      if (a.unit().isEmpty() || b.unit().isEmpty()) {
+    if (!Objects.equals(aParts.unit(), bParts.unit())) {
+      if (aParts.unit().isEmpty() || bParts.unit().isEmpty()) {
         return map(
             "matched",
             "false",
             "reason",
             "UNIT_MISSING",
             "detail",
-            a.unit().isEmpty()
-                ? "Supporting document is missing unit number (" + b.unit() + ")."
-                : "Submitted request is missing unit number (" + a.unit() + ") shown on document.");
+            aParts.unit().isEmpty()
+                ? "Supporting document is missing unit number (" + bParts.unit() + ")."
+                : "Submitted request is missing unit number (" + aParts.unit() + ") shown on document.");
       }
       return map(
           "matched",
@@ -316,25 +267,33 @@ final class BankingServicePolicy {
           "reason",
           "UNIT_MISMATCH",
           "detail",
-          "Unit number differs: document shows " + a.unit() + " vs requested " + b.unit() + ".");
+          "Unit number differs: document shows " + aParts.unit() + " vs requested " + bParts.unit() + ".");
     }
-    if (!a.postal().isEmpty() && !b.postal().isEmpty() && !a.postal().equals(b.postal())) {
+    if (!aParts.postal().isEmpty() && !bParts.postal().isEmpty() && !aParts.postal().equals(bParts.postal())) {
       return map(
           "matched",
           "false",
           "reason",
           "POSTAL_MISMATCH",
           "detail",
-          "Postal code differs: document shows " + a.postal() + " vs requested " + b.postal() + ".");
+          "Postal code differs: document shows " + aParts.postal() + " vs requested " + bParts.postal() + ".");
     }
-    boolean samePostalStreetAndOptionalBuilding =
-        !a.block().isEmpty()
-            && Objects.equals(a.block(), b.block())
-            && !a.postal().isEmpty()
-            && a.postal().equals(b.postal())
-            && (a.street().startsWith(b.street() + " ") || b.street().startsWith(a.street() + " "));
-    if (!Objects.equals(a.block(), b.block())
-        || (!Objects.equals(a.street(), b.street()) && !samePostalStreetAndOptionalBuilding)) {
+    boolean verifiedCandidateMatch =
+        verifiedCandidates != null
+            && !verifiedCandidates.isEmpty()
+            && verifiedCandidates.stream()
+                .anyMatch(
+                    candidate ->
+                        AddressNormaliser.matchesCandidate(aParts, candidate)
+                            && AddressNormaliser.matchesCandidate(bParts, candidate));
+    boolean safeComponentMatch =
+        !aParts.block().isEmpty()
+            && Objects.equals(aParts.block(), bParts.block())
+            && !aParts.postal().isEmpty()
+            && aParts.postal().equals(bParts.postal())
+            && AddressNormaliser.sameStreetWithOptionalBuilding(aParts.street(), bParts.street());
+    if (!Objects.equals(aParts.block(), bParts.block())
+        || (!Objects.equals(aParts.street(), bParts.street()) && !verifiedCandidateMatch && !safeComponentMatch)) {
       return map(
           "matched",
           "false",
@@ -342,27 +301,76 @@ final class BankingServicePolicy {
           "STREET_MISMATCH",
           "detail",
           "Block or street differs between document ("
-              + a.normalised()
+              + aParts.normalised()
               + ") and request ("
-              + b.normalised()
+              + bParts.normalised()
               + ").");
     }
-    if ((a.postal().isEmpty() ^ b.postal().isEmpty()) && (!a.postal().isEmpty() || !b.postal().isEmpty())) {
+    if ((aParts.postal().isEmpty() ^ bParts.postal().isEmpty())
+        && (!aParts.postal().isEmpty() || !bParts.postal().isEmpty())) {
       // Allow fixture/test text without postal if exact block+street+unit match and no SG postal was in either postal_code
       if (actualPostal != null && !actualPostal.isBlank() || requestedPostal != null && !requestedPostal.isBlank()) {
-        if (!a.postal().isEmpty() && b.postal().isEmpty()
-            || a.postal().isEmpty() && !b.postal().isEmpty() && actualValue.toString().toLowerCase(Locale.ROOT).contains("singapore")) {
+        if (!aParts.postal().isEmpty() && bParts.postal().isEmpty()
+            || aParts.postal().isEmpty() && !bParts.postal().isEmpty() && actualValue.toString().toLowerCase(Locale.ROOT).contains("singapore")) {
           return map(
               "matched",
               "false",
               "reason",
               "POSTAL_MISSING",
               "detail",
-              "Postal code missing on one address (" + a.postal() + " vs " + b.postal() + ").");
+              "Postal code missing on one address (" + aParts.postal() + " vs " + bParts.postal() + ").");
         }
       }
     }
     return map("matched", "true", "reason", "MATCHED", "detail", "All address components and unit matched.");
+  }
+
+  @SuppressWarnings("unchecked")
+  List<OneMapClient.Candidate> verifiedCandidatesForDocs(List<Map<String, Object>> docs) {
+    var result = new ArrayList<OneMapClient.Candidate>();
+    var seen = new HashSet<String>();
+    for (var doc : docs) {
+      Object versionId = doc.get("version_id");
+      if (versionId == null) continue;
+      for (var row :
+          s.db.queryForList(
+              "SELECT result_json FROM document_address_verifications WHERE version_id=?",
+              versionId)) {
+        var payload = s.readMap((String) row.get("result_json"));
+        if (!(payload.get("result") instanceof Map<?, ?> res)) continue;
+        if (res.get("selected") instanceof Map<?, ?> sel) addCandidate(sel, result, seen);
+        if (res.get("candidates") instanceof List<?> cands) {
+          for (var c : cands) {
+            if (c instanceof Map<?, ?> m) addCandidate(m, result, seen);
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  private static void addCandidate(
+      Map<?, ?> raw, List<OneMapClient.Candidate> out, Set<String> seen) {
+    String id = Objects.toString(raw.get("id"), "");
+    String block = Objects.toString(raw.get("block"), "");
+    String road = Objects.toString(raw.get("road"), "");
+    String postal = Objects.toString(raw.get("postalCode"), "");
+    if (block.isBlank() || road.isBlank() || postal.isBlank()) return;
+    String key = id.isBlank() ? (postal + "|" + block + "|" + road) : id;
+    if (!seen.add(key)) return;
+    double lat = raw.get("latitude") instanceof Number n ? n.doubleValue() : 0.0;
+    double lon = raw.get("longitude") instanceof Number n ? n.doubleValue() : 0.0;
+    out.add(
+        new OneMapClient.Candidate(
+            id,
+            block,
+            road,
+            Objects.toString(raw.get("building"), ""),
+            Objects.toString(raw.get("address"), ""),
+            postal,
+            lat,
+            lon,
+            Objects.toString(raw.get("source"), "ONEMAP_LIVE")));
   }
 
   boolean sameAddress(Object actualValue, Object requestedValue) {
@@ -392,20 +400,65 @@ final class BankingServicePolicy {
   String findDuplicateAdditionalAccount(
       String customerId, String submissionId, String accountType, String currency) {
     if (customerId == null || customerId.isBlank()) return null;
+    var currentRows =
+        s.db.queryForList(
+            "SELECT created_at, validated_at FROM document_submissions WHERE id=?", submissionId);
+    Object currentCreatedAt = currentRows.isEmpty() ? null : currentRows.getFirst().get("created_at");
+    boolean currentValidated = !currentRows.isEmpty() && currentRows.getFirst().get("validated_at") != null;
     for (var row :
         s.db.queryForList(
-            "SELECT d.id, d.status, f.payload_json FROM document_submissions d LEFT JOIN"
+            "SELECT d.id, d.status, d.created_at, d.validated_at, f.payload_json FROM document_submissions d LEFT JOIN"
                 + " customer_eforms f ON f.submission_id=d.id AND f.version=(SELECT"
                 + " COALESCE(MAX(version),0) FROM customer_eforms mf WHERE mf.submission_id=d.id)"
                 + " WHERE d.customer_id=? AND d.id<>? AND d.category='ADDITIONAL_ACCOUNT' AND"
-                + " d.status NOT IN ('CANCELLED','REJECTED') ORDER BY d.created_at DESC",
+                + " d.routed_at IS NULL AND"
+                + " d.status NOT IN ('DRAFT','CANCELLED','REJECTED','OPERATIONS') ORDER BY"
+                + " d.created_at ASC, d.id ASC",
             customerId,
             submissionId)) {
+      if (currentCreatedAt != null && row.get("created_at") != null) {
+        var otherTime = CustomerSessions.instant(row.get("created_at"));
+        var curTime = CustomerSessions.instant(currentCreatedAt);
+        if (otherTime.isAfter(curTime)) continue;
+        if (otherTime.equals(curTime)) {
+          boolean otherValidated = row.get("validated_at") != null;
+          if (!otherValidated && currentValidated) continue;
+          if (otherValidated == currentValidated && Objects.toString(row.get("id")).compareTo(submissionId) > 0)
+            continue;
+        }
+      }
+      String otherType = "";
+      String otherCurrency = "";
       String payloadJson = Objects.toString(row.get("payload_json"), "");
-      if (payloadJson.isBlank()) continue;
-      var payload = s.readMap(payloadJson);
-      if (same(accountType, payload.get("accountType"))
-          && same(currency, payload.get("currency"))) {
+      if (!payloadJson.isBlank()) {
+        var payload = s.readMap(payloadJson);
+        otherType = Objects.toString(payload.get("accountType"), "");
+        otherCurrency = Objects.toString(payload.get("currency"), "");
+      } else {
+        var reqDocs =
+            s.db.queryForList(
+                "SELECT v.id AS version_id FROM submission_documents sd JOIN document_versions v"
+                    + " ON v.document_id=sd.id AND v.version=sd.current_version WHERE"
+                    + " sd.submission_id=? AND sd.document_type='SERVICE_REQUEST' AND"
+                    + " sd.repository_only=FALSE",
+                row.get("id"));
+        if (!reqDocs.isEmpty()) {
+          for (var f :
+              s.db.queryForList(
+                  "SELECT field_name, field_value FROM extracted_fields WHERE version_id=?"
+                      + " AND field_name IN ('account_type','currency')",
+                  reqDocs.getFirst().get("version_id"))) {
+            if ("account_type".equals(f.get("field_name")))
+              otherType = Objects.toString(f.get("field_value"), "");
+            if ("currency".equals(f.get("field_name")))
+              otherCurrency = Objects.toString(f.get("field_value"), "");
+          }
+        }
+      }
+      if (!otherType.isBlank()
+          && !otherCurrency.isBlank()
+          && same(accountType, otherType)
+          && same(currency, otherCurrency)) {
         return (String) row.get("id");
       }
     }
@@ -678,10 +731,11 @@ final class BankingServicePolicy {
             String reqPostal = addressChange ? addressValue(docs, category, "postal_code") : "";
             var supportPostals = addressChange ? addressValues(support, category, "postal_code") : List.<Map<String, Object>>of();
             String supportPostalVal = supportPostals.size() == 1 ? Objects.toString(supportPostals.getFirst().get("field_value"), "") : "";
+            var verifiedCandidates = addressChange ? verifiedCandidatesForDocs(docs) : List.<OneMapClient.Candidate>of();
             boolean fieldMatched = !requested.isBlank() && !actual.isEmpty();
             for (var f : actual) {
               if (addressChange) {
-                var cmp = compareAddress(f.get("field_value"), supportPostalVal, requested, reqPostal);
+                var cmp = compareAddress(f.get("field_value"), supportPostalVal, requested, reqPostal, verifiedCandidates);
                 if (!"true".equals(cmp.get("matched"))) {
                   fieldMatched = false;
                   evidence.add(

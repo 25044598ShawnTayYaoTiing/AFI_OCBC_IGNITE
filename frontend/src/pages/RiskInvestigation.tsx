@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Detail } from "../document-types";
 import { dateTime, label, post } from "../api";
 import { ErrorBox, Panel } from "../components";
-import { minimumDecisionConfidence } from "./DecisionAssessmentPanel";
+import { advisoryDecisionConfidence, minimumDecisionConfidence } from "./DecisionAssessmentPanel";
 
 export function RiskInvestigation({
   detail,
@@ -98,9 +98,8 @@ export function RiskInvestigation({
                       : "Verified"}
                     {(() => {
                       const minConf = minimumDecisionConfidence(document.extraction.decision);
-                      return minConf !== null
-                        ? ` · Decision confidence ${(minConf * 100).toFixed(0)}%`
-                        : "";
+                      const advConf = advisoryDecisionConfidence(document.extraction.decision);
+                      return `${minConf !== null ? ` · Gating confidence ${(minConf * 100).toFixed(0)}%` : ""}${advConf !== null ? ` · Advisory ${(advConf * 100).toFixed(0)}%` : ""}`;
                     })()}
                   </p>
                 ))}

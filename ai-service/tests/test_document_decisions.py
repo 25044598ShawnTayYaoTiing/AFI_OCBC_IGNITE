@@ -63,6 +63,7 @@ def test_service_and_db_questions_and_real_min_confidence_gating():
     }
 
     # An address discrepancy keeps outcome PASSED so deterministic policy routes to customer correction
+    # Mandatory gating min confidence (0.90) is separated from advisory corroboration (0.84).
     extraction = SimpleNamespace(
         document_type='SUPPORTING_DOCUMENT', requires_review=False,
         fields=[SimpleNamespace(field='customer_name', value='Alex Tan')],
@@ -70,8 +71,26 @@ def test_service_and_db_questions_and_real_min_confidence_gating():
     res = reconcile(extraction, {'outcome': 'ASSESSED', 'answers': base_answers}, .80)
     assert res.decision['outcome'] == 'PASSED'
     assert not res.requires_review
-    assert res.decision['min_confidence'] == 0.84
+    assert res.decision['gating_min_confidence'] == 0.90
+    assert res.decision['min_confidence'] == 0.90
     assert res.decision['confidence_band'] == 'HIGH'
+    assert res.decision['advisory_min_confidence'] == 0.84
+    assert res.decision['advisory_confidence_band'] == 'HIGH'
+
+    # Low advisory confidence does not drag down mandatory gating confidence or trigger review
+    low_advisory = {**base_answers, 'request_corroboration': {
+        'type': 'choice', 'choice': 'incomplete', 'confidence': .45,
+        'probabilities': {'incomplete': .45, 'consistent': .35, 'address_differs': .20}}}
+    res_adv = reconcile(SimpleNamespace(
+        document_type='SUPPORTING_DOCUMENT', requires_review=False,
+        fields=[SimpleNamespace(field='customer_name', value='Alex Tan')],
+    ), {'outcome': 'ASSESSED', 'answers': low_advisory}, .80)
+    assert res_adv.decision['outcome'] == 'PASSED'
+    assert res_adv.decision['gating_min_confidence'] == 0.90
+    assert res_adv.decision['min_confidence'] == 0.90
+    assert res_adv.decision['confidence_band'] == 'HIGH'
+    assert res_adv.decision['advisory_min_confidence'] == 0.45
+    assert res_adv.decision['advisory_confidence_band'] == 'LOW'
 
     # Low route probability triggers UNCERTAIN even when choice is continue_checks
     low_route = {**base_answers, 'review_route': {
@@ -135,3 +154,65 @@ def test_decision1_tax_certificate_classification_overrides_tax_self_declaration
     assert res.decision['outcome'] == 'PASSED'
     assert res.decision['reconciled_from'] == 'TAX_RESIDENCY'
     assert not res.requires_review
+
+
+def test_tax_certificate_reconciliation_preserves_unrelated_extraction_uncertainty():
+    base_answers = {
+        'classification': {
+            'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.92,
+            'probabilities': {'SUPPORTING_DOCUMENT': 0.92, 'TAX_RESIDENCY': 0.08},
+        },
+        'readable': {'type': 'noul', 'confidence': 0.96, 'noul': 0.96},
+        'review_route': {
+            'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.95,
+            'probabilities': {'continue_checks': 0.95, 'manual_review': 0.05},
+        },
+        'consistency': {
+            'type': 'score', 'confidence': 0.94, 'score': 1.9,
+            'probabilities': {'0': 0.01, '1': 0.05, '2': 0.94},
+        },
+        'service_relevance': {'type': 'noul', 'confidence': 0.93, 'noul': 0.93},
+    }
+    valid_fields = [
+        SimpleNamespace(field='customer_name', value='User 2'),
+        SimpleNamespace(field='foreign_tax_country', value='Australia'),
+        SimpleNamespace(field='tax_identifier', value='AUS-QA-02-8741'),
+    ]
+
+    # 1. Blurry/unreadable quality keeps requires_review=True
+    blurry = SimpleNamespace(
+        document_type='TAX_RESIDENCY', requires_review=True, fields=valid_fields,
+        observations=[], notes='Some of the document could not be read clearly.', quality='BLURRY',
+    )
+    reconcile(blurry, {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': base_answers}, 0.80)
+    assert blurry.document_type == 'SUPPORTING_DOCUMENT'
+    assert blurry.requires_review is True
+
+    # 2. Missing mandatory TIN keeps requires_review=True even if customer_name & country are present
+    missing_tin = SimpleNamespace(
+        document_type='TAX_RESIDENCY', requires_review=True,
+        fields=valid_fields[:2], observations=[], notes='Live Gemini extraction', quality='READABLE',
+    )
+    reconcile(missing_tin, {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': base_answers}, 0.80)
+    assert missing_tin.document_type == 'SUPPORTING_DOCUMENT'
+    assert missing_tin.requires_review is True
+
+    # 3. Unverified/dropped mandatory extraction candidate keeps requires_review=True
+    unverified_issue = SimpleNamespace(
+        document_type='TAX_RESIDENCY', requires_review=True, fields=valid_fields,
+        observations=[], notes='Live Gemini extraction', quality='READABLE',
+        extraction_issues=['unverified:tax_identifier'],
+    )
+    reconcile(unverified_issue, {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': base_answers}, 0.80)
+    assert unverified_issue.document_type == 'SUPPORTING_DOCUMENT'
+    assert unverified_issue.requires_review is True
+
+    # 4. Conflicting/uncertain observation keeps requires_review=True
+    inconsistent_obs = SimpleNamespace(
+        document_type='TAX_RESIDENCY', requires_review=True, fields=valid_fields,
+        observations=[SimpleNamespace(field='tax_identifier', issue_type='POTENTIALLY_INCONSISTENT')],
+        notes='Live Gemini extraction', quality='READABLE',
+    )
+    reconcile(inconsistent_obs, {'outcome': 'ASSESSED', 'request_type': 'TAX_RESIDENCY_UPDATE', 'answers': base_answers}, 0.80)
+    assert inconsistent_obs.document_type == 'SUPPORTING_DOCUMENT'
+    assert inconsistent_obs.requires_review is True

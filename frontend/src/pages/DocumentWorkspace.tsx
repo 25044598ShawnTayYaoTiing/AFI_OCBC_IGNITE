@@ -473,8 +473,13 @@ export function DocumentWorkspace() {
                     </div>
                     <Panel title="Details read from this document" className="review-sidebar">
                       <div className="panel-body">
+                        {(!version || version === doc.version_id) && doc.extraction.model_document_type && doc.extraction.model_document_type !== doc.document_type && (
+                          <p className="field-hint">
+                            Effective classification: <strong>{label(doc.document_type)}</strong> (initial model classification: {label(doc.extraction.model_document_type)}).
+                          </p>
+                        )}
                         {(!version || version === doc.version_id) && doc.extraction.decision && (
-                          <DecisionAssessmentPanel decision={doc.extraction.decision} />
+                          <DecisionAssessmentPanel decision={doc.extraction.decision} currentRevision={data.submission.revision} />
                         )}
                         {version && version !== doc.version_id ? (
                           <Notice>

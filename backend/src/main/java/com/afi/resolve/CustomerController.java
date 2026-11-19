@@ -127,6 +127,12 @@ public class CustomerController {
     return submissionResponse(customers.retryValidation(id, a));
   }
 
+  @GetMapping("/requests/{key}/status")
+  @PreAuthorize("hasRole('CUSTOMER')")
+  public Object requestStatus(@PathVariable String key, Authentication a) {
+    return customers.requestStatus(key, a);
+  }
+
   @GetMapping("/submissions/{id}/corrections")
   public Object corrections(@PathVariable String id, Authentication a) {
     return customers.corrections(id, a);

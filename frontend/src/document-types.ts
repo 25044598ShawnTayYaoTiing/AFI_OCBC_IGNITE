@@ -62,6 +62,14 @@ export interface DecisionAssessment {
   threshold?: number;
   min_confidence?: number;
   confidence_band?: "HIGH" | "MEDIUM" | "LOW";
+  gating_min_confidence?: number;
+  gating_confidence_band?: "HIGH" | "MEDIUM" | "LOW";
+  advisory_min_confidence?: number;
+  advisory_confidence_band?: "HIGH" | "MEDIUM" | "LOW";
+  reconciled_from?: string;
+  context_revision?: number;
+  stale?: boolean;
+  stale_for_revision?: number;
   elapsed_ms?: number;
   usage?: { total_input_tokens?: number };
   answers?: Record<string, DecisionAnswer>;
@@ -78,6 +86,10 @@ export interface Doc {
   extraction: {
     method: string;
     requires_review: boolean;
+    document_type?: string;
+    effective_document_type?: string;
+    model_document_type?: string;
+    classification_overridden_reason?: string;
     decision?: DecisionAssessment | null;
     converted_from_images?: boolean;
     source_images?: { filename: string; size_bytes: number }[];

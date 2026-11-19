@@ -30,11 +30,16 @@ final class CaseRisk {
         issue = "IDENTITY_CONFLICT";
         group = "identity";
       } else if (key.equals("SERVICE_SUPPORT")) {
-        // Identify the actual supporting document in persisted data, not a model's diagnosis.
-        var supportingIds = new HashSet<>(s.db.queryForList(
-            "SELECT id FROM submission_documents WHERE submission_id=? AND"
-                + " document_type='SUPPORTING_DOCUMENT' AND repository_only=FALSE",
-            String.class, submission.get("id")));
+        // Identify the actual supporting document using consistent effective classification.
+        var supportingIds = new HashSet<String>();
+        for (var row : s.db.queryForList(
+            "SELECT d.id, d.document_type, v.extraction_json FROM submission_documents d"
+                + " JOIN document_versions v ON v.document_id=d.id AND v.version=d.current_version"
+                + " WHERE d.submission_id=? AND d.repository_only=FALSE",
+            submission.get("id"))) {
+          String effectiveType = DocumentService.effectiveDocumentType(s, row);
+          if ("SUPPORTING_DOCUMENT".equals(effectiveType)) supportingIds.add((String) row.get("id"));
+        }
         String category = Objects.toString(submission.get("category"), "");
         boolean tax = "TAX_RESIDENCY_UPDATE".equals(category);
         var comparedFields = tax ? List.of("tax_identifier", "foreign_tax_country")
@@ -95,7 +100,7 @@ final class CaseRisk {
           issue = "ELIGIBILITY_REVIEW";
           group = "eligibility";
         }
-      } else if (key.equals("ONEMAP_ADDRESS")
+      } else if (("ONEMAP_ADDRESS".equals(check.get("condition_type")) || key.equals("ONEMAP_ADDRESS"))
           && evidence.stream()
               .anyMatch(
                   item ->

@@ -56,7 +56,11 @@ public class ApiErrors {
           e.code(),
           e.getMessage());
     }
-    return ResponseEntity.status(e.status()).body(map("code", e.code(), "message", e.getMessage()));
+    var builder = ResponseEntity.status(e.status());
+    if (e.status() == 503 && "REQUEST_IN_PROGRESS".equals(e.code())) {
+      builder.header(HttpHeaders.RETRY_AFTER, "5");
+    }
+    return builder.body(map("code", e.code(), "message", e.getMessage()));
   }
 
   @ExceptionHandler({

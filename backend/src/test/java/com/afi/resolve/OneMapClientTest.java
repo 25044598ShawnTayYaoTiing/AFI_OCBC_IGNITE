@@ -67,4 +67,18 @@ class OneMapClientTest {
   @Test void credentialBodyCannotExposeValuesThroughDebugToString() {
     assertThat(new OneMapClient.Credentials("private-email", "private-password").toString()).contains("REDACTED").doesNotContain("private-email", "private-password");
   }
+
+  @Test void unifiesAbbreviationsAndRejectsDifferentStreetNumberSuffixes() {
+    String rivervale = "{\"found\":1,\"totalNumPages\":1,\"results\":[{\"BLK_NO\":\"109\",\"ROAD_NAME\":\"RIVERVALE WALK\",\"BUILDING\":\"RIVERVALE COURT\",\"ADDRESS\":\"109 RIVERVALE WALK RIVERVALE COURT SINGAPORE 540109\",\"POSTAL\":\"540109\",\"LATITUDE\":\"1.3821\",\"LONGITUDE\":\"103.9012\"}]}";
+    String search540109 = "https://www.onemap.gov.sg/api/common/elastic/search?searchVal=540109&returnGeom=Y&getAddrDetails=Y&pageNum=1";
+    auth();
+    server.expect(requestTo(search540109)).andExpect(header("Authorization", "test-token")).andRespond(withSuccess(rivervale, MediaType.APPLICATION_JSON));
+    server.expect(requestTo(search540109)).andExpect(header("Authorization", "test-token")).andRespond(withSuccess(rivervale, MediaType.APPLICATION_JSON));
+    server.expect(requestTo(search540109)).andExpect(header("Authorization", "test-token")).andRespond(withSuccess(rivervale, MediaType.APPLICATION_JSON));
+
+    assertThat(client.verifyText("Blk 109 Rivervale Walk, #12-34, S(540109)").status()).isEqualTo("VERIFIED");
+    assertThat(client.verifyText("Rivervale Court, 109 Rivervale Walk #12-34 Singapore 540109").status()).isEqualTo("VERIFIED");
+    assertThat(client.verifyText("109 Rivervale Walk 2 #12-34 Singapore 540109").status()).isEqualTo("MISMATCH");
+    server.verify();
+  }
 }

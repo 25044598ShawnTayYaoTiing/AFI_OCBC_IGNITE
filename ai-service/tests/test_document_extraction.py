@@ -274,3 +274,63 @@ def test_new_address_and_separate_postal_code_retain_their_own_citations():
         d.ModelEvidenceField(field='new_mailing_postal_code', value='200640', page=1, supporting_text='New Mailing Postal Code: 200640')])
     fields, _ = d.normalise(proposed, [source])
     assert [(field.field, field.value) for field in fields] == [('new_mailing_address', '640 Rowell Road'), ('new_mailing_postal_code', '200640')]
+
+
+def test_optional_unverified_candidate_does_not_flag_supporting_document_for_review(monkeypatch):
+    page = 'Utility Bill\nAccount Holder: Alex Tan\nBilling Address: 109 Rivervale Walk Singapore 540109\nHotline: 1800-000-0000'
+    monkeypatch.setattr(d, 'PdfReader', lambda *a, **k: SimpleNamespace(
+        is_encrypted=False, trailer={'/Root': {}}, pages=[TextPage(page)]))
+    monkeypatch.setattr(d, 'generate', lambda *args: d.ModelExtraction(
+        document_type='SUPPORTING_DOCUMENT', requires_review=False, fields=[
+            d.ModelEvidenceField(field='customer_name', value='Alex Tan', page=1, supporting_text='Account Holder: Alex Tan'),
+            d.ModelEvidenceField(field='mailing_address', value='109 Rivervale Walk Singapore 540109', page=1, supporting_text='Billing Address: 109 Rivervale Walk Singapore 540109'),
+            d.ModelEvidenceField(field='contact_information', value='1800-000-0000', page=1, supporting_text='Hotline: 1800-000-0000'),
+        ]))
+    monkeypatch.setattr(d.document_decisions, 'assess', lambda *args: {
+        'model': 'gemini-decision-1', 'outcome': 'ASSESSED', 'request_type': 'ADDRESS_CHANGE',
+        'answers': {
+            'classification': {'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.95, 'probabilities': {'SUPPORTING_DOCUMENT': 0.95}},
+            'readable': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+            'review_route': {'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.95, 'probabilities': {'continue_checks': 0.95}},
+            'consistency': {'type': 'score', 'confidence': 0.95, 'score': 2.0, 'probabilities': {'0': 0.01, '1': 0.04, '2': 0.95}},
+            'service_relevance': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+        },
+    })
+    res = d.extract(d.ExtractRequest(
+        document_id='bill-1', pdf_base64=base64.b64encode(b'%PDF-bill').decode(), request_type='ADDRESS_CHANGE',
+    ), Settings(service_key='test', gemini_api_key='test', gemini_model='test'))
+    assert not res.requires_review
+    assert [(f.field, f.value) for f in res.fields] == [
+        ('customer_name', 'Alex Tan'),
+        ('mailing_address', '109 Rivervale Walk Singapore 540109'),
+    ]
+
+
+def test_assess_endpoint_refreshes_decision_without_rerunning_extraction(client, headers, monkeypatch):
+    monkeypatch.setenv('GEMINI_API_KEY', 'test')
+    monkeypatch.setattr(d.document_decisions, 'assess', lambda media, settings, req_type, ctx: {
+        'model': 'gemini-decision-1', 'outcome': 'ASSESSED', 'request_type': req_type,
+        'answers': {
+            'classification': {'type': 'choice', 'choice': 'SUPPORTING_DOCUMENT', 'confidence': 0.96, 'probabilities': {'SUPPORTING_DOCUMENT': 0.96}},
+            'readable': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+            'review_route': {'type': 'choice', 'choice': 'continue_checks', 'confidence': 0.95, 'probabilities': {'continue_checks': 0.95}},
+            'consistency': {'type': 'score', 'confidence': 0.95, 'score': 2.0, 'probabilities': {'0': 0.01, '1': 0.04, '2': 0.95}},
+            'service_relevance': {'type': 'noul', 'confidence': 0.95, 'noul': 0.95},
+            'request_corroboration': {'type': 'choice', 'choice': 'consistent', 'confidence': 0.91, 'probabilities': {'consistent': 0.91, 'address_differs': 0.09}},
+        },
+    })
+    resp = client.post('/documents/assess', headers=headers, json={
+        'document_id': 'FILE-1',
+        'document_type': 'SUPPORTING_DOCUMENT',
+        'pdf_base64': base64.b64encode(b'%PDF-1.4\n').decode(),
+        'request_type': 'ADDRESS_CHANGE',
+        'context': {'request_type': 'ADDRESS_CHANGE', 'requested_mailing_address': '109 Rivervale Walk Singapore 540109'},
+        'fields': ['customer_name', 'mailing_address'],
+        'requires_review': False,
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body['decision']['outcome'] == 'PASSED'
+    assert body['decision']['answers']['request_corroboration']['choice'] == 'consistent'
+    assert body['decision']['gating_min_confidence'] == 0.95
+    assert body['decision']['advisory_min_confidence'] == 0.91
