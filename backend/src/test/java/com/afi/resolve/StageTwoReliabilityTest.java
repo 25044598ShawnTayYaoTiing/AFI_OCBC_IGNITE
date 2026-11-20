@@ -947,7 +947,7 @@ class StageTwoReliabilityTest {
     doAnswer(call -> {
       var n = extractedNode((String) call.getArgument(1), "SUPPORTING_DOCUMENT", false, map(
           "customer_name", "Alex Tan",
-          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+          "mailing_address", "Blk 298B Sengkang East Way #12-35 Singapore 543298"));
       n.put("method", "GEMINI");
       var dec = n.putObject("decision");
       dec.put("model", "gemini-decision-1");
@@ -998,7 +998,7 @@ class StageTwoReliabilityTest {
     assertThat(refreshCount.get()).isZero();
 
     // Updating eForm mailingAddress refreshes Decision 1 once for the new revision
-    var fixedForm = addressForm("298B Sengkang East Way, #12-34", "543298");
+    var fixedForm = addressForm("298B Sengkang East Way, #12-35", "543298");
     fixedForm.put("expectedRevision", editRev);
     var updatedCase = json(mvc.perform(
         post("/api/customer/submissions/" + editSubId + "/eform")
@@ -1278,7 +1278,7 @@ class StageTwoReliabilityTest {
                       false,
                       map(
                           "customer_name", "Alex Tan",
-                          "mailing_address", "Blk 298B Sengkang East Way #12-34 Singapore 543298"));
+                          "mailing_address", "Blk 298B Sengkang East Way #12-36 Singapore 543298"));
               n.put("method", "GEMINI");
               n.put("extraction_requires_review", false);
               var dec = n.putObject("decision");
@@ -1317,7 +1317,7 @@ class StageTwoReliabilityTest {
     doAnswer(call -> null)
         .when(documents)
         .assessDecision(any(), anyString(), anyString(), any(), any(), any(), anyBoolean(), any(), any(), any());
-    var fixUnavail = addressForm("298B Sengkang East Way, #12-34", "543298");
+    var fixUnavail = addressForm("298B Sengkang East Way, #12-36", "543298");
     fixUnavail.put("expectedRevision", unavailRev);
     mvc.perform(
             post("/api/customer/submissions/" + unavailId + "/eform")
