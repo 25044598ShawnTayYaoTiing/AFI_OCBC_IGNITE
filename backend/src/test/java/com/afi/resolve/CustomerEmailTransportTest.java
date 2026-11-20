@@ -104,6 +104,12 @@ class CustomerEmailTransportTest {
     assertThat(dispatcher.formattedFrom()).isEqualTo("AFI Resolve <afiresolve.demo@gmail.com>");
     dispatcher.testRecipients = "";
     assertThat(dispatcher.isAuthorisedRecipient("anyone@example.test")).isFalse();
+    dispatcher.requireAllowlist = false;
+    assertThat(dispatcher.canVerifyContact("arbitrary.user@example.test")).isTrue();
+    assertThat(dispatcher.canVerifyContact("blocked@example.invalid")).isFalse();
+    dispatcher.testRecipients = "team1@example.test, team2@example.test";
+    assertThat(dispatcher.canVerifyContact("team2@example.test")).isTrue();
+    assertThat(dispatcher.canVerifyContact("stranger@example.test")).isFalse();
   }
 
   @Test

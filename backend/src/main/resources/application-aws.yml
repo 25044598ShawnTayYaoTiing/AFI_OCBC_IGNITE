@@ -6,7 +6,7 @@ spring:
     password: ${DB_PASSWORD}
 afi:
   mail-enabled: ${SMTP_ENABLED:false}
-  mail-require-allowlist: true
+  mail-require-allowlist: ${SMTP_REQUIRE_ALLOWLIST:false}
   demo-enabled: ${DEMO_ENABLED:false}
   reviewer-password: ${REVIEWER_PASSWORD}
   rules-admin-password: ${RULES_ADMIN_PASSWORD}

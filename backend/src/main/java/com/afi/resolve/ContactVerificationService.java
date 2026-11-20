@@ -50,7 +50,7 @@ public class ContactVerificationService {
                     "Resolution Management must review this case before contact verification");
               if (!"CONTACT_UPDATE".equals(c.get("category")))
                 throw new ApiException(
-                    409, "NOT_CONTACT_REQUEST", "This case is not a contact-detail update");
+                    409, "NOT_CONTACT_REQUEST", "This case is not an email address update");
               var policy = new BankingServicePolicy(documents, s);
               var docs = documents.documents(id, false);
               var p = new CustomerProfiles(s).get((String) c.get("customer_id"));

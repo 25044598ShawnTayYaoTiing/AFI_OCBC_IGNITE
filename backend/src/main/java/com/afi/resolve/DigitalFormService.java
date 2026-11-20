@@ -425,7 +425,7 @@ public class DigitalFormService {
       throw new ApiException(
           400,
           "INVALID_FORM",
-          "Choose an address, contact-detail or tax-residency update for your existing customer"
+          "Choose an address, email-address or tax-residency update for your existing customer"
               + " profile");
     if (legacy
         && (!"ACCOUNT_OPENING".equals(f.requestType())

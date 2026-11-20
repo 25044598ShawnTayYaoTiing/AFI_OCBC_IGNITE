@@ -33,6 +33,7 @@ services:
       MAIL_FROM: ${MAIL_FROM:-}
       MAIL_FROM_NAME: ${MAIL_FROM_NAME:-AFI Resolve}
       SMTP_TEST_RECIPIENTS: ${SMTP_TEST_RECIPIENTS:-}
+      SMTP_REQUIRE_ALLOWLIST: ${SMTP_REQUIRE_ALLOWLIST:-false}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
       CUSTOMER_PORTAL_URL: ${CUSTOMER_PORTAL_URL:-https://ocbc-customer-portal.vercel.app}
       DEMO_ENABLED: ${AWS_DEMO_ENABLED:-false}

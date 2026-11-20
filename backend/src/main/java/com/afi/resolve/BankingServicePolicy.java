@@ -123,6 +123,17 @@ final class BankingServicePolicy {
                 "Phone number updates are disabled; mobile numbers remain read-only on customer"
                     + " profiles.")))
       workflow.seed(r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5));
+    s.db.update(
+        "UPDATE validation_rules SET name=?,corrective_action=? WHERE rule_key=?",
+        "Email address change requires OTP verification",
+        "Enter the 6-digit verification code sent to your new email address. An unavailable"
+            + " delivery channel cannot count as verified.",
+        "SERVICE_CONTACT_VERIFIED");
+    s.db.update(
+        "UPDATE validation_rules SET corrective_action=? WHERE rule_key=?",
+        "Phone number updates are disabled; mobile numbers remain read-only on customer"
+            + " profiles.",
+        "SERVICE_PHONE_REVIEW");
   }
 
   boolean applicable(Map<String, Object> rule, Map<String, Object> c) {
