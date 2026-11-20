@@ -208,9 +208,15 @@ public class CustomerEmailDispatcher {
       throw new ApiException(
           409,
           "OTP_UNAVAILABLE",
-          "Configure an authorised SMTP test channel and a deliverable profile/contact email before"
+          "Configure an authorised SMTP test channel and a deliverable email address before"
               + " requesting verification. No OTP has been verified.");
-    mail.send(genericMessage(recipient));
+    var message = genericMessage(recipient);
+    message.setText(
+        GENERIC_BODY
+            + "\n\nVerification code: "
+            + code
+            + "\n\nThis test verification code expires in 5 minutes.");
+    mail.send(message);
   }
 
   public boolean canVerifyContact(String recipient) {

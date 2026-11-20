@@ -71,21 +71,27 @@ final class ServiceRequestExecution {
         after.putAll(map("mailingAddress", full, "postalCode", postal, "unit", unit));
       }
       case "CONTACT_UPDATE" -> {
-        String email = value.apply("email", "email"), mobile = value.apply("mobile", "mobile");
-        if (!email.isBlank() && !email.equalsIgnoreCase(text(previous.get("email")))) {
-          if (!BankingServicePolicy.validEmail(email)) throw notReady();
-          s.db.update("UPDATE customer_profiles SET email=?,email_verified_test=FALSE,updated_at=? WHERE customer_id=?",
-              email, Store.now(), customer);
-          before.put("email", previous.get("email"));
-          after.put("email", email);
-        }
-        if (!mobile.isBlank() && !mobile.equals(text(previous.get("mobile")))) {
-          if (!BankingServicePolicy.validMobile(mobile)) throw notReady();
-          s.db.update("UPDATE customer_profiles SET mobile=?,updated_at=? WHERE customer_id=?",
-              mobile, Store.now(), customer);
-          before.put("mobile", previous.get("mobile"));
-          after.put("mobile", mobile);
-        }
+        String email = value.apply("email", "email");
+        if (email.isBlank() || email.equalsIgnoreCase(text(previous.get("email")))
+            || !BankingServicePolicy.validEmail(email)) throw notReady();
+        boolean verifiedOtp =
+            s.db.queryForObject(
+                    "SELECT COUNT(*) FROM contact_verifications WHERE submission_id=? AND"
+                        + " revision=? AND status='VERIFIED' AND LOWER(recipient)=LOWER(?)",
+                    Integer.class,
+                    id,
+                    revision,
+                    email)
+                > 0;
+        s.db.update(
+            "UPDATE customer_profiles SET email=?,email_verified_test=?,updated_at=?"
+                + " WHERE customer_id=?",
+            email,
+            verifiedOtp,
+            Store.now(),
+            customer);
+        before.put("email", previous.get("email"));
+        after.put("email", email);
       }
       case "TAX_RESIDENCY_UPDATE" -> {
         String residency = value.apply("taxResidency", "tax_residency");

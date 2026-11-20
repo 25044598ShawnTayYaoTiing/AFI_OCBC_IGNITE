@@ -371,7 +371,6 @@ public class DigitalFormService {
       }
       if (form.requestType().equals("CONTACT_UPDATE")) {
         common.put("email", trim(form.email()));
-        common.put("mobile", trim(form.mobile()));
       }
       if (form.requestType().equals("TAX_RESIDENCY_UPDATE")) {
         common.put("tax_residency", trim(form.taxResidency()));
@@ -450,11 +449,14 @@ public class DigitalFormService {
       if (value.length() > 500 || value.chars().anyMatch(c -> c < 32))
         throw new ApiException(
             400, "INVALID_FORM", "Form values must be single-line and at most 500 characters");
-    if ((legacy || "CONTACT_UPDATE".equals(f.requestType()))
+    if (legacy
         && ((!trim(f.email()).isBlank() && !BankingServicePolicy.validEmail(trim(f.email())))
             || (!trim(f.mobile()).isBlank() && !BankingServicePolicy.validMobile(trim(f.mobile())))))
       throw new ApiException(
           400, "INVALID_FORM", "Provide a valid contact email and telephone number");
+    if ("CONTACT_UPDATE".equals(f.requestType())
+        && (trim(f.email()).isBlank() || !BankingServicePolicy.validEmail(trim(f.email()))))
+      throw new ApiException(400, "INVALID_FORM", "Provide a valid new email address");
     if (Set.of("ADDRESS_CHANGE", "RESIDENTIAL_ADDRESS_CHANGE").contains(f.requestType())) {
       String addr =
           "RESIDENTIAL_ADDRESS_CHANGE".equals(f.requestType())

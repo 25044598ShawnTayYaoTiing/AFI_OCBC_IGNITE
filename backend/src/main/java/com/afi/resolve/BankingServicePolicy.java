@@ -108,21 +108,20 @@ final class BankingServicePolicy {
                     + " tax jurisdiction and TIN where required."),
             List.of(
                 "SERVICE_CONTACT_VERIFIED",
-                "Contact update requires email OTP verification",
+                "Email address change requires OTP verification",
                 "PACKAGE",
                 "SERVICE",
                 "",
-                "Use Verify contact update to confirm an OTP delivered to the new email, or the"
-                    + " registered email for a phone-only change. An unavailable delivery channel"
-                    + " cannot count as verified."),
+                "Enter the 6-digit verification code sent to your new email address. An"
+                    + " unavailable delivery channel cannot count as verified."),
             List.of(
                 "SERVICE_PHONE_REVIEW",
                 "New phone number requires independent verification",
                 "PACKAGE",
                 "SERVICE_MANUAL",
                 "mobile",
-                "Resolution Management must record completed phone verification; email"
-                    + " authorisation alone does not prove ownership of the new number.")))
+                "Phone number updates are disabled; mobile numbers remain read-only on customer"
+                    + " profiles.")))
       workflow.seed(r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5));
   }
 
@@ -419,10 +418,7 @@ final class BankingServicePolicy {
 
   boolean phoneChanged(
       Map<String, Object> c, List<Map<String, Object>> docs, Map<String, Object> profile) {
-    String phone = normalisePhone(value(docs, "mobile"));
-    return "CONTACT_UPDATE".equals(c.get("category"))
-        && !phone.isBlank()
-        && !phone.equals(normalisePhone(Objects.toString(profile.get("mobile"), "")));
+    return false;
   }
 
   String findDuplicateAdditionalAccount(
@@ -594,7 +590,7 @@ final class BankingServicePolicy {
             switch (category) {
               case "ADDRESS_CHANGE" -> List.of("mailing_address", "postal_code");
               case "RESIDENTIAL_ADDRESS_CHANGE" -> List.of("residential_address", "postal_code");
-              case "CONTACT_UPDATE" -> List.of("email", "mobile");
+              case "CONTACT_UPDATE" -> List.of("email");
               case "TAX_RESIDENCY_UPDATE" -> List.of("tax_residency");
               case "ADDITIONAL_ACCOUNT" ->
                   List.of("account_type", "currency", "existing_account_reference");
@@ -639,13 +635,10 @@ final class BankingServicePolicy {
                 yield !requested.isBlank() && (!sameAsProfile || postalChanged);
               }
               case "CONTACT_UPDATE" -> {
-                String email = value(docs, "email"), mobile = value(docs, "mobile");
-                boolean emailValid = email.isBlank() || validEmail(email);
-                boolean phoneValid = mobile.isBlank() || validMobile(mobile);
-                yield emailValid
-                    && phoneValid
-                    && ((!email.isBlank() && !same(email, profile.get("email")))
-                        || phoneChanged(c, docs, profile));
+                String email = value(docs, "email");
+                yield !email.isBlank()
+                    && validEmail(email)
+                    && !same(email, profile.get("email"));
               }
               case "ADDITIONAL_ACCOUNT" -> {
                 String accType = value(docs, "account_type"), ccy = value(docs, "currency");
@@ -1005,10 +998,7 @@ final class BankingServicePolicy {
                           id,
                           c.get("revision"))
                       > 0;
-      case "SERVICE_PHONE_REVIEW" ->
-          pass =
-              !phoneChanged(c, docs, profile)
-                  || Objects.equals(c.get("revision"), c.get("phone_verified_revision"));
+      case "SERVICE_PHONE_REVIEW" -> pass = true;
       default -> pass = false;
     }
     evidence.add(
@@ -1027,8 +1017,8 @@ final class BankingServicePolicy {
     var result = workflow.check(rule, key, pass, evidence);
     boolean applicable =
         switch (key) {
-          case "SERVICE_CONTACT_VERIFIED", "SERVICE_PHONE_REVIEW" ->
-              category.equals("CONTACT_UPDATE");
+          case "SERVICE_CONTACT_VERIFIED" -> category.equals("CONTACT_UPDATE");
+          case "SERVICE_PHONE_REVIEW" -> false;
           case "SERVICE_SUPPORT" -> supportRequired(c, docs);
           case "SERVICE_POSTAL" -> !addressValues(requestDocs(docs), category, "postal_code").isEmpty();
           case "SERVICE_FUNDS" ->

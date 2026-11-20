@@ -244,6 +244,7 @@ public class DocumentService {
         "Escalate ambiguous or unsupported evidence for human review; upload a supported corrected"
             + " form.");
     reconcileHistoricalOverriddenClassifications();
+    reconcileHistoricalServiceExecutions();
   }
 
   void seed(String key, String name, String type, String condition, String field, String action) {
@@ -590,6 +591,146 @@ public class DocumentService {
                 row.get("version_id"));
           }
         });
+  }
+
+  @SuppressWarnings("unchecked")
+  void reconcileHistoricalServiceExecutions() {
+    var log = org.slf4j.LoggerFactory.getLogger(DocumentService.class);
+    var systemActor =
+        org.springframework.security.authentication.UsernamePasswordAuthenticationToken.authenticated(
+            "system-reconcile",
+            null,
+            List.of(
+                new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                    "ROLE_REVIEWER")));
+    var candidates =
+        s.db.queryForList(
+            "SELECT d.id FROM document_submissions d WHERE d.status='OPERATIONS'"
+                + " AND d.customer_id IS NOT NULL"
+                + " AND d.category IN"
+                + " ('ADDRESS_CHANGE','CONTACT_UPDATE','TAX_RESIDENCY_UPDATE','ADDITIONAL_ACCOUNT')"
+                + " AND d.revision IS NOT NULL AND d.approved_revision=d.revision"
+                + " AND d.validated_revision=d.revision AND d.risk_hold=FALSE"
+                + " AND d.staff_suspended=FALSE"
+                + " AND NOT EXISTS (SELECT 1 FROM audit_logs a WHERE a.exception_id=d.id"
+                + " AND a.event_type IN"
+                + " ('DOCUMENT_SERVICE_REQUEST_EXECUTED','DOCUMENT_SERVICE_REQUEST_EXECUTION_SKIPPED'))"
+                + " ORDER BY COALESCE(d.routed_at, d.validated_at, d.created_at) ASC, d.id ASC");
+    for (var candidate : candidates) {
+      String id = Objects.toString(candidate.get("id"), "");
+      if (id.isBlank()) continue;
+      try {
+        s.inTxVoid(
+            () -> {
+              var rows =
+                  s.db.queryForList(
+                      "SELECT * FROM document_submissions WHERE id=? FOR UPDATE", id);
+              if (rows.isEmpty()) return;
+              var c = rows.getFirst();
+              String category = Objects.toString(c.get("category"), "");
+              String customerId = Objects.toString(c.get("customer_id"), "");
+              if (!"OPERATIONS".equals(c.get("status"))
+                  || customerId.isBlank()
+                  || !ServiceRequestExecution.supports(category)
+                  || c.get("revision") == null
+                  || !Objects.equals(c.get("revision"), c.get("approved_revision"))
+                  || !Objects.equals(c.get("revision"), c.get("validated_revision"))
+                  || Boolean.TRUE.equals(c.get("risk_hold"))
+                  || Boolean.TRUE.equals(c.get("staff_suspended"))) return;
+              if (s.db.queryForObject(
+                      "SELECT COUNT(*) FROM audit_logs WHERE exception_id=? AND event_type IN"
+                          + " ('DOCUMENT_SERVICE_REQUEST_EXECUTED','DOCUMENT_SERVICE_REQUEST_EXECUTION_SKIPPED')",
+                      Integer.class,
+                      id)
+                  > 0) return;
+              if ("ADDITIONAL_ACCOUNT".equals(category)) {
+                if (s.db.queryForObject(
+                        "SELECT COUNT(*) FROM customer_additional_accounts WHERE submission_id=?",
+                        Integer.class,
+                        id)
+                    > 0) {
+                  event(
+                      id,
+                      systemActor,
+                      "SERVICE_REQUEST_EXECUTION_SKIPPED",
+                      map(
+                          "revision", c.get("revision"),
+                          "service", category,
+                          "reason", "ALREADY_PROVISIONED"));
+                  return;
+                }
+              } else {
+                var newer =
+                    s.db.queryForList(
+                        "SELECT n.id FROM document_submissions n JOIN document_submissions cur ON"
+                            + " cur.id=? WHERE n.customer_id=cur.customer_id AND"
+                            + " n.category=cur.category AND n.id<>cur.id AND"
+                            + " n.status='OPERATIONS' AND (COALESCE(n.routed_at, n.validated_at,"
+                            + " n.created_at) > COALESCE(cur.routed_at, cur.validated_at,"
+                            + " cur.created_at) OR (COALESCE(n.routed_at, n.validated_at,"
+                            + " n.created_at) = COALESCE(cur.routed_at, cur.validated_at,"
+                            + " cur.created_at) AND n.id > cur.id)) ORDER BY"
+                            + " COALESCE(n.routed_at, n.validated_at, n.created_at) DESC, n.id"
+                            + " DESC LIMIT 1",
+                        id);
+                if (!newer.isEmpty()) {
+                  event(
+                      id,
+                      systemActor,
+                      "SERVICE_REQUEST_EXECUTION_SKIPPED",
+                      map(
+                          "revision", c.get("revision"),
+                          "service", category,
+                          "reason", "SUPERSEDED_BY_NEWER_OPERATIONS_REQUEST",
+                          "newerSubmissionId", newer.getFirst().get("id")));
+                  return;
+                }
+                if ("ADDRESS_CHANGE".equals(category)
+                    && s.db.queryForObject(
+                            "SELECT COUNT(*) FROM customer_registered_addresses cra JOIN"
+                                + " document_submissions cur ON cur.id=? WHERE"
+                                + " cra.customer_id=cur.customer_id AND cra.address_type='MAILING'"
+                                + " AND cra.updated_at > COALESCE(cur.routed_at, cur.validated_at,"
+                                + " cur.created_at)",
+                            Integer.class,
+                            id)
+                        > 0) {
+                  event(
+                      id,
+                      systemActor,
+                      "SERVICE_REQUEST_EXECUTION_SKIPPED",
+                      map(
+                          "revision", c.get("revision"),
+                          "service", category,
+                          "reason", "SUPERSEDED_BY_NEWER_PROFILE_UPDATE"));
+                  return;
+                }
+              }
+              var stored =
+                  s.db.queryForList(
+                      "SELECT check_key, passed, evidence_json FROM validation_results WHERE"
+                          + " submission_id=? AND revision=? ORDER BY check_key, created_at DESC",
+                      id,
+                      c.get("revision"));
+              var byKey = new LinkedHashMap<String, Map<String, Object>>();
+              for (var r : stored) {
+                String key = (String) r.get("check_key");
+                if (byKey.containsKey(key)) continue;
+                byKey.put(
+                    key,
+                    map(
+                        "check_key", key,
+                        "passed", r.get("passed"),
+                        "evidence", s.read((String) r.get("evidence_json"), List.class)));
+              }
+              List<Map<String, Object>> checks =
+                  byKey.isEmpty() ? evaluate(id) : new ArrayList<>(byKey.values());
+              new ServiceRequestExecution(s, this).apply(c, checks, systemActor);
+            });
+      } catch (Exception ex) {
+        log.warn("Historical service execution reconciliation skipped for {}: {}", id, ex.getMessage());
+      }
+    }
   }
 
   List<Map<String, Object>> documents(String id, boolean repository) {

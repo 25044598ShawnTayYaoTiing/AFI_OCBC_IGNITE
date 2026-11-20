@@ -354,6 +354,8 @@ class DigitalFormIntegrationTest {
                 .andReturn());
     assertThat(confirmed.path("contactVerification").path("emailVerified").asBoolean()).isTrue();
     assertThat(confirmed.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    assertThat(s.db.queryForObject("SELECT email FROM customer_profiles WHERE customer_id=?", String.class, customer))
+        .isEqualTo("new-contact@example.test");
     f.put("email", "another@example.test");
     f.put("expectedRevision", confirmed.path("submission").path("revision").asInt());
     submit("/api/customer/submissions/" + id + "/eform", UUID.randomUUID().toString(), f)
@@ -361,18 +363,27 @@ class DigitalFormIntegrationTest {
   }
 
   @Test
-  void phoneEmailAuthorisationCannotStandInForPhoneOwnershipVerification() throws Exception {
+  void phoneChangesAreDisabledAndMobileRemainsReadOnly() throws Exception {
+    String originalMobile =
+        s.db.queryForObject(
+            "SELECT mobile FROM customer_profiles WHERE customer_id=?", String.class, customer);
+    var phoneOnly = form();
+    phoneOnly.put("requestType", "CONTACT_UPDATE");
+    phoneOnly.put("email", "");
+    phoneOnly.put("mobile", "+65 8111 2222");
+    submit("/api/customer/eforms", UUID.randomUUID().toString(), phoneOnly)
+        .andExpect(status().isBadRequest());
+
     var f = form();
     f.put("requestType", "CONTACT_UPDATE");
-    f.put("email", "");
-    f.put("mobile", "+65 8000 1234");
+    f.put("email", "email-only@example.test");
+    f.put("mobile", "+65 8111 2222");
     var result =
         json(
             submit("/api/customer/eforms", UUID.randomUUID().toString(), f)
                 .andExpect(status().isOk())
                 .andReturn());
     String id = id(result);
-    int revision = result.path("submission").path("revision").asInt();
     var code = new java.util.concurrent.atomic.AtomicReference<String>();
     doReturn(true).when(mail).canVerifyContact(anyString());
     doAnswer(
@@ -389,46 +400,29 @@ class DigitalFormIntegrationTest {
                         .header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk())
                 .andReturn());
-    mvc.perform(
-            post("/api/customer/submissions/" + id + "/contact-verification/confirm")
-                .header("Authorization", "Bearer " + token)
-                .contentType("application/json")
-                .content(
-                    s.json(
-                        map(
-                            "challengeId",
-                            challenge.path("challengeId").asText(),
-                            "code",
-                            code.get()))))
-        .andExpect(status().isOk());
-    mvc.perform(
-            post("/api/documents/submissions/" + id + "/approve")
-                .with(httpBasic("reviewer", "reviewer-demo"))
-                .contentType("application/json")
-                .content(s.json(map("revision", revision))))
-        .andExpect(status().isConflict());
-    mvc.perform(
-            post("/api/documents/submissions/" + id + "/verify-phone")
-                .with(httpBasic("reviewer", "reviewer-demo"))
-                .contentType("application/json")
-                .content(s.json(map("revision", revision, "verificationNote", ""))))
-        .andExpect(status().isBadRequest());
-    mvc.perform(
-            post("/api/documents/submissions/" + id + "/verify-phone")
-                .with(httpBasic("reviewer", "reviewer-demo"))
-                .contentType("application/json")
-                .content(
-                    s.json(
-                        map(
-                            "revision",
-                            revision,
-                            "verificationNote",
-                            "Synthetic authorised phone verification completed in the test"
-                                + " procedure"))))
-        .andExpect(status().isOk());
-    assertThat(s.db.queryForObject(
-        "SELECT status FROM document_submissions WHERE id=?", String.class, id))
-        .isEqualTo("OPERATIONS");
+    var confirmed =
+        json(
+            mvc.perform(
+                    post("/api/customer/submissions/" + id + "/contact-verification/confirm")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(
+                            s.json(
+                                map(
+                                    "challengeId",
+                                    challenge.path("challengeId").asText(),
+                                    "code",
+                                    code.get()))))
+                .andExpect(status().isOk())
+                .andReturn());
+    assertThat(confirmed.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    var profile =
+        s.db.queryForMap(
+            "SELECT email,email_verified_test,mobile FROM customer_profiles WHERE customer_id=?",
+            customer);
+    assertThat(profile.get("email")).isEqualTo("email-only@example.test");
+    assertThat(profile.get("email_verified_test")).isEqualTo(true);
+    assertThat(profile.get("mobile")).isEqualTo(originalMobile);
   }
 
   @Test

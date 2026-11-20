@@ -353,7 +353,7 @@ const eventNames: Record<string, string> = {
   AUTOMATION_BLOCKED: "Automatic action blocked",
   AUTOMATION_FAILED: "Automatic action failed",
   SERVICE_REQUEST_EXECUTED: "Approved service request completed",
-  ROUTED: "Sent to Operations",
+  ROUTED: "Completed",
   UPLOADED: "Document uploaded",
   REPLACED: "Document replaced",
   VALIDATED: "Documents checked",

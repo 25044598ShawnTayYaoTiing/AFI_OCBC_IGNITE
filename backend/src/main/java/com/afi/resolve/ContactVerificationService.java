@@ -34,8 +34,6 @@ public class ContactVerificationService {
 
   public record Confirmation(String challengeId, String code) {}
 
-  public record PhoneReview(int revision, String verificationNote) {}
-
   public Object request(String id, Authentication a) {
     String code = String.format(Locale.ROOT, "%06d", random.nextInt(1_000_000));
     var challenge =
@@ -60,12 +58,12 @@ public class ContactVerificationService {
               String destination =
                   !requested.isBlank() && !policy.same(requested, p.get("email"))
                       ? requested
-                      : (String) p.get("email");
+                      : "";
               if (!email.canVerifyContact(destination))
                 throw new ApiException(
                     409,
                     "OTP_UNAVAILABLE",
-                    "An authorised SMTP channel and deliverable verification email are required."
+                    "An authorised SMTP channel and deliverable new email address are required."
                         + " Verification remains pending.");
               if (s.db.queryForObject(
                           "SELECT COUNT(*) FROM contact_verifications WHERE customer_id=? AND"
@@ -195,37 +193,5 @@ public class ContactVerificationService {
               + " revision");
     documents.validate(id, a);
     return customers.detail(id, a);
-  }
-
-  public Object confirmPhone(String id, PhoneReview request, Authentication a) {
-    if (request.verificationNote() == null
-        || request.verificationNote().strip().length() < 12
-        || request.verificationNote().length() > 500)
-      throw new ApiException(
-          400,
-          "VERIFICATION_NOTE_REQUIRED",
-          "Record how the synthetic new phone number was independently verified; do not enter OTP"
-              + " codes");
-    tx.executeWithoutResult(
-        t -> {
-          var c = documents.access(id, a, true);
-          documents.editable(c);
-          if (!documents.reviewer(a) || !"CONTACT_UPDATE".equals(c.get("category")))
-            throw new ApiException(
-                403, "FORBIDDEN", "Resolution Management phone verification is required");
-          if (((Number) c.get("revision")).intValue() != request.revision())
-            throw new ApiException(
-                409, "STALE_REVIEW", "Reload the current case before confirming verification");
-          s.db.update(
-              "UPDATE document_submissions SET phone_verified_revision=? WHERE id=?",
-              request.revision(),
-              id);
-          documents.event(
-              id,
-              a,
-              "PHONE_VERIFICATION_RECORDED",
-              map("revision", request.revision(), "verificationNote", request.verificationNote()));
-        });
-    return documents.validate(id, a);
   }
 }

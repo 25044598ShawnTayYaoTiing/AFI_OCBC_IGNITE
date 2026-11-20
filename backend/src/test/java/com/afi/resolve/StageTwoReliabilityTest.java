@@ -322,10 +322,11 @@ class StageTwoReliabilityTest {
         Boolean.class, uncertainId);
     assertThat(classificationPassed).isFalse();
 
-    // 3. CONTACT_UPDATE invalid mobile returns 400 INVALID_FORM
+    // 3. CONTACT_UPDATE invalid email returns 400 INVALID_FORM
     var badContact = addressForm("298B Sengkang East Way, #12-345", "543298");
     badContact.put("requestType", "CONTACT_UPDATE");
-    badContact.put("mobile", "-------");
+    badContact.put("email", "not-an-email");
+    badContact.put("mobile", null);
     mvc.perform(
         post("/api/customer/eforms")
             .header("Authorization", "Bearer " + token)
@@ -1765,5 +1766,95 @@ class StageTwoReliabilityTest {
                             "classification",
                             map("choice", "TAX_RESIDENCY", "confidence", 0.92))))))
         .isEqualTo("TAX_RESIDENCY");
+  }
+
+  @Test
+  void historicalServiceExecutionReconcilesMissingUpdatesWithoutOverwritingNewerChanges()
+      throws Exception {
+    String customerId = s.id("CUST");
+    s.db.update(
+        "INSERT INTO customers(id,username,password_hash,customer_name,customer_reference,relationship_manager,created_at)"
+            + " VALUES(?,?,?,?,?,?,?)",
+        customerId, "reconcile-" + customerId.toLowerCase(Locale.ROOT), "unused-hash", "Reconcile User", "SYN-REC-001", "reviewer", Instant.now().minusSeconds(600));
+    new CustomerProfiles(s).create(customerId, "SYN-REC-001");
+    var auth =
+        org.springframework.security.authentication.UsernamePasswordAuthenticationToken
+            .authenticated(
+                "reviewer",
+                null,
+                List.of(
+                    new org.springframework.security.core.authority.SimpleGrantedAuthority(
+                        "ROLE_REVIEWER")));
+    String oldAddrId =
+        documents.createOwned("Reconcile User", "SYN-REC-001", "ADDRESS_CHANGE", "reviewer", customerId, auth);
+    String newAddrId =
+        documents.createOwned("Reconcile User", "SYN-REC-001", "ADDRESS_CHANGE", "reviewer", customerId, auth);
+    String acctId =
+        documents.createOwned("Reconcile User", "SYN-REC-001", "ADDITIONAL_ACCOUNT", "reviewer", customerId, auth);
+
+    s.db.update(
+        "INSERT INTO customer_eforms VALUES(?,?,?,?,?,?,?)",
+        s.id("EFORM"), oldAddrId, 1,
+        s.json(map("requestType", "ADDRESS_CHANGE", "mailingAddress", "10 Old St #01-01", "postalCode", "543298")),
+        "{}", "cust", Instant.now().minusSeconds(500));
+    s.db.update(
+        "INSERT INTO customer_eforms VALUES(?,?,?,?,?,?,?)",
+        s.id("EFORM"), newAddrId, 1,
+        s.json(map("requestType", "ADDRESS_CHANGE", "mailingAddress", "20 New Ave #08-08", "postalCode", "544293")),
+        "{}", "cust", Instant.now().minusSeconds(300));
+    s.db.update(
+        "INSERT INTO customer_eforms VALUES(?,?,?,?,?,?,?)",
+        s.id("EFORM"), acctId, 1,
+        s.json(map("requestType", "ADDITIONAL_ACCOUNT", "accountType", "SAVINGS", "currency", "SGD")),
+        "{}", "cust", Instant.now().minusSeconds(400));
+
+    String oneMapRuleId =
+        s.db.queryForObject(
+            "SELECT id FROM validation_rules WHERE rule_key='SERVICE_ONEMAP_MAILING'", String.class);
+    s.db.update(
+        "INSERT INTO validation_results(id,submission_id,revision,rule_id,check_key,passed,evidence_json,created_at,outcome,category)"
+            + " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        s.id("CHK"), oldAddrId, 1, oneMapRuleId, "SERVICE_ONEMAP_MAILING", true,
+        s.json(List.of(map("addressVerification", map("status", "VERIFIED", "source", "ONEMAP_LIVE", "postalCode", "543298")))),
+        Instant.now().minusSeconds(490), "PASS", "CGI");
+    s.db.update(
+        "INSERT INTO validation_results(id,submission_id,revision,rule_id,check_key,passed,evidence_json,created_at,outcome,category)"
+            + " VALUES(?,?,?,?,?,?,?,?,?,?)",
+        s.id("CHK"), newAddrId, 1, oneMapRuleId, "SERVICE_ONEMAP_MAILING", true,
+        s.json(List.of(map("addressVerification", map("status", "VERIFIED", "source", "ONEMAP_LIVE", "postalCode", "544293")))),
+        Instant.now().minusSeconds(290), "PASS", "CGI");
+
+    Instant now = Instant.now();
+    s.db.update(
+        "UPDATE document_submissions SET capture_method='DIGITAL_EFORM',status='OPERATIONS',revision=1,validated_revision=1,approved_revision=1,routed_at=? WHERE id=?",
+        now.minusSeconds(480), oldAddrId);
+    s.db.update(
+        "UPDATE document_submissions SET capture_method='DIGITAL_EFORM',status='OPERATIONS',revision=1,validated_revision=1,approved_revision=1,routed_at=? WHERE id=?",
+        now.minusSeconds(280), newAddrId);
+    s.db.update(
+        "UPDATE document_submissions SET capture_method='DIGITAL_EFORM',status='OPERATIONS',revision=1,validated_revision=1,approved_revision=1,routed_at=? WHERE id=?",
+        now.minusSeconds(380), acctId);
+
+    documents.reconcileHistoricalServiceExecutions();
+    documents.reconcileHistoricalServiceExecutions();
+
+    var profile = new CustomerProfiles(s).get(customerId);
+    assertThat(profile.get("mailing_address")).isEqualTo("20 New Ave #08-08 Singapore 544293");
+    assertThat(profile.get("postal_code")).isEqualTo("544293");
+    assertThat(
+            s.db.queryForObject(
+                "SELECT COUNT(*) FROM customer_additional_accounts WHERE customer_id=? AND submission_id=?",
+                Integer.class, customerId, acctId))
+        .isEqualTo(1);
+    assertThat(
+            s.db.queryForObject(
+                "SELECT COUNT(*) FROM audit_logs WHERE exception_id=? AND event_type='DOCUMENT_SERVICE_REQUEST_EXECUTED'",
+                Integer.class, newAddrId))
+        .isEqualTo(1);
+    assertThat(
+            s.db.queryForObject(
+                "SELECT COUNT(*) FROM audit_logs WHERE exception_id=? AND event_type='DOCUMENT_SERVICE_REQUEST_EXECUTION_SKIPPED'",
+                Integer.class, oldAddrId))
+        .isEqualTo(1);
   }
 }

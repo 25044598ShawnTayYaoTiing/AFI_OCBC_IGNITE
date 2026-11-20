@@ -32,7 +32,7 @@ export function caseFacts(detail: Detail) {
 export const requestedFields: Record<string, string[]> = {
   ADDRESS_CHANGE: ["mailing_address"],
   RESIDENTIAL_ADDRESS_CHANGE: ["residential_address"],
-  CONTACT_UPDATE: ["email", "mobile"],
+  CONTACT_UPDATE: ["email"],
   TAX_RESIDENCY_UPDATE: ["tax_residency", "foreign_tax_country", "tax_identifier"],
   ADDITIONAL_ACCOUNT: ["account_type", "currency", "source_of_funds"],
 };

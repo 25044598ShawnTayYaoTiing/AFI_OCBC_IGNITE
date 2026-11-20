@@ -226,7 +226,7 @@ public class CustomerService {
                 throw new ApiException(
                     409,
                     "NOT_CANCELLABLE",
-                    "This request has already been sent for processing and cannot be cancelled here.");
+                    "This request has already been completed and cannot be cancelled here.");
               if (revision == null || !Objects.equals(c.get("revision"), revision))
                 throw new ApiException(
                     409,
@@ -291,7 +291,7 @@ public class CustomerService {
         "caseReference",
         c.get("id"),
         "canCancel", cancellable(c),
-        "cancellationReason", "CANCELLED".equals(c.get("status")) ? "This request is already cancelled." : cancellable(c) ? "You can cancel until the request is sent to Operations for processing." : "This request has been sent for processing and can no longer be cancelled here.",
+        "cancellationReason", "CANCELLED".equals(c.get("status")) ? "This request is already cancelled." : cancellable(c) ? "You can cancel until the request is completed." : "This request has been completed and can no longer be cancelled here.",
         "status",
         Boolean.TRUE.equals(c.get("staff_suspended")) ? "ON_HOLD"
             : "ON_HOLD".equals(c.get("status")) ? "RESOLUTION_MANAGEMENT" : c.get("status"),
@@ -356,9 +356,7 @@ public class CustomerService {
                         Integer.class,
                         id,
                         c.get("revision"))
-                    > 0,
-                "phoneVerified",
-                Objects.equals(c.get("revision"), c.get("phone_verified_revision")))
+                    > 0)
             : null;
     return map(
         "submission",

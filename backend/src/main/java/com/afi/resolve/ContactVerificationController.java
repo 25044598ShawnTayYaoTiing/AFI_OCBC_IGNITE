@@ -26,13 +26,4 @@ public class ContactVerificationController {
       Authentication a) {
     return service.confirm(id, request, a);
   }
-
-  @PostMapping("/api/documents/submissions/{id}/verify-phone")
-  @PreAuthorize("hasRole('REVIEWER')")
-  public Object phone(
-      @PathVariable String id,
-      @RequestBody ContactVerificationService.PhoneReview request,
-      Authentication a) {
-    return service.confirmPhone(id, request, a);
-  }
 }

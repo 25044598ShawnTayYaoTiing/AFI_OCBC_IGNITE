@@ -1,6 +1,5 @@
 import { RiskInvestigation } from "./RiskInvestigation";
 import { CaseComparison } from "./CaseComparison";
-import { ContactPhoneReview } from "./ContactPhoneReview";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { ChevronRight, UploadCloud } from "lucide-react";
@@ -24,7 +23,7 @@ import { useAuth, isReviewer } from "../auth";
 const serviceNames: Record<string, string> = {
   ADDRESS_CHANGE: "Change mailing address",
   ADDITIONAL_ACCOUNT: "Open another account",
-  CONTACT_UPDATE: "Update contact details",
+  CONTACT_UPDATE: "Change email address",
   TAX_RESIDENCY_UPDATE: "Update tax residency",
   RESIDENTIAL_ADDRESS_CHANGE: "Change residential address",
 };
@@ -264,18 +263,6 @@ export function DocumentWorkspace() {
                 <CaseSummary detail={data} />
                 <CaseIssues detail={data} onInspect={inspect} />
                 <AutonomyEvidence detail={data} />
-                {!locked &&
-                  isReviewer(session) &&
-                  data.submission.category === "CONTACT_UPDATE" &&
-                  state.open.some(
-                    (item) => item.check_key === "SERVICE_PHONE_REVIEW",
-                  ) && (
-                    <ContactPhoneReview
-                      id={id}
-                      revision={data.submission.revision}
-                      onUpdate={() => void result.refresh()}
-                    />
-                  )}
                 <CaseDecisionPanel key={id} detail={data} busy={!!busy} error={error} onAction={run} />
                 {!state.cancelled && <Disclosure title="Advanced case details" open={openDetails ? true : undefined}>
                   {state.current && data.riskAssessment && (

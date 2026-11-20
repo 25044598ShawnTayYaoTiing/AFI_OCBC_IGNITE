@@ -107,6 +107,35 @@ class CustomerEmailTransportTest {
   }
 
   @Test
+  void sendContactCodeIncludesOtpWithHackathonNoticeAndEnforcesAllowlist() {
+    var dispatcher =
+        new CustomerEmailDispatcher(
+            mock(Store.class),
+            mock(PlatformTransactionManager.class),
+            true,
+            "127.0.0.1",
+            1025,
+            "",
+            "",
+            "afiresolve.demo@gmail.com",
+            false);
+    dispatcher.mail = mock(org.springframework.mail.javamail.JavaMailSenderImpl.class);
+    dispatcher.testRecipients = "team@example.test";
+    dispatcher.requireAllowlist = true;
+    dispatcher.sendContactCode("team@example.test", "482913");
+    var captor = org.mockito.ArgumentCaptor.forClass(SimpleMailMessage.class);
+    verify(dispatcher.mail, times(1)).send(captor.capture());
+    assertThat(captor.getValue().getFrom()).isEqualTo("AFI Resolve <afiresolve.demo@gmail.com>");
+    assertThat(captor.getValue().getTo()).containsExactly("team@example.test");
+    assertThat(captor.getValue().getText())
+        .contains("482913")
+        .contains("independent student hackathon prototype")
+        .doesNotContain("OCBC");
+    assertThatThrownBy(() -> dispatcher.sendContactCode("stranger@example.test", "482913"))
+        .isInstanceOf(ApiException.class);
+  }
+
+  @Test
   void disabledDispatcherDoesNotReadOrSendOutboxMessages() {
     var store = mock(Store.class);
     new CustomerEmailDispatcher(
