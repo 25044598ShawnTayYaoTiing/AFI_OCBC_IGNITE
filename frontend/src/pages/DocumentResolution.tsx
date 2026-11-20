@@ -1,11 +1,10 @@
+import { Check } from "lucide-react";
 import { dateTime, detailText, label } from "../api";
 import type {
-  AutomationAttempt,
   Detail,
   Finding,
   Field,
   Investigation,
-  Recommendation,
 } from "../document-types";
 import { Badge, Empty, Panel } from "../components";
 import { Disclosure } from "../ui";
@@ -444,223 +443,42 @@ export function PreflightView({
   );
 }
 
-export function AutonomyEvidence({
-  detail,
-  onInspect,
-}: {
-  detail: Detail;
-  onInspect?: (field: Field) => void;
-}) {
-  const investigation = detail.investigations?.[0];
-  const open = detail.exceptions.filter((item) => item.status === "OPEN");
-  const attempts = detail.automation || [];
-  const validated =
-    detail.submission.validated_revision === detail.submission.revision &&
-    detail.checks.length > 0;
-  const timeline = detail.audit
-    .filter((event) =>
-      /EXCEPTION_DETECTED|AI_INVESTIGATION|PREFLIGHT_PASSED|POLICY_APPROVED|ACTION_EXECUTED|OUTCOME_VERIFIED|EXCEPTION_RESOLVED|AUTOMATION_BLOCKED|AUTOMATION_FAILED|ROUTED/.test(
-        event.eventType,
-      ),
-    )
-    .slice()
-    .reverse();
-  return (
-    <div className="page-stack">
-      <div className="automation-status-strip">
-        <div className="automation-status-summary">
-          <strong>
-            {open.length
-              ? `${open.length} ${open.length === 1 ? "issue requires" : "issues require"} attention`
-              : validated
-                ? "All intake requirements satisfied"
-                : "Package requires validation"}
-          </strong>
-          <p>
-            {open.length
-              ? "Customer declarations, conflicting details and uncertain evidence require a corrected document or human review."
-              : validated
-                ? "Verified checks have passed for this revision."
-                : "Recheck the package to confirm its current requirements."}
-          </p>
-        </div>
-        <div className="automation-status-badges">
-          <Badge
-            value={
-              detail.automationEnabled ? "POLICY_CONTROLLED" : "MANUAL_REVIEW"
-            }
-            text={
-              detail.automationEnabled
-                ? "Auto-attachment enabled"
-                : "Automation disabled"
-            }
-          />
-          {investigation && <Badge value={investigation.method} />}
-        </div>
-      </div>
-
-      {attempts.length > 0 && (
-        <Panel
-          title="Automated attachment outcomes"
-          subtitle="Policy-controlled supporting document retrieval from the authorised case repository."
-        >
-          <div className="panel-body">
-            <div className="automation-results">
-              {attempts.map((attempt) => (
-                <AutomationResult
-                  key={attempt.id}
-                  attempt={attempt}
-                  detail={detail}
-                />
-              ))}
-            </div>
-          </div>
-        </Panel>
-      )}
-
-      <Panel
-        title="AI investigation findings"
-        subtitle={
-          investigation
-            ? `${investigation.model || "Rule-based analysis"} · Revision ${investigation.revision} (Advisory — backend policy controls decisions)`
-            : "Automated root-cause and evidence analysis for detected exceptions."
-        }
-        action={investigation && <Badge value={investigation.method} />}
-      >
-        <div className="panel-body">
-          {investigation ? (
-            <div className="investigation-cards-list">
-              {investigation.recommendations.map((recommendation) => (
-                <RecommendationView
-                  key={recommendation.exception_id}
-                  recommendation={recommendation}
-                  onInspect={onInspect}
-                  investigation={investigation}
-                  detail={detail}
-                />
-              ))}
-              {investigation.fallback_reason && (
-                <Disclosure title="Advanced fallback details">
-                  <p className="muted small">
-                    Fallback reason: {label(investigation.fallback_reason)}
-                  </p>
-                </Disclosure>
-              )}
-            </div>
-          ) : (
-            <p className="muted">
-              No investigation recorded for this package. Investigations run
-              automatically when validation detects an exception.
-            </p>
-          )}
-        </div>
-      </Panel>
-      <Panel
-        title="Resolution timeline"
-        subtitle="Chronological progression of detection, investigation, verification and routing."
-      >
-        <AuditList items={timeline} />
-      </Panel>
-    </div>
-  );
-}
-
-function AutomationResult({
-  attempt,
-  detail,
-}: {
-  attempt: AutomationAttempt;
-  detail: Detail;
-}) {
-  const finding = detail.exceptions.find(
-    (item) => item.id === attempt.exception_id,
-  );
+export function AutonomyEvidence({ detail }: { detail: Detail }) {
+  if (detail.submission.status === "CANCELLED") return null;
+  const attempt = [...detail.automation]
+    .filter((item) => item.action_type === "ATTACH_VERIFIED_DOCUMENT")
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .find((item) => item.revision === detail.submission.revision ||
+      (item.status === "VERIFIED" && detail.submission.status === "OPERATIONS" &&
+        detail.exceptions.some((issue) => issue.id === item.exception_id && issue.status === "RESOLVED")));
+  if (!attempt) return null;
+  const simulation = detail.simulations.find((item) => item.id === attempt.simulation_id);
   const verified = attempt.status === "VERIFIED";
+  const stages = [
+    "Missing document detected",
+    ...(simulation?.candidateVersionId || verified ? ["Repository document found"] : []),
+    ...(attempt.simulation_id ? ["Digital Twin simulation run"] : []),
+    ...(verified ? ["Document attached", "Attachment independently verified"] : []),
+    ...(verified && detail.submission.status === "OPERATIONS" ? ["Sent to Operations"] : []),
+  ];
   return (
-    <article className="automation-result task-card">
-      <div className="task-heading">
-        <div>
-          <span className="task-category-tag">
-            {label(attempt.action_type)}
-          </span>
-          <h3>{finding?.name || "Missing supporting document"}</h3>
-        </div>
-        <Badge value={attempt.status} />
-      </div>
-      <p>
-        {verified
-          ? "The authorised supporting document was attached from the repository and independently verified."
-          : attempt.status === "BLOCKED"
-            ? "The action was blocked by preflight policy checks. No automatic change was made."
-            : "The attempt did not pass verification and was safely rolled back."}
-      </p>
-      <div className="task-meta">
-        <div className="task-meta-item">
-          <span className="task-meta-label">Recorded</span>
-          <strong>
-            {dateTime(attempt.completed_at || attempt.created_at)} SGT
-          </strong>
-        </div>
-        <div className="task-meta-item">
-          <span className="task-meta-label">Revision</span>
-          <strong>Revision {attempt.revision}</strong>
-        </div>
-      </div>
-      <Disclosure title="Advanced details">
-        <p className="small mono">{detailText(attempt.result_json)}</p>
-        <dl className="metadata">
-          <div>
-            <dt>Attempt ID</dt>
-            <dd className="mono">{attempt.id}</dd>
-          </div>
-          <div>
-            <dt>Preflight ID</dt>
-            <dd className="mono">{attempt.simulation_id || "Not run"}</dd>
-          </div>
-        </dl>
+    <section className="case-automation" aria-label="Automatic resolution">
+      <h2>Automatic resolution</h2>
+      <ol className="case-progress" aria-label="Recorded automatic resolution stages">
+        {stages.map((stage) => <li key={stage} data-done="true"><Check size={15} aria-hidden="true" />{stage}</li>)}
+      </ol>
+      {attempt.simulation_id && <p>The simulation predicted the outcome before any attachment was made.</p>}
+      {attempt.status === "BLOCKED" && <p>The safety check blocked the attachment.</p>}
+      {attempt.status === "FAILED" && <p>The attachment could not be verified, so the change was rolled back.</p>}
+      <Disclosure title="Automatic resolution details">
+        <p>{simulation?.explanation || label(attempt.status)}</p>
+        <p className="preserve-lines small mono">{detailText(attempt.result_json)}</p>
       </Disclosure>
-    </article>
+    </section>
   );
 }
-
-function RecommendationView({
-  recommendation,
-  investigation,
-  detail,
-  onInspect,
-}: {
-  recommendation: Recommendation;
-  investigation: Investigation;
-  detail: Detail;
-  onInspect?: (field: Field) => void;
-}) {
-  const finding = detail.exceptions.find(
-    (item) => item.id === recommendation.exception_id,
-  );
-  return (
-    <article className="investigation-card">
-      <div className="investigation-card-header">
-        <h3>{finding?.name || label(recommendation.recommended_action)}</h3>
-        {finding && <Badge value={finding.status} />}
-      </div>
-      {finding ? (
-        <InvestigationExplanation
-          investigation={investigation}
-          finding={finding}
-          detail={detail}
-          onInspect={onInspect}
-          inline
-        />
-      ) : (
-        <p className="context-note">
-          This investigation refers to an earlier finding from revision{" "}
-          {investigation.revision}.
-        </p>
-      )}
-    </article>
-  );
-}
-
 export function HandoverHistory({ detail }: { detail: Detail }) {
-  return <Panel title="Case activity"><AuditList items={detail.audit} /></Panel>;
+  return <section className="case-audit" aria-label="Case activity">
+    <AuditList items={[...detail.audit].sort((a, b) => b.timestamp.localeCompare(a.timestamp))} />
+  </section>;
 }

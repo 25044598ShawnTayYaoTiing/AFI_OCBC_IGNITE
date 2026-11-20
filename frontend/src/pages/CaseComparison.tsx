@@ -97,11 +97,14 @@ export function CaseComparison({
         </div>
       ))
     ) : (
-      <span className="comparison-missing">Not available</span>
+      <span className="comparison-missing">No value shown</span>
     );
   }
   const primaryWithValues = primary.filter((key) => [...declarations, ...profile, ...supporting].some((field) => comparisonKey(field.field_name) === key));
-  const supportNotRequired = detail.checks.some((check) => check.check_key === "SERVICE_SUPPORT" && check.outcome === "NOT_APPLICABLE");
+  const current = detail.submission.validated_revision === detail.submission.revision &&
+    detail.submission.status !== "CANCELLED";
+  const findings = current && detail.submission.status !== "OPERATIONS"
+    ? detail.exceptions.filter((item) => item.status === "OPEN") : [];
   function rows(keys: string[]) {
     return (
       <div className="comparison-table-scroll">
@@ -109,27 +112,28 @@ export function CaseComparison({
           <thead>
             <tr>
               <th>Information</th>
-              <th>On file</th>
+
               <th>Requested</th>
-              <th>In supporting document</th>
-              <th>Comparison</th>
+              <th>Supporting evidence</th>
+              {findings.length > 0 && <th>Finding</th>}
             </tr>
           </thead>
           <tbody>
             {keys.map((key) => {
-              const requested = declarations.filter((field) => comparisonKey(field.field_name) === key);
-              const provided = supporting.filter((field) => comparisonKey(field.field_name) === key);
-              const uncertain = detail.documents.some((doc) => doc.document_type === "SUPPORTING_DOCUMENT" && doc.extraction.observations?.some((item) => comparisonKey(item.field) === key));
-              const compare = (value: string) => value.trim().replace(/\s+/g, " ").toLowerCase();
-              const outcome = uncertain ? "Uncertain" : !provided.length ? (supportNotRequired ? "Not required" : "Missing") : !requested.length ? "No request value" :
-                new Set([...requested, ...provided].map((field) => compare(field.field_value))).size === 1 ? "Exact match" : "Values differ";
+              const related = findings.filter((item) =>
+                (item.field_name ? [item.field_name] : item.evidence.map((field) => field.field_name))
+                  .some((field) => field && comparisonKey(field) === key));
+              const uncertain = related.length > 0 && detail.documents.some((doc) =>
+                doc.extraction.observations?.some((item) =>
+                  item.issue_type === "UNCERTAIN" && comparisonKey(item.field) === key));
+              const outcome = uncertain ? "Uncertain" : related.length ? "Needs review" : "";
               return (
               <tr key={key}>
                 <th scope="row">{label(key)}</th>
-                <td>{cell(profile, key)}</td>
+
                 <td>{cell(declarations, key)}</td>
                 <td>{cell(supporting, key)}</td>
-                <td><strong>{outcome}</strong></td>
+                {findings.length > 0 && <td><strong>{outcome}</strong></td>}
               </tr>
               );
             })}
@@ -140,15 +144,19 @@ export function CaseComparison({
   }
   return (
     <section className="source-review" aria-label="Evidence comparison">
+      <h2>Compare request and evidence</h2>
       {primaryWithValues.length ? rows(primaryWithValues) : <p>No request details are available to compare yet.</p>}
-      <p className="comparison-note">
-        This compares the text as shown. The case outcome accounts for address formats and the rules for this service.
-      </p>
-      {!!rest.length && (
+
+      {(rest.length > 0 || profile.length > 0) && (
         <Disclosure
-          title={`Other declared and extracted fields (${rest.length})`}
+          title="Other fields and bank records"
         >
-          {rows(rest)}
+          {!!rest.length && rows(rest)}
+          {!!profile.length && <dl className="case-source-list">
+            {profile.filter((field, i) => profile.findIndex((other) =>
+              other.field_name === field.field_name && other.field_value === field.field_value) === i)
+              .map((field, i) => <div key={i}><dt>{label(field.field_name)} on file</dt><dd>{field.field_value}</dd></div>)}
+          </dl>}
         </Disclosure>
       )}
     </section>

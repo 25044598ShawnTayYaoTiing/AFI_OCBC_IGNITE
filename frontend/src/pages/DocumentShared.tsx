@@ -126,13 +126,12 @@ export function SubmissionTable({
                   <strong className="table-next-action">
                     {nextCaseAction(item, item.open_exceptions ?? 0)}
                   </strong>
-                  <small className="secondary-line">
+                  {currentValidated && !["OPERATIONS", "CANCELLED"].includes(item.status) &&
+                    <small className="secondary-line">
                     {item.open_exceptions
                       ? `${item.open_exceptions} open ${item.open_exceptions === 1 ? "issue" : "issues"}`
-                      : item.status === "OPERATIONS"
-                        ? "Handover complete"
-                        : "No open issues"}
-                  </small>
+                      : "No open issues"}
+                  </small>}
                 </td>
                 <td className="nowrap small muted">
                   {dateTime(item.created_at)}

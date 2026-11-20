@@ -3,7 +3,7 @@ import { CaseComparison } from "./CaseComparison";
 import { ContactPhoneReview } from "./ContactPhoneReview";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
-import { ArrowRight, UploadCloud } from "lucide-react";
+import { ChevronRight, UploadCloud } from "lucide-react";
 import { label, post, uploadPdfs, useResource } from "../api";
 import type { Detail, Field } from "../document-types";
 import { Empty, ErrorBox, Loading, Notice, Panel } from "../components";
@@ -11,7 +11,6 @@ import { Disclosure, Tabs, TabPanel } from "../ui";
 import { BASE, message, PdfPreview } from "./DocumentShared";
 import {
   AutonomyEvidence,
-  CorrectionTasks,
   HandoverHistory,
   PreflightView,
 } from "./DocumentResolution";
@@ -22,6 +21,14 @@ import { CaseIssues } from "./CaseIssues";
 import { DecisionAssessmentPanel } from "./DecisionAssessmentPanel";
 import { reviewState } from "./review-state";
 import { useAuth, isReviewer } from "../auth";
+const serviceNames: Record<string, string> = {
+  ADDRESS_CHANGE: "Change mailing address",
+  ADDITIONAL_ACCOUNT: "Open another account",
+  CONTACT_UPDATE: "Update contact details",
+  TAX_RESIDENCY_UPDATE: "Update tax residency",
+  RESIDENTIAL_ADDRESS_CHANGE: "Change residential address",
+};
+
 export function DocumentWorkspace() {
   const { id = "" } = useParams();
   const [params, setParams] = useSearchParams();
@@ -38,7 +45,6 @@ export function DocumentWorkspace() {
   const [progress, setProgress] = useState(0);
   const [selected, setSelected] = useState("");
   const [version, setVersion] = useState("");
-  const [finding, setFinding] = useState("");
   const [previewPage, setPreviewPage] = useState(1);
   const preview = useRef<HTMLDivElement>(null);
   const [previewRequest, setPreviewRequest] = useState(0);
@@ -56,14 +62,14 @@ export function DocumentWorkspace() {
   useEffect(() => {
     setSelected("");
     setVersion("");
-    setFinding("");
     setError("");
     setNotice("");
     setPreviewPage(1);
   }, [id]);
   const data = result.data;
-  const open = data?.exceptions.filter((item) => item.status === "OPEN") || [];
-  const doc = data?.documents.find((item) => item.id === selected) || data?.documents[0];
+  const doc = data?.documents.find((item) => item.id === selected) ||
+    data?.documents.find((item) => item.document_role !== "DECLARATION_RECEIPT" &&
+      item.extraction.method !== "DIGITAL_EFORM") || data?.documents[0];
   const locked = ["OPERATIONS", "CANCELLED"].includes(
     data?.submission.status || "",
   );
@@ -200,7 +206,7 @@ export function DocumentWorkspace() {
       <header className="case-context">
         <div>
           <Link className="back-link" to="/submissions">
-            Cases <ArrowRight size={14} />
+            Cases <ChevronRight size={14} aria-hidden="true" />
           </Link>
           <span className="case-reference">
             {data.submission.customer_reference}
@@ -208,11 +214,8 @@ export function DocumentWorkspace() {
         </div>
         <div className="case-title-row">
           <div>
-            <span className="eyebrow">
-              {label(data.submission.category)} · Revision{" "}
-              {data.submission.revision}
-            </span>
             <h1>{data.submission.customer_name}</h1>
+            <p className="case-service">{serviceNames[data.submission.category] || label(data.submission.category)}</p>
           </div>
         </div>
       </header>
@@ -269,27 +272,13 @@ export function DocumentWorkspace() {
           >
             {tab === "overview" && (
               <div className="overview-sections">
-                <div className="demo-top-card">
-                  <CaseSummary detail={data} />
-                  <CaseDecisionPanel
-                    key={id}
-                    detail={data}
-                    busy={!!busy}
-                    onAction={run}
-                  />
-                </div>
-                {state.open.length > 0 && (
-                  <CaseIssues
-                    detail={data}
-                    selected={finding}
-                    onSelect={setFinding}
-                    onInspect={inspect}
-                  />
-                )}
+                <CaseSummary detail={data} />
+                <CaseIssues detail={data} onInspect={inspect} />
+                <AutonomyEvidence detail={data} />
                 {!locked &&
                   isReviewer(session) &&
                   data.submission.category === "CONTACT_UPDATE" &&
-                  open.some(
+                  state.open.some(
                     (item) => item.check_key === "SERVICE_PHONE_REVIEW",
                   ) && (
                     <ContactPhoneReview
@@ -298,24 +287,16 @@ export function DocumentWorkspace() {
                       onUpdate={() => void result.refresh()}
                     />
                   )}
-                {state.customerTasks.length > 0 && (
-                  <CorrectionTasks
-                    detail={data}
-                    onUpload={() => setParams({ tab: "review" })}
-                  />
-                )}
-                <Disclosure
-                  title="AI investigation, risk & readiness details"
-                  open={openDetails ? true : undefined}
-                >
-                  {data.riskAssessment && (
+                <CaseDecisionPanel key={id} detail={data} busy={!!busy} onAction={run}
+                  onReview={() => setParams({ tab: "review" })} />
+                {!state.cancelled && <Disclosure title="Advanced case details" open={openDetails ? true : undefined}>
+                  {state.current && data.riskAssessment && (
                     <RiskInvestigation
                       detail={data}
                       onUpdate={() => void result.refresh()}
                       showActions={false}
                     />
                   )}
-                  <AutonomyEvidence detail={data} onInspect={inspect} />
                   {!locked && (
                     <PreflightView
                       detail={data}
@@ -323,15 +304,11 @@ export function DocumentWorkspace() {
                       onRun={() => void run("preflight")}
                     />
                   )}
-                </Disclosure>
+                </Disclosure>}
               </div>
             )}
             {tab === "review" && (
               <>
-                <CaseComparison detail={data} onInspect={inspect} />
-                {!!data.addressVerifications?.length && (
-                  <AddressVerificationPanel detail={data} onInspect={inspect} />
-                )}
                 {!locked && (
                   <div
                     className="upload-area"
@@ -353,6 +330,10 @@ export function DocumentWorkspace() {
                         PDF, JPG or PNG. Up to 10 MB per file.
                       </p>
                     </div>
+                    {data.documents.length > 0 && (
+                      <button className="button secondary" disabled={!!busy}
+                        onClick={() => void run("validate")}>Check again</button>
+                    )}
                     <label
                       className={`button ${data.documents.length ? "secondary" : "primary"}`}
                     >
@@ -392,7 +373,6 @@ export function DocumentWorkspace() {
                               value={doc.id}
                               onChange={(event) => {
                                 setSelected(event.target.value);
-                                setFinding("");
                                 setVersion("");
                                 setPreviewPage(1);
                               }}
@@ -477,7 +457,14 @@ export function DocumentWorkspace() {
                         )}
                       </Panel>
                     </div>
-                    <Panel title="Details read from this document" className="review-sidebar">
+                    <div className="review-sidebar">
+                      <CaseComparison detail={data} onInspect={inspect} />
+                      {!!data.addressVerifications?.length && (
+                        <Disclosure title="Address verification">
+                          <AddressVerificationPanel detail={data} onInspect={inspect} />
+                        </Disclosure>
+                      )}
+                      <Disclosure title="Advanced document details">
                       <div className="panel-body">
                         {(!version || version === doc.version_id) && doc.evidence_eligibility_reason && (
                           <p className="field-hint">
@@ -525,7 +512,7 @@ export function DocumentWorkspace() {
                             ))}
                           </dl>
                         )}
-                        {!!doc.extraction.observations?.length && (
+                        {(!version || version === doc.version_id) && !!doc.extraction.observations?.length && (
                           <Disclosure title="Details that need checking">
                             {doc.extraction.observations.map((observation, index) => (
                               <p key={index}>{label(observation.field)} (page {observation.page}) · {observation.supporting_text}</p>
@@ -533,7 +520,8 @@ export function DocumentWorkspace() {
                           </Disclosure>
                         )}
                       </div>
-                    </Panel>
+                      </Disclosure>
+                    </div>
                   </div>
                 )}
               </>

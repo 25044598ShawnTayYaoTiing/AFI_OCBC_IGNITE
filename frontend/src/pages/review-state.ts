@@ -4,7 +4,11 @@ import type { Detail } from "../document-types";
 export function reviewState(detail: Detail) {
   const { submission: c, checks } = detail;
   const current = c.validated_revision === c.revision && checks.length > 0;
-  const open = detail.exceptions.filter((issue) => issue.status === "OPEN");
+  const routed = c.status === "OPERATIONS";
+  const cancelled = c.status === "CANCELLED";
+  const open = current && !routed && !cancelled
+    ? detail.exceptions.filter((issue) => issue.status === "OPEN")
+    : [];
   const pendingVerification =
     c.status === "PENDING_VALIDATION" ||
     checks.some((check) => check.outcome === "UNAVAILABLE") ||
@@ -26,8 +30,6 @@ export function reviewState(detail: Detail) {
         open.filter((issue) => issue.severity === "BLOCKING").length,
       )
     : null;
-  const routed = c.status === "OPERATIONS";
-  const cancelled = c.status === "CANCELLED";
   const held = !!c.risk_hold || c.status === "ON_HOLD";
   const eligible =
     !routed &&
@@ -39,7 +41,8 @@ export function reviewState(detail: Detail) {
     open.length === 0 &&
     ["READY", "RESOLUTION_MANAGEMENT"].includes(c.status);
   const waiting = detail.tasks.filter(
-    (task) => !["RESOLVED", "CANCELLED"].includes(task.status),
+    (task) => !["RESOLVED", "CANCELLED"].includes(task.status) &&
+      open.some((issue) => issue.id === task.exception_id),
   );
   const customerTasks = waiting.filter(
     (task) => task.assigned_role === "CUSTOMER",
@@ -49,13 +52,13 @@ export function reviewState(detail: Detail) {
   );
   const title = cancelled ? "Request cancelled"
     : routed ? "Sent to Operations"
-    : held ? "Needs review"
+    : held ? "On hold"
     : pendingVerification ? "Verification pending"
     : !current ? "Request needs checking"
-    : authorisation ? "Staff approval required for corrections"
+    : authorisation ? "Correction needs approval"
     : customerTasks.length ? "Waiting for customer corrections"
     : open.length || blocking ? "Issues need attention"
-    : eligible ? "Ready for Operations approval"
+    : eligible ? "Ready for approval"
     : "Request checked";
   const next = cancelled ? "No further action is needed."
     : routed ? "Operations will take it from here."

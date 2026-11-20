@@ -910,128 +910,6 @@ body {
 .demo-case-layout {
   max-width: 100%;
 }
-.demo-top-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 22px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  box-shadow: var(--shadow-xs);
-}
-.demo-summary {
-  display: grid;
-  gap: 16px;
-}
-.demo-outcome h2 {
-  margin: 0 0 4px;
-  font-size: 20px;
-}
-.demo-outcome p,
-.demo-case-facts p {
-  margin: 0;
-  color: var(--text-secondary);
-}
-.demo-request-values {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  margin: 0;
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-  background: var(--bg-canvas);
-  border: 1px solid var(--border);
-}
-.demo-request-values div {
-  min-width: 0;
-}
-.demo-request-values dt {
-  font-size: 11.5px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-.demo-request-values dd {
-  margin: 3px 0 0;
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
-}
-.demo-stages {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  background: var(--bg-canvas);
-}
-.demo-stages li {
-  display: grid;
-  align-content: start;
-  gap: 4px;
-  padding: 12px 14px;
-  border-right: 1px solid var(--border);
-  overflow-wrap: anywhere;
-}
-.demo-stages li:last-child {
-  border-right: 0;
-}
-.demo-stages li[data-complete="true"] {
-  background: var(--bg-surface);
-  box-shadow: inset 0 -3px 0 var(--accent);
-}
-.demo-stages li strong {
-  font-size: 13px;
-  color: var(--text-primary);
-}
-.demo-stages li span {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.demo-case-facts {
-  display: grid;
-  grid-template-columns: 1.2fr 0.8fr;
-  gap: 16px;
-}
-.demo-case-facts section {
-  padding: 14px 16px;
-  border-radius: var(--radius-md);
-  background: var(--bg-canvas);
-  border: 1px solid var(--border);
-}
-.demo-case-facts h3 {
-  margin: 0 0 6px;
-  font-size: 13.5px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-.demo-case-facts ul {
-  margin: 6px 0 0;
-  padding-inline-start: 18px;
-}
-.demo-case-facts p + p {
-  margin-top: 6px;
-}
-.demo-decision {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 12px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-.demo-decision .review-note {
-  flex: 1 1 360px;
-  max-width: 640px;
-}
 .demo-submission-table .record-link {
   display: inline-flex;
   align-items: center;
@@ -1216,3 +1094,85 @@ body {
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 }
+.case-service { margin: 3px 0 0; color: var(--text-secondary); font-size: 15px; }
+.rm-workspace .overview-sections {
+  display: grid;
+  gap: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.overview-sections > :is(.case-status-summary, .case-findings, .case-next, .case-automation) {
+  min-width: 0;
+  padding: 16px 22px;
+}
+.overview-sections > * + * { border-top: 1px solid var(--border); }
+.case-status-summary-heading, .case-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 24px;
+}
+.case-status-summary-heading h2 { font-size: 23px; margin: 0; }
+.case-risk { display: flex; align-items: baseline; gap: 10px; }
+.case-risk span { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.case-risk-reason, .case-next p, .case-automation p, .case-finding p {
+  margin: 5px 0 0;
+  max-width: 72ch;
+  color: var(--text-secondary);
+}
+.case-progress {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  padding: 0;
+  margin: 12px 0 0;
+  list-style: none;
+  font-size: 13px;
+}
+.case-progress li { display: flex; align-items: center; gap: 5px; color: var(--text-secondary); }
+.case-progress li[data-done="true"] { color: var(--text-primary); font-weight: 600; }
+.case-progress li[data-done="true"] svg { color: var(--accent); }
+.case-findings h2, .case-next h2, .case-automation h2, .source-review h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.case-finding { padding-top: 9px; overflow-wrap: anywhere; }
+.case-finding + .case-finding { border-top: 1px solid var(--border); margin-top: 12px; }
+.case-finding h3 { margin: 0; font-size: 15px; }
+.case-source-list { display: grid; gap: 4px; margin: 8px 0 0; }
+.case-source-list > div { display: grid; grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr); gap: 8px; }
+.case-source-list dt { color: var(--text-secondary); }
+.case-source-list dd { margin: 0; overflow-wrap: anywhere; }
+.case-source-list dd :is(button, small) { margin-inline-start: 8px; }
+.case-next { background: var(--bg-canvas); }
+.case-next .button { min-height: 40px; }
+.case-next .review-note { margin-block: 12px; }
+.case-finding details, .case-automation details { margin-top: 8px; }
+.rm-workspace .review-sidebar { display: grid; align-content: start; gap: 12px; min-width: 0; }
+.review-sidebar .source-review { min-width: 0; }
+.review-sidebar .source-review h2 { margin-bottom: 10px; }
+.rm-workspace .case-context { padding-block: 0 10px; margin-bottom: 0; }
+.rm-workspace .case-title-row { margin-top: 6px; }
+.rm-workspace .case-title-row h1 { font-size: 30px; margin: 0; }
+@media (max-width: 600px) {
+  .overview-sections > :is(.case-status-summary, .case-findings, .case-next, .case-automation) { padding: 14px; }
+  .case-source-list > div { grid-template-columns: 1fr; gap: 2px; }
+}
+.rm-workspace .case-audit {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.rm-workspace .case-audit .activity-timeline { gap: 8px; }
+.rm-workspace .case-audit .activity-content { box-shadow: none; padding: 8px 12px; }
+
+.review-sidebar .source-review h2 { padding: 12px 14px; margin: 0; }
+.review-sidebar .evidence-table { table-layout: auto; }
+.review-sidebar .evidence-table th,
+.review-sidebar .evidence-table td { padding: 10px 12px; overflow-wrap: break-word; }
+.review-sidebar .evidence-table thead th,
+.review-sidebar .evidence-table tbody th { text-transform: none; letter-spacing: normal; }
+.review-sidebar .evidence-table thead th:first-child { width: 24%; }
+.review-sidebar .source-review > .disclosure { margin: 10px 12px; }
