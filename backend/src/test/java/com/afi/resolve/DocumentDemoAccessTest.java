@@ -15,7 +15,7 @@ class DocumentDemoAccessTest {
     assertThat(demo.isEnabled()).isFalse();
     assertThatThrownBy(() -> service.demo(null)).isInstanceOf(ApiException.class)
         .satisfies(error -> assertThat(((ApiException) error).code()).isEqualTo("DEMO_DISABLED"));
-    assertThatThrownBy(() -> new DocumentController(service).sample("customer-information.pdf"))
+    assertThatThrownBy(() -> new DocumentController(service, null).sample("customer-information.pdf"))
         .isInstanceOf(ApiException.class)
         .satisfies(error -> assertThat(((ApiException) error).code()).isEqualTo("DEMO_DISABLED"));
     environment.setActiveProfiles("demo");

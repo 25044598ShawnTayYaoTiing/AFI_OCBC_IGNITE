@@ -1,6 +1,7 @@
 import type { AddressVerification } from "./address-types";
 import type { Audit } from "./api";
 export interface Submission {
+  staff_suspended?: boolean;
   id: string;
   category: string;
   risk_score?: number | null;
@@ -157,6 +158,7 @@ export interface Check {
   rule_version?: number;
 }
 export interface Task {
+  staff_instruction?: string;
   id: string;
   exception_id: string;
   description: string;
@@ -193,6 +195,7 @@ export interface Preflight {
   checks: Check[];
 }
 export interface Recommendation {
+  customer_message?: string;
   exception_id: string;
   explanation: string;
   evidence_ids: string[];

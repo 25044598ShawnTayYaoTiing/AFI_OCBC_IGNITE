@@ -1082,6 +1082,63 @@ class DigitalFormIntegrationTest {
   }
 
   @Test
+  void reviewerSuspendsRequestsCorrectionAndCancelsWithCustomerNotifications() throws Exception {
+    var request = form();
+    request.put("taxResidency", "Malaysia");
+    request.put("foreignTaxCountry", "Malaysia");
+    var submitted = json(submit("/api/customer/eforms", UUID.randomUUID().toString(), request)
+        .andExpect(status().isOk()).andReturn());
+    String id = id(submitted);
+    int revision = submitted.path("submission").path("revision").asInt();
+    String actions = "/api/documents/submissions/" + id;
+    String customerCase = "/api/customer/submissions/" + id;
+    var staff = httpBasic("reviewer", "reviewer-demo");
+    mvc.perform(post(actions + "/approve").with(staff).contentType("application/json")
+        .content(s.json(map("revision", revision)))).andExpect(status().isConflict());
+    mvc.perform(post(actions + "/hold").with(staff).contentType("application/json")
+        .content(s.json(map("revision", revision, "note", "Awaiting the tax declaration."))))
+        .andExpect(status().isOk());
+    var suspended = json(mvc.perform(get(customerCase).header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk()).andReturn());
+    assertThat(suspended.path("submission").path("status").asText()).isEqualTo("ON_HOLD");
+    assertThat(suspended.path("corrections").size()).isZero();
+    var state = json(mvc.perform(get(actions).with(staff)).andExpect(status().isOk()).andReturn());
+    var eligibleIds = new HashSet<String>();
+    for (var issue : state.path("exceptions")) {
+      if ("OPEN".equals(issue.path("status").asText()) &&
+          "REQUEST_CORRECTION".equals(issue.path("action_type").asText()))
+        eligibleIds.add(issue.path("id").asText());
+    }
+    var instructions = new LinkedHashMap<String, String>();
+    for (var task : state.path("tasks")) {
+      if (eligibleIds.contains(task.path("exception_id").asText()))
+        instructions.put(task.path("id").asText(), "Provide your tax identification number and declaration.");
+    }
+    assertThat(instructions).isNotEmpty();
+    mvc.perform(post(actions + "/request-correction").with(staff).contentType("application/json")
+        .content(s.json(map("revision", revision, "resume", true, "instructions", instructions))))
+        .andExpect(status().isOk());
+    var corrected = json(mvc.perform(get(customerCase).header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk()).andReturn());
+    assertThat(corrected.path("submission").path("status").asText()).isEqualTo("CORRECTION_REQUIRED");
+    assertThat(corrected.path("corrections").toString()).contains("Provide your tax identification number and declaration.");
+    mvc.perform(post(actions + "/cancel").with(staff).contentType("application/json")
+        .content(s.json(map("revision", revision, "note", "Customer asked to withdraw this request."))))
+        .andExpect(status().isOk());
+    var cancelled = json(mvc.perform(get(customerCase).header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk()).andReturn());
+    assertThat(cancelled.path("submission").path("status").asText()).isEqualTo("CANCELLED");
+    assertThat(cancelled.path("corrections").size()).isZero();
+    assertThat(s.db.queryForList(
+        "SELECT notification_type FROM customer_notifications WHERE submission_id=?", String.class, id))
+        .contains("CORRECTION_REQUIRED", "REQUEST_CANCELLED");
+    assertThat(s.db.queryForObject(
+        "SELECT COUNT(*) FROM customer_email_outbox o JOIN customer_notifications n ON o.notification_id=n.id"
+            + " WHERE n.submission_id=? AND n.notification_type='REQUEST_CANCELLED'", Integer.class, id))
+        .isEqualTo(1);
+  }
+
+  @Test
   void lowRiskAdditionalSavingsApprovesAutomatically() throws Exception {
     s.db.update("UPDATE customer_profiles SET email=?,email_verified_test=TRUE WHERE customer_id=?",
         "approval@example.test", customer);
@@ -1115,7 +1172,8 @@ class DigitalFormIntegrationTest {
     var sent = org.mockito.ArgumentCaptor.forClass(SimpleMailMessage.class);
     verify(dispatcher.mail, times(1)).send(sent.capture());
     assertThat(sent.getValue().getSubject()).isEqualTo(CustomerEmailDispatcher.GENERIC_SUBJECT);
-    assertThat(sent.getValue().getText()).isEqualTo(CustomerEmailDispatcher.GENERIC_BODY);
+    assertThat(sent.getValue().getText()).startsWith(CustomerEmailDispatcher.GENERIC_BODY)
+        .contains("Your request has been approved for processing.");
     assertThat(sent.getValue().getFrom()).isEqualTo("AFI Resolve <demo@example.invalid>");
     assertThat(s.db.queryForObject(
         "SELECT o.status FROM customer_email_outbox o JOIN customer_notifications n ON o.notification_id=n.id"

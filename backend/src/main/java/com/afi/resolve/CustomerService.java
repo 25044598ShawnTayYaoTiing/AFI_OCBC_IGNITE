@@ -204,15 +204,25 @@ public class CustomerService {
   }
 
   public Object cancel(String id, Integer revision, Authentication actor) {
+    return cancelRequest(id, revision, null, false, actor);
+  }
+
+  public Object cancelByReviewer(String id, int revision, String reason, Authentication actor) {
+    if (!documents.reviewer(actor))
+      throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
+    return cancelRequest(id, revision, DocumentService.decisionReason(reason), true, actor);
+  }
+
+  private Object cancelRequest(String id, Integer revision, String reason, boolean staff, Authentication actor) {
     var siblingIds =
         s.inTx(
             () -> {
-              customer(actor, true);
+              if (!staff) customer(actor, true);
               var c = documents.access(id, actor, true);
-              // Ownership is checked independently; staff credentials cannot cancel a customer's request.
-              owned(id, actor);
+              if (!staff) owned(id, actor);
               if ("CANCELLED".equals(c.get("status"))) return List.<String>of();
-              if (!cancellable(c))
+              if (!(staff && c.get("customer_id") == null && c.get("routed_at") == null
+                  && !"OPERATIONS".equals(c.get("status"))) && !cancellable(c))
                 throw new ApiException(
                     409,
                     "NOT_CANCELLABLE",
@@ -224,7 +234,7 @@ public class CustomerService {
                     "The request changed. Refresh it before confirming cancellation.");
               s.db.update(
                   "UPDATE document_submissions SET"
-                      + " status='CANCELLED',revision=revision+1,approved_revision=NULL WHERE id=?",
+                      + " status='CANCELLED',revision=revision+1,approved_revision=NULL,staff_suspended=FALSE,risk_hold=FALSE WHERE id=?",
                   id);
               s.db.update(
                   "UPDATE correction_tasks SET status='CANCELLED',resolved_at=? WHERE"
@@ -246,14 +256,15 @@ public class CustomerService {
               documents.event(
                   id,
                   actor,
-                  "CUSTOMER_CANCELLED",
-                  map("previousStatus", c.get("status"), "revision", revision));
+                  staff ? "STAFF_CANCELLED" : "CUSTOMER_CANCELLED",
+                  map("previousStatus", c.get("status"), "revision", revision, "note", reason));
               notifications.publish(
                   id,
                   "REQUEST_CANCELLED",
-                  "customer-cancelled",
-                  "Your request has been cancelled. Its documents and history are retained; no"
-                      + " further processing will take place for this request.");
+                  staff ? "staff-cancelled" : "customer-cancelled",
+                  staff ? "Resolution Management cancelled your request. Reason: " + reason
+                      : "Your request has been cancelled. No further processing will take place.",
+                  staff);
               if (!"ADDITIONAL_ACCOUNT".equals(c.get("category"))) return List.<String>of();
               return s.db.queryForList(
                   "SELECT id FROM document_submissions WHERE customer_id=? AND id<>? AND"
@@ -270,7 +281,7 @@ public class CustomerService {
       } catch (Exception ignored) {
       }
     }
-    return detail(id, actor);
+    return staff ? documents.detail(id, actor) : detail(id, actor);
   }
 
   Map<String, Object> summary(Map<String, Object> c) {
@@ -282,7 +293,8 @@ public class CustomerService {
         "canCancel", cancellable(c),
         "cancellationReason", "CANCELLED".equals(c.get("status")) ? "This request is already cancelled." : cancellable(c) ? "You can cancel until the request is sent to Operations for processing." : "This request has been sent for processing and can no longer be cancelled here.",
         "status",
-        "ON_HOLD".equals(c.get("status")) ? "RESOLUTION_MANAGEMENT" : c.get("status"),
+        Boolean.TRUE.equals(c.get("staff_suspended")) ? "ON_HOLD"
+            : "ON_HOLD".equals(c.get("status")) ? "RESOLUTION_MANAGEMENT" : c.get("status"),
         "requestType",
         c.get("category"),
         "captureMethod",
@@ -530,7 +542,7 @@ public class CustomerService {
   @SuppressWarnings("unchecked")
   public Object corrections(String id, Authentication a) {
     var ownedCase = owned(id, a);
-    if ("CANCELLED".equals(ownedCase.get("status"))) return List.of();
+    if ("CANCELLED".equals(ownedCase.get("status")) || Boolean.TRUE.equals(ownedCase.get("staff_suspended"))) return List.of();
     var caseDocs = documents.documents(id, false);
     var available = new HashSet<Object>();
     caseDocs.forEach(d -> available.add(d.get("id")));
@@ -539,7 +551,7 @@ public class CustomerService {
         .db
         .queryForList(
             "SELECT t.id,t.exception_id,t.status,r.rule_key,t.assigned_role,r.name AS"
-                + " rule_name,r.condition_type,r.document_type,r.corrective_action,e.description"
+                + " rule_name,r.condition_type,r.document_type,r.corrective_action,t.staff_instruction,e.description"
                 + " AS finding_reason,e.evidence_json FROM correction_tasks t JOIN"
                 + " document_exceptions e ON e.id=t.exception_id JOIN validation_rules r ON"
                 + " r.id=e.rule_id WHERE t.submission_id=? AND t.assigned_role='CUSTOMER' AND"
@@ -577,7 +589,8 @@ public class CustomerService {
                   "documentIds",
                   ids,
                   "instruction",
-                  customerInstruction(ownedCase, t, evidence, caseDocs, aiMessages),
+                  t.get("staff_instruction") instanceof String instruction ? instruction
+                      : customerInstruction(ownedCase, t, evidence, caseDocs, aiMessages),
                   "reason", t.get("finding_reason"),
                   "ruleName", t.get("rule_name"),
                   "assignedRole", t.get("assigned_role"),
@@ -702,7 +715,7 @@ public class CustomerService {
     var rows =
         s.db.queryForList(
             "SELECT r.submission_id, r.operation, r.created_at AS request_created_at, s.status,"
-                + " s.revision FROM customer_upload_requests r JOIN document_submissions s ON"
+                + " s.revision,s.staff_suspended FROM customer_upload_requests r JOIN document_submissions s ON"
                 + " s.id=r.submission_id WHERE r.customer_id=? AND r.request_key=?",
             customerId,
             key);
@@ -807,7 +820,8 @@ public class CustomerService {
         "submissionId",
         subId,
         "status",
-        "ON_HOLD".equals(row.get("status")) ? "RESOLUTION_MANAGEMENT" : row.get("status"),
+        Boolean.TRUE.equals(row.get("staff_suspended")) ? "ON_HOLD"
+            : "ON_HOLD".equals(row.get("status")) ? "RESOLUTION_MANAGEMENT" : row.get("status"),
         "revision",
         row.get("revision"),
         "operation",

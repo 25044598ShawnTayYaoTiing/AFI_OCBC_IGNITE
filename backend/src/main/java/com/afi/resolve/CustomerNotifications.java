@@ -21,6 +21,10 @@ public class CustomerNotifications {
   }
 
   public void publish(String id, String type, String eventKey, String message) {
+    publish(id, type, eventKey, message, false);
+  }
+
+  public void publish(String id, String type, String eventKey, String message, boolean emailRequested) {
     var c =
         s.db
             .queryForList("SELECT customer_id,revision FROM document_submissions WHERE id=?", id)
@@ -50,7 +54,7 @@ public class CustomerNotifications {
             "SELECT COUNT(*) FROM customer_email_outbox o JOIN customer_notifications n"
                 + " ON n.id=o.notification_id WHERE n.submission_id=? AND n.notification_type='CORRECTION_REQUIRED'",
             Integer.class, id) == 0;
-    if ("OPERATIONS_READY".equals(type) || firstCorrection) {
+    if ("OPERATIONS_READY".equals(type) || firstCorrection || emailRequested) {
       String email =
           s.db.queryForObject(
               "SELECT email FROM customer_profiles WHERE customer_id=?",
@@ -92,7 +96,7 @@ public class CustomerNotifications {
               || "PENDING_VALIDATION".equals(c.get("status"))) return;
     var tasks =
         s.db.queryForList(
-            "SELECT t.id,t.status,e.rule_id FROM correction_tasks t JOIN document_exceptions e ON"
+            "SELECT t.id,t.status,t.staff_instruction,e.rule_id FROM correction_tasks t JOIN document_exceptions e ON"
                 + " e.id=t.exception_id WHERE t.submission_id=? AND e.status='OPEN' AND"
                 + " t.assigned_role='CUSTOMER' AND t.status NOT IN"
                 + " ('RESOLVED','ESCALATED','AWAITING_RESOLVER_AUTHORIZATION') ORDER BY t.id",
@@ -110,7 +114,8 @@ public class CustomerNotifications {
           "correction:" + state,
           "Your application has "
               + tasks.size()
-              + " outstanding document request(s). Open the application for instructions.");
+              + " outstanding correction(s). Open the application for instructions.",
+          tasks.stream().anyMatch(task -> task.get("staff_instruction") != null));
     if (Set.of("RESOLUTION_MANAGEMENT", "ON_HOLD").contains(c.get("status")))
       publish(
           id,

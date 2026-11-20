@@ -30,7 +30,7 @@ export function CaseIssues({ detail, onInspect }: {
           <article className="case-finding" key={key}>
             <h3>{title}</h3>
             {action && action !== title && <p>{action}</p>}
-            {!!evidence.length && <dl className="case-source-list">
+            {!!evidence.length && <Disclosure title="Supporting evidence"><dl className="case-source-list">
               {evidence.map((field, index) => {
                 const linked = detail.documents.some((doc) =>
                   doc.id === field.document_id && doc.versions.some((v) => v.id === field.version_id));
@@ -43,7 +43,7 @@ export function CaseIssues({ detail, onInspect }: {
                   </dd>
                 </div>;
               })}
-            </dl>}
+            </dl></Disclosure>}
             {explanation && explanation !== action && (
               explanation.length <= 200 && !/\b[A-Z]{2,}-[a-z0-9-]{8,}\b/i.test(explanation)
                 ? <p><strong>AI found</strong> {explanation}</p>

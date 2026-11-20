@@ -13,22 +13,24 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping("/api/documents")
 public class DocumentController {
   final DocumentService service;
+  final CustomerService customers;
 
-  public DocumentController(DocumentService service) {
+  public DocumentController(DocumentService service, CustomerService customers) {
     this.service = service;
+    this.customers = customers;
   }
 
   public record NewSubmission(String customerName, String customerReference, String category) {}
 
   public record Action(String idempotencyKey) {}
 
-  public record Approval(int revision) {}
+  public record Approval(int revision, boolean resume) {}
 
   @PostMapping("/submissions/{id}/approve")
   @PreAuthorize("hasRole('REVIEWER')")
   public Object approveCase(
       @PathVariable String id, @RequestBody Approval request, Authentication a) {
-    return service.approveForOperations(id, request.revision(), a);
+    return service.approveForOperations(id, request.revision(), request.resume(), a);
   }
 
   @PostMapping("/submissions/{id}/escalate")
@@ -59,6 +61,30 @@ public class DocumentController {
   public Object clearHold(
       @PathVariable String id, @RequestBody RiskReview r, Authentication actor) {
     return service.riskDecision(id, r.revision(), r.note(), true, actor);
+  }
+
+  public record CorrectionDecision(int revision, Map<String, String> instructions, boolean resume) {}
+
+  @PostMapping("/submissions/{id}/request-correction")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object requestCorrection(@PathVariable String id, @RequestBody CorrectionDecision r,
+      Authentication actor) {
+    if (r.instructions() == null)
+      throw new ApiException(400, "INSTRUCTIONS_REQUIRED", "Enter the correction instructions.");
+    return service.riskDecision(id, r.revision(), "Correction instructions approved by staff",
+        false, r.instructions(), r.resume(), actor);
+  }
+
+  @PostMapping("/submissions/{id}/hold")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object hold(@PathVariable String id, @RequestBody RiskReview r, Authentication actor) {
+    return service.placeOnHold(id, r.revision(), r.note(), actor);
+  }
+
+  @PostMapping("/submissions/{id}/cancel")
+  @PreAuthorize("hasRole('REVIEWER')")
+  public Object cancel(@PathVariable String id, @RequestBody RiskReview r, Authentication actor) {
+    return customers.cancelByReviewer(id, r.revision(), r.note(), actor);
   }
 
   public record RuleDraft(String sourceId, String correctiveAction, String severity) {}

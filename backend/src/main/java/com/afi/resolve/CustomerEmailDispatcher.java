@@ -135,7 +135,14 @@ public class CustomerEmailDispatcher {
       if (!Integer.valueOf(1).equals(claimed)) continue;
       String result = "SENT";
       try {
-        mail.send(genericMessage(recipient));
+        var message = genericMessage(recipient);
+        if ("REQUEST_CANCELLED".equals(row.get("notification_type")))
+          message.setText(GENERIC_BODY + "\n\n" + row.get("message"));
+        else if ("OPERATIONS_READY".equals(row.get("notification_type")))
+          message.setText(GENERIC_BODY + "\n\nYour request has been approved for processing.");
+        else if ("CORRECTION_REQUIRED".equals(row.get("notification_type")))
+          message.setText(GENERIC_BODY + "\n\nPlease open the Customer Portal to review your correction instructions.");
+        mail.send(message);
       } catch (Exception e) {
         result = "DELIVERY_UNKNOWN";
       } // SMTP can accept DATA before a connection fails.

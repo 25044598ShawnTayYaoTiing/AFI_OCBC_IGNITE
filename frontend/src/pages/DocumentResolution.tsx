@@ -279,7 +279,7 @@ export function PreflightView({
 }: {
   detail: Detail;
   busy: boolean;
-  onRun: () => void;
+  onRun?: () => void;
 }) {
   const report = detail.simulations[0];
   const currentPassed = detail.checks.filter((check) => check.passed).length;
@@ -294,7 +294,7 @@ export function PreflightView({
     <Panel
       title="Submission readiness"
       subtitle="Check the current package and compare a permitted correction."
-      action={
+      action={onRun &&
         <button className="button primary" onClick={onRun} disabled={busy}>
           {busy ? "Checking..." : "Check handover readiness"}
         </button>
@@ -464,6 +464,7 @@ export function AutonomyEvidence({ detail }: { detail: Detail }) {
   return (
     <section className="case-automation" aria-label="Automatic resolution">
       <h2>Automatic resolution</h2>
+      <Disclosure title="Recorded stages">
       <ol className="case-progress" aria-label="Recorded automatic resolution stages">
         {stages.map((stage) => <li key={stage} data-done="true"><Check size={15} aria-hidden="true" />{stage}</li>)}
       </ol>
@@ -473,6 +474,7 @@ export function AutonomyEvidence({ detail }: { detail: Detail }) {
       <Disclosure title="Automatic resolution details">
         <p>{simulation?.explanation || label(attempt.status)}</p>
         <p className="preserve-lines small mono">{detailText(attempt.result_json)}</p>
+      </Disclosure>
       </Disclosure>
     </section>
   );

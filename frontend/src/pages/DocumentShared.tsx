@@ -101,8 +101,9 @@ export function SubmissionTable({
                 </td>
                 <td>
                   <div className="status-cell-badges">
-                    <Badge value={item.status} />
-                    {item.risk_hold && <Badge value="ON_HOLD" text="On hold" />}
+                    <Badge value={item.status} text={item.staff_suspended ? "Suspended" :
+                      item.status === "OPERATIONS" ? "Completed" : undefined} />
+                    {item.risk_hold && item.status !== "ON_HOLD" && <Badge value="ON_HOLD" text="On hold" />}
                   </div>
                 </td>
                 <td>
@@ -338,7 +339,11 @@ const eventNames: Record<string, string> = {
   EFORM_UPDATED: "Customer updated request",
   DECLARATION_CAPTURED: "Request details saved",
   CANCELLED: "Customer cancelled request",
-  CUSTOMER_CORRECTION_AUTHORIZED: "Customer correction requested",
+  STAFF_CANCELLED: "Resolution Management cancelled the case",
+  STAFF_SUSPENDED: "Resolution Management suspended processing",
+  HOLD_CLEARED: "Resolution Management lifted the hold",
+  CUSTOMER_CORRECTION_AUTHORIZED: "Correction requested from customer",
+  AUTOMATICALLY_APPROVED: "Case approved automatically",
   RESOLUTION_MANAGEMENT_APPROVED: "Staff approval recorded",
   POLICY_APPROVED: "Automatic action approved",
   ACTION_EXECUTED: "Supporting document attached",

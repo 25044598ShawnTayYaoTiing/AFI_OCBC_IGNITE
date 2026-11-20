@@ -1176,3 +1176,9 @@ body {
 .review-sidebar .evidence-table tbody th { text-transform: none; letter-spacing: normal; }
 .review-sidebar .evidence-table thead th:first-child { width: 24%; }
 .review-sidebar .source-review > .disclosure { margin: 10px 12px; }
+.rm-workspace .case-decisions { align-items: flex-start; }
+.case-action-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.case-decision-guidance { margin: 0; padding: 12px 22px; color: var(--text-secondary); }
+@media (max-width: 620px) {
+  .case-action-buttons { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+}

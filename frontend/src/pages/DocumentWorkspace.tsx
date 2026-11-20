@@ -16,7 +16,7 @@ import {
 } from "./DocumentResolution";
 import { AddressVerificationPanel } from "./AddressVerificationPanel";
 import { CaseSummary } from "./CaseSummary";
-import { CaseDecisionPanel } from "./CaseDecisionPanel";
+import { CaseDecisionPanel, type DecisionInput } from "./CaseDecisionPanel";
 import { CaseIssues } from "./CaseIssues";
 import { DecisionAssessmentPanel } from "./DecisionAssessmentPanel";
 import { reviewState } from "./review-state";
@@ -70,7 +70,7 @@ export function DocumentWorkspace() {
   const doc = data?.documents.find((item) => item.id === selected) ||
     data?.documents.find((item) => item.document_role !== "DECLARATION_RECEIPT" &&
       item.extraction.method !== "DIGITAL_EFORM") || data?.documents[0];
-  const locked = ["OPERATIONS", "CANCELLED"].includes(
+  const locked = !!data?.submission.staff_suspended || ["OPERATIONS", "CANCELLED"].includes(
     data?.submission.status || "",
   );
   const currentVersion = doc?.versions.find((item) => item.id === doc.version_id);
@@ -100,32 +100,21 @@ export function DocumentWorkspace() {
     }
   }
 
-  async function run(action: string, note?: string): Promise<boolean> {
+  async function run(action: string, input: DecisionInput): Promise<boolean> {
     if (mutation.current) return false;
     mutation.current = true;
     setBusy(action);
     setError("");
     setNotice("");
     try {
-      await post(
-        `${BASE}/submissions/${id}/${action}`,
-        ["approve", "clear-hold", "authorize-correction"].includes(action)
-          ? { revision: data!.submission.revision, ...(note ? { note } : {}) }
-          : {},
-      );
+      await post(`${BASE}/submissions/${id}/${action}`, input);
       await result.refresh();
-      setNotice(
-        action === "preflight"
-          ? "Safety check completed."
-          : action === "approve"
-            ? "Request sent to Operations."
-            : action === "clear-hold"
-              ? "Review decision saved."
-              : action === "authorize-correction"
-                ? "Correction request approved."
-                : "Request checked.",
-      );
-      if (action === "preflight") setParams({ tab: "preflight" });
+      setNotice({
+        approve: "Case completed and sent to Operations.",
+        hold: "Case suspended.",
+        "request-correction": "Correction request sent.",
+        cancel: "Case cancelled.",
+      }[action] || "Decision saved.");
       return true;
     } catch (error) {
       setError(message(error));
@@ -287,8 +276,7 @@ export function DocumentWorkspace() {
                       onUpdate={() => void result.refresh()}
                     />
                   )}
-                <CaseDecisionPanel key={id} detail={data} busy={!!busy} onAction={run}
-                  onReview={() => setParams({ tab: "review" })} />
+                <CaseDecisionPanel key={id} detail={data} busy={!!busy} error={error} onAction={run} />
                 {!state.cancelled && <Disclosure title="Advanced case details" open={openDetails ? true : undefined}>
                   {state.current && data.riskAssessment && (
                     <RiskInvestigation
@@ -297,13 +285,7 @@ export function DocumentWorkspace() {
                       showActions={false}
                     />
                   )}
-                  {!locked && (
-                    <PreflightView
-                      detail={data}
-                      busy={!!busy}
-                      onRun={() => void run("preflight")}
-                    />
-                  )}
+                  {!!data.simulations.length && <PreflightView detail={data} busy={!!busy} />}
                 </Disclosure>}
               </div>
             )}
@@ -330,10 +312,6 @@ export function DocumentWorkspace() {
                         PDF, JPG or PNG. Up to 10 MB per file.
                       </p>
                     </div>
-                    {data.documents.length > 0 && (
-                      <button className="button secondary" disabled={!!busy}
-                        onClick={() => void run("validate")}>Check again</button>
-                    )}
                     <label
                       className={`button ${data.documents.length ? "secondary" : "primary"}`}
                     >

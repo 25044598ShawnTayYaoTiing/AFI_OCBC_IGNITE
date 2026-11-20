@@ -294,6 +294,12 @@ public class DocumentService {
   }
 
   void editable(Map<String, Object> c) {
+    decisionEditable(c);
+    if (Boolean.TRUE.equals(c.get("staff_suspended")))
+      throw new ApiException(409, "CASE_SUSPENDED", "Resolution Management has suspended this request.");
+  }
+
+  void decisionEditable(Map<String, Object> c) {
     if ("CANCELLED".equals(c.get("status")))
       throw new ApiException(409, "REQUEST_CANCELLED", "This request is cancelled. Create a new request for further changes.");
     if ("OPERATIONS".equals(c.get("status")))
@@ -2479,10 +2485,15 @@ public class DocumentService {
 
   @Transactional
   public Object approveForOperations(String id, int revision, Authentication a) {
+    return approveForOperations(id, revision, false, a);
+  }
+
+  @Transactional
+  public Object approveForOperations(String id, int revision, boolean resume, Authentication a) {
     var c = access(id, a, true);
     if (!reviewer(a))
       throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
-    editable(c);
+    decisionEditable(c);
     if (((Number) c.get("revision")).intValue() != revision)
       throw new ApiException(409, "STALE_REVIEW", "Reload the current case before approval");
     var checks = evaluate(id);
@@ -2496,6 +2507,11 @@ public class DocumentService {
           "NOT_READY",
           "Resolve all blocking findings and revalidate before approval; approval cannot override"
               + " policy");
+    if (Boolean.TRUE.equals(c.get("risk_hold"))) {
+      if (!resume) throw new ApiException(409, "CASE_ON_HOLD", "Review the hold before approving.");
+      requireClearableHold(id, c, checks);
+      releaseHold(id, revision, "Approved after mandatory checks passed", a);
+    }
     s.db.update("UPDATE document_submissions SET approved_revision=? WHERE id=?", revision, id);
     event(
         id,
@@ -2509,12 +2525,18 @@ public class DocumentService {
 
   public Object riskDecision(
       String id, int revision, String note, boolean clearHold, Authentication actor) {
+    return riskDecision(id, revision, note, clearHold, null, false, actor);
+  }
+
+  public Object riskDecision(
+      String id, int revision, String note, boolean clearHold, Map<String, String> instructions,
+      boolean resume, Authentication actor) {
     s.inTxVoid(
         () -> {
           if (!reviewer(actor))
             throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
           var c = access(id, actor, true);
-          editable(c);
+          decisionEditable(c);
           if (!Objects.equals(c.get("revision"), revision) || !currentRevisionValidated(c))
             throw new ApiException(
                 409, "STALE_REVIEW", "Revalidate and review the current revision");
@@ -2522,49 +2544,29 @@ public class DocumentService {
             throw new ApiException(
                 400, "REVIEW_NOTE_REQUIRED", "Record a review note of 12?1000 characters");
           if (clearHold) {
+            if (Boolean.TRUE.equals(c.get("staff_suspended")))
+              throw new ApiException(409, "CASE_SUSPENDED", "Make a case decision to lift the suspension.");
             if (!Boolean.TRUE.equals(c.get("risk_hold")))
               throw new ApiException(409, "NO_HOLD_ACTIVE", "No risk hold is active on this case");
-            if (hasPendingVerification(id))
-              throw new ApiException(
-                  409,
-                  "PENDING_VERIFICATION",
-                  "Complete pending document verification before clearing a hold");
-            var checks = evaluate(id);
-            var assessment = new CaseRisk(s).assess(c, checks);
-            boolean critical =
-                checks.stream()
-                    .anyMatch(
-                        ch ->
-                            !Boolean.TRUE.equals(ch.get("passed"))
-                                && (Objects.toString(ch.get("check_key")).startsWith("PROFILE_")
-                                    || Set.of("CLASSIFICATION", "INTEGRITY")
-                                        .contains(ch.get("condition_type"))));
-            if (((Number) assessment.get("score")).intValue() >= 60 || critical)
-              throw new ApiException(
-                  409,
-                  "HOLD_NOT_CLEARABLE",
-                  "Resolve critical evidence findings and reduce current risk before explicit"
-                      + " clearance");
-            s.db.update(
-                "UPDATE document_submissions SET risk_hold=FALSE,requires_rm_approval=TRUE WHERE"
-                    + " id=?",
-                id);
-            event(id, actor, "HOLD_CLEARED", map("revision", revision, "note", note.trim()));
+            requireClearableHold(id, c, evaluate(id));
+            releaseHold(id, revision, note.trim(), actor);
           } else {
-            if (Boolean.TRUE.equals(c.get("risk_hold")))
-              throw new ApiException(
-                  409,
-                  "CASE_ON_HOLD",
-                  "Clear the investigation hold before authorising customer contact");
+            if (Boolean.TRUE.equals(c.get("risk_hold"))) {
+              if (!resume || instructions == null)
+                throw new ApiException(409, "CASE_ON_HOLD", "Clear the hold before authorising customer contact");
+              requireClearableHold(id, c, evaluate(id));
+              releaseHold(id, revision, note.trim(), actor);
+            }
+            if (instructions != null) saveCorrectionInstructions(id, instructions);
             s.db.update(
                 "UPDATE document_submissions SET correction_authorized_revision=? WHERE id=?",
                 revision,
                 id);
-            s.db.update(
+            if (instructions == null) s.db.update(
                 "UPDATE correction_tasks SET status='AWAITING_CORRECTION',assigned_role='CUSTOMER'"
                     + " WHERE submission_id=? AND status='AWAITING_RESOLVER_AUTHORIZATION' AND"
                     + " exception_id IN (SELECT id FROM document_exceptions WHERE submission_id=?"
-                    + " AND action_type='REQUEST_CORRECTION')",
+                    + " AND status='OPEN' AND action_type='REQUEST_CORRECTION')",
                 id,
                 id);
             boolean hasCustomerTasks =
@@ -2582,7 +2584,7 @@ public class DocumentService {
                         Integer.class,
                         id)
                     > 0;
-            if (hasCustomerTasks && !hasEscalatedRmTasks) {
+            if (hasCustomerTasks && (instructions != null || !hasEscalatedRmTasks)) {
               s.db.update(
                   "UPDATE document_submissions SET status='CORRECTION_REQUIRED' WHERE id=?", id);
             }
@@ -2590,12 +2592,70 @@ public class DocumentService {
                 id,
                 actor,
                 "CUSTOMER_CORRECTION_AUTHORIZED",
-                map("revision", revision, "note", note.trim()));
+                map("revision", revision, "note", note.trim(), "instructions", instructions));
           }
         });
     if (clearHold) validateInternal(id, actor);
     syncCustomer(id);
     return detail(id, actor);
+  }
+
+  void requireClearableHold(String id, Map<String, Object> c, List<Map<String, Object>> checks) {
+    if (hasPendingVerification(id))
+      throw new ApiException(409, "PENDING_VERIFICATION", "Document verification is still pending.");
+    boolean critical = checks.stream().anyMatch(ch -> !Boolean.TRUE.equals(ch.get("passed"))
+        && (Objects.toString(ch.get("check_key")).startsWith("PROFILE_")
+            || Set.of("CLASSIFICATION", "INTEGRITY").contains(ch.get("condition_type"))));
+    if (critical || ((Number) new CaseRisk(s).assess(c, checks).get("score")).intValue() >= 60)
+      throw new ApiException(409, "HOLD_NOT_CLEARABLE", "Critical findings must be resolved before releasing this hold.");
+  }
+
+  void releaseHold(String id, int revision, String note, Authentication actor) {
+    s.db.update("UPDATE document_submissions SET risk_hold=FALSE,staff_suspended=FALSE,"
+        + "requires_rm_approval=TRUE WHERE id=?", id);
+    event(id, actor, "HOLD_CLEARED", map("revision", revision, "note", note));
+  }
+
+  void saveCorrectionInstructions(String id, Map<String, String> instructions) {
+    if (instructions.isEmpty())
+      throw new ApiException(400, "INSTRUCTIONS_REQUIRED", "Enter at least one correction instruction.");
+    for (var entry : instructions.entrySet()) {
+      String value = entry.getValue() == null ? "" : entry.getValue().trim();
+      if (value.isBlank() || value.length() > 1000)
+        throw new ApiException(400, "INSTRUCTIONS_REQUIRED", "Enter 1 to 1000 characters per correction.");
+      int updated = s.db.update(
+          "UPDATE correction_tasks SET staff_instruction=?,assigned_role='CUSTOMER',status='AWAITING_CORRECTION'"
+              + " WHERE id=? AND submission_id=? AND status NOT IN ('RESOLVED','CANCELLED')"
+              + " AND exception_id IN (SELECT id FROM document_exceptions WHERE submission_id=?"
+              + " AND status='OPEN' AND action_type='REQUEST_CORRECTION')",
+          value, entry.getKey(), id, id);
+      if (updated != 1)
+        throw new ApiException(409, "STALE_REVIEW", "A correction changed. Reload the case.");
+    }
+  }
+
+  @Transactional
+  public Object placeOnHold(String id, int revision, String reason, Authentication actor) {
+    if (!reviewer(actor)) throw new ApiException(403, "FORBIDDEN", "Resolution Management access required");
+    var c = access(id, actor, true);
+    decisionEditable(c);
+    if (!Objects.equals(c.get("revision"), revision) || !currentRevisionValidated(c))
+      throw new ApiException(409, "STALE_REVIEW", "Wait for the current checks and reload the case.");
+    if (Boolean.TRUE.equals(c.get("staff_suspended")))
+      throw new ApiException(409, "CASE_SUSPENDED", "This request is already suspended.");
+    String note = decisionReason(reason);
+    s.db.update("UPDATE document_submissions SET status='ON_HOLD',risk_hold=TRUE,"
+        + "staff_suspended=TRUE,approved_revision=NULL WHERE id=?", id);
+    event(id, actor, "STAFF_SUSPENDED", map("revision", revision, "note", note, "previousStatus", c.get("status")));
+    syncCustomer(id);
+    return detail(id, actor);
+  }
+
+  static String decisionReason(String reason) {
+    String note = reason == null ? "" : reason.trim();
+    if (note.isBlank() || note.length() > 1000)
+      throw new ApiException(400, "REASON_REQUIRED", "Enter a reason up to 1000 characters.");
+    return note;
   }
 
   @Transactional
@@ -3429,7 +3489,7 @@ public class DocumentService {
             () -> {
               var c = access(id, a, true);
               if ("CANCELLED".equals(c.get("status"))) editable(c);
-              if ("OPERATIONS".equals(c.get("status"))) return null;
+              if ("OPERATIONS".equals(c.get("status")) || Boolean.TRUE.equals(c.get("staff_suspended"))) return null;
               return ((Number) c.get("revision")).intValue();
             });
     if (expectedRevision == null) return;
@@ -3463,7 +3523,7 @@ public class DocumentService {
   void validateEvaluatedInTx(String id, Authentication a, Integer expectedRevision) {
     var c = access(id, a, true);
     if ("CANCELLED".equals(c.get("status"))) editable(c);
-    if ("OPERATIONS".equals(c.get("status"))) return;
+    if ("OPERATIONS".equals(c.get("status")) || Boolean.TRUE.equals(c.get("staff_suspended"))) return;
     if (expectedRevision != null
         && ((Number) c.get("revision")).intValue() != expectedRevision.intValue()) {
       return;
