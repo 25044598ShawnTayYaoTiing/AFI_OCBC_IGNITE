@@ -220,14 +220,6 @@ public class CustomerEmailDispatcher {
   }
 
   public boolean canVerifyContact(String recipient) {
-    if (!enabled || !isAuthorisedRecipient(recipient)) return false;
-    if (!Objects.toString(testRecipients, "").isBlank()) return true;
-    if (requireAllowlist) return false;
-    return s.db.queryForObject(
-            "SELECT COUNT(*) FROM customer_profiles WHERE LOWER(email)=? AND"
-                + " email_verified_test=TRUE",
-            Integer.class,
-            recipient.toLowerCase(Locale.ROOT))
-        > 0;
+    return enabled && isAuthorisedRecipient(recipient);
   }
 }

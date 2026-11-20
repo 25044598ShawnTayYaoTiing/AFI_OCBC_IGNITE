@@ -122,6 +122,8 @@ class CustomerEmailTransportTest {
     dispatcher.mail = mock(org.springframework.mail.javamail.JavaMailSenderImpl.class);
     dispatcher.testRecipients = "team@example.test";
     dispatcher.requireAllowlist = true;
+    assertThat(dispatcher.canVerifyContact("team@example.test")).isTrue();
+    assertThat(dispatcher.canVerifyContact("stranger@example.test")).isFalse();
     dispatcher.sendContactCode("team@example.test", "482913");
     var captor = org.mockito.ArgumentCaptor.forClass(SimpleMailMessage.class);
     verify(dispatcher.mail, times(1)).send(captor.capture());

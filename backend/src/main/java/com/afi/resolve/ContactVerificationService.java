@@ -59,12 +59,30 @@ public class ContactVerificationService {
                   !requested.isBlank() && !policy.same(requested, p.get("email"))
                       ? requested
                       : "";
-              if (!email.canVerifyContact(destination))
+              if (destination.isBlank())
+                throw new ApiException(
+                    409,
+                    "OTP_UNAVAILABLE",
+                    "Enter a new email address that differs from your current registered email before"
+                        + " requesting verification. Verification remains pending.");
+              if (!email.canVerifyContact(destination)) {
+                if (!email.enabled)
+                  throw new ApiException(
+                      409,
+                      "OTP_UNAVAILABLE",
+                      "SMTP email delivery is disabled on the server. Verification remains pending.");
+                if (email.isStrictAllowlistConfigured() && !email.isAuthorisedRecipient(destination))
+                  throw new ApiException(
+                      409,
+                      "OTP_UNAVAILABLE",
+                      "Recipient email is not on the authorised hackathon prototype test allowlist."
+                          + " Verification remains pending.");
                 throw new ApiException(
                     409,
                     "OTP_UNAVAILABLE",
                     "An authorised SMTP channel and deliverable new email address are required."
                         + " Verification remains pending.");
+              }
               if (s.db.queryForObject(
                           "SELECT COUNT(*) FROM contact_verifications WHERE customer_id=? AND"
                               + " created_at>?",
