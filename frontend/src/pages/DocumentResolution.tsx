@@ -459,7 +459,7 @@ export function AutonomyEvidence({ detail }: { detail: Detail }) {
     ...(simulation?.candidateVersionId || verified ? ["Repository document found"] : []),
     ...(attempt.simulation_id ? ["Digital Twin simulation run"] : []),
     ...(verified ? ["Document attached", "Attachment independently verified"] : []),
-    ...(verified && detail.submission.status === "OPERATIONS" ? ["Sent to Operations"] : []),
+    ...(verified && detail.submission.status === "OPERATIONS" ? ["Completed"] : []),
   ];
   return (
     <section className="case-automation" aria-label="Automatic resolution">

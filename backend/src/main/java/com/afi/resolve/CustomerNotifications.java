@@ -123,12 +123,15 @@ public class CustomerNotifications {
           "review:" + c.get("revision"),
           "Your application is with Resolution Management. Staff will review the recorded evidence"
               + " before an Operations handover.");
-    if ("OPERATIONS".equals(c.get("status")))
+    if ("OPERATIONS".equals(c.get("status"))
+        && (!ServiceRequestExecution.supports(c.get("category")) || Boolean.TRUE.equals(s.db.queryForObject(
+            "SELECT EXISTS (SELECT 1 FROM audit_logs WHERE exception_id=? AND event_type=?)",
+            Boolean.class, id, "DOCUMENT_SERVICE_REQUEST_EXECUTED"))))
       publish(
           id,
           "OPERATIONS_READY",
           "operations:" + c.get("revision"),
-          "Your request has been verified and approved for processing.");
+          "Your request was completed successfully.");
         });
   }
 }

@@ -27,7 +27,7 @@ test("recorded policy severity and task ownership stay distinct from a risk scor
 });
 
 test("handover and revision freshness determine the next action", () => {
-  assert.equal(nextCaseAction({ status: "OPERATIONS", revision: 3, validated_revision: 3 }, 0), "With Operations");
+  assert.equal(nextCaseAction({ status: "OPERATIONS", revision: 3, validated_revision: 3 }, 0), "Completed");
   assert.equal(nextCaseAction({ status: "HUMAN_REVIEW", revision: 3, validated_revision: 3 }, 2), "Review open issues");
   assert.equal(nextCaseAction({ status: "DRAFT", revision: 0, validated_revision: null }, 0), "Add documents");
 });

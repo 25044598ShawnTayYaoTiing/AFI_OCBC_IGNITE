@@ -62,7 +62,7 @@ export function reviewState(detail: Detail) {
     : eligible ? "Ready for approval"
     : "Request checked";
   const next = cancelled ? "No further action is needed."
-    : routed ? "Operations will take it from here."
+    : routed ? "The approved request has finished processing."
     : c.staff_suspended ? "Processing is paused. Review the evidence before deciding what happens next."
     : held ? "Review the issues that are keeping this case on hold."
     : pendingVerification ? "Automated verification is temporarily delayed. Your submitted files are saved."

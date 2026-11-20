@@ -26,7 +26,7 @@ export function Badge({ value, text }: { value: string; text?: string }) {
     PENDING_APPROVAL: "Awaiting approval",
     MANUAL_REVIEW: "Needs manual review",
     APPROVED: "Approved",
-    OPERATIONS: "With Operations",
+    OPERATIONS: "Completed",
     CORRECTION_REQUIRED: "Needs correction",
     HUMAN_REVIEW: "Needs review",
     RESOLUTION_MANAGEMENT: "Staff review",

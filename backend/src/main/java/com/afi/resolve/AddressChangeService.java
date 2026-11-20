@@ -132,12 +132,16 @@ public class AddressChangeService {
         var canonical = proposed(request, verification);
         s.db.update("UPDATE customer_address_changes SET proposed_address_json=? WHERE id=?", s.json(canonical), id);
         if ("approve".equals(action)) {
+          var profiles = new CustomerProfiles(s);
+          profiles.lock(customer);
           var current = s.db.queryForList("SELECT address_json FROM customer_registered_addresses WHERE customer_id=? AND address_type=?", customer, row.get("address_type"));
           Object currentJson = current.isEmpty() ? null : current.getFirst().get("address_json");
           if (!Objects.equals(currentJson, row.get("previous_address_json")))
             throw new ApiException(409, "REGISTERED_ADDRESS_CHANGED", "The registered address changed after this request. Ask the customer to confirm a new request.");
-          if (current.isEmpty()) s.db.update("INSERT INTO customer_registered_addresses(customer_id,address_type,address_json,source,updated_by,updated_at) VALUES(?,?,?,'ONEMAP_LIVE',?,?)", customer, row.get("address_type"), s.json(canonical), actor.getName(), Store.now());
-          else s.db.update("UPDATE customer_registered_addresses SET address_json=?,source='ONEMAP_LIVE',updated_by=?,updated_at=? WHERE customer_id=? AND address_type=?", s.json(canonical), actor.getName(), Store.now(), customer, row.get("address_type"));
+          String unit = Objects.toString(canonical.get("unit"), "").trim();
+          String fullAddress = canonical.get("address") + (unit.isBlank() ? "" : ", Unit " + unit);
+          profiles.saveRegisteredAddress(customer, (String) row.get("address_type"), canonical,
+              fullAddress, actor.getName());
           s.db.update("UPDATE customer_address_changes SET status='APPROVED' WHERE id=?", id);
         }
       }

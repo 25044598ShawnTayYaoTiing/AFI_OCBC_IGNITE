@@ -53,6 +53,34 @@ public class CustomerProfiles {
     return rows.getFirst();
   }
 
+  Map<String, Object> lock(String id) {
+    var rows = s.db.queryForList("SELECT * FROM customer_profiles WHERE customer_id=? FOR UPDATE", id);
+    if (rows.isEmpty()) throw new ApiException(409, "PROFILE_UNAVAILABLE", "Customer profile unavailable");
+    return rows.getFirst();
+  }
+
+  /** Caller holds the profile row lock. Both address entry points update the same records. */
+  void saveRegisteredAddress(String customer, String type, Map<String, Object> address,
+      String profileAddress, String actor) {
+    String source = Objects.toString(address.get("source"));
+    String json = s.json(address);
+    int updated = s.db.update("UPDATE customer_registered_addresses SET address_json=?,source=?,"
+        + "updated_by=?,updated_at=? WHERE customer_id=? AND address_type=?",
+        json, source, actor, Store.now(), customer, type);
+    if (updated == 0) {
+      s.db.update("INSERT INTO customer_registered_addresses"
+          + "(customer_id,address_type,address_json,source,updated_by,updated_at) VALUES(?,?,?,?,?,?)",
+          customer, type, json, source, actor, Store.now());
+    }
+    if ("MAILING".equals(type)) {
+      s.db.update("UPDATE customer_profiles SET mailing_address=?,postal_code=?,updated_at=? WHERE customer_id=?",
+          profileAddress, address.get("postalCode"), Store.now(), customer);
+    } else {
+      s.db.update("UPDATE customer_profiles SET residential_address=?,updated_at=? WHERE customer_id=?",
+          profileAddress, Store.now(), customer);
+    }
+  }
+
   public Map<String, Object> dto(String id) {
     var p = get(id);
     return map(
@@ -82,6 +110,8 @@ public class CustomerProfiles {
         p.get("currency"),
         "taxResidency",
         p.get("tax_residency"),
+        "foreignTaxCountry",
+        p.get("foreign_tax_country"),
         "riskRating",
         p.get("risk_rating"),
         "provenance",

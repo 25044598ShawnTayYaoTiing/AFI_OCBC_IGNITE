@@ -1989,7 +1989,7 @@ public class DocumentService {
       compensateRejectedUpload(id, item, prevSubmissionStatus, a);
       if (error.status() == 409) throw error;
       String attachment = combineImages ? "Combined image pages" : item.filename();
-      throw new ApiException(error.status(), error.code(), attachment + " — " + error.getMessage());
+      throw new ApiException(error.status(), error.code(), attachment + " â€” " + error.getMessage());
     } catch (Exception failure) {
       if (isTransientAiFailure(failure)) {
         markVersionStillPending(id, item, transientReasonCode(failure), a);
@@ -4175,20 +4175,19 @@ public class DocumentService {
   }
 
   void routeInternal(String id, Authentication a, List<Map<String, Object>> checks) {
-    if (Boolean.TRUE.equals(access(id, a, false).get("risk_hold")))
-      throw new ApiException(
-          409, "CASE_ON_HOLD", "Resolution Management must clear the hold before routing");
-    if (checks.isEmpty()
-        || checks.stream().anyMatch(PolicyService::blockingDocumentCheck)
-        || hasPendingVerification(id))
-      throw new ApiException(409, "NOT_READY", "Blocking intake checks remain");
     var c = access(id, a, true);
     if ("OPERATIONS".equals(c.get("status"))) return;
     editable(c);
-    if (!Objects.equals(c.get("revision"), c.get("validated_revision"))
-        || unresolvedBlocking(id) > 0)
+    if (Boolean.TRUE.equals(c.get("risk_hold")))
       throw new ApiException(
-          409, "NOT_READY", "Current package requires validation or human correction");
+          409, "CASE_ON_HOLD", "Resolution Management must clear the hold before routing");
+    if (!Set.of("READY", "RESOLUTION_MANAGEMENT", "ON_HOLD").contains(c.get("status"))
+        || checks.isEmpty()
+        || checks.stream().anyMatch(PolicyService::blockingDocumentCheck)
+        || hasPendingVerification(id)
+        || !currentRevisionValidated(c)
+        || unresolvedBlocking(id) > 0)
+      throw new ApiException(409, "NOT_READY", "The current request must pass mandatory checks before processing.");
     boolean approved = Objects.equals(c.get("revision"), c.get("approved_revision"));
     if (!approved && (!"LOW".equals(c.get("risk_level"))
         || Boolean.TRUE.equals(c.get("requires_rm_approval")))) {
@@ -4201,6 +4200,7 @@ public class DocumentService {
       event(id, a, "AUTOMATICALLY_APPROVED",
           map("revision", c.get("revision"), "riskScore", c.get("risk_score"), "approvedChecks", checks.size()));
     }
+    new ServiceRequestExecution(s, this).apply(access(id, a, false), checks, a);
     s.db.update(
         "UPDATE document_submissions SET status='OPERATIONS',routed_at=? WHERE id=?",
         Store.now(),

@@ -139,7 +139,7 @@ public class CustomerEmailDispatcher {
         if ("REQUEST_CANCELLED".equals(row.get("notification_type")))
           message.setText(GENERIC_BODY + "\n\n" + row.get("message"));
         else if ("OPERATIONS_READY".equals(row.get("notification_type")))
-          message.setText(GENERIC_BODY + "\n\nYour request has been approved for processing.");
+          message.setText(GENERIC_BODY + "\n\nYour request was completed successfully.");
         else if ("CORRECTION_REQUIRED".equals(row.get("notification_type")))
           message.setText(GENERIC_BODY + "\n\nPlease open the Customer Portal to review your correction instructions.");
         mail.send(message);

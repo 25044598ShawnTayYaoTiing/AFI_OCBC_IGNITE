@@ -94,7 +94,7 @@ export function DocumentOverview() {
             tone: "success",
           },
           {
-            label: "Sent to Operations",
+            label: "Completed",
             value: m?.successfullyRouted ?? "—",
             note: "Approved & handed over",
             tone: "accent",
@@ -357,7 +357,7 @@ export function DocumentQueue({ mode = "submissions" }: { mode?: string }) {
               "OPERATIONS",
             ].map((value) => (
               <option key={value} value={value}>
-                {value === "OPERATIONS" ? "With Operations" : label(value)}
+                {value === "OPERATIONS" ? "Completed" : label(value)}
               </option>
             ))}
           </select>

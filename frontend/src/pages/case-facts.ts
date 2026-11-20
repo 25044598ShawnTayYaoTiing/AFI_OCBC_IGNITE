@@ -1,7 +1,7 @@
 import type { Detail, Submission } from "../document-types";
 
 export function nextCaseAction(submission: Submission, openCount: number) {
-  if (submission.status === "OPERATIONS") return "With Operations";
+  if (submission.status === "OPERATIONS") return "Completed";
   if (submission.status === "CANCELLED") return "No action needed";
   if (submission.status === "DRAFT") return "Add documents";
   if (submission.risk_hold || submission.status === "ON_HOLD") return "Review the risk and evidence";

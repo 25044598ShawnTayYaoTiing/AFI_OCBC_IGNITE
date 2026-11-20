@@ -24,8 +24,8 @@ import org.springframework.transaction.PlatformTransactionManager;
 
 @SpringBootTest(
     properties = {
-      "spring.datasource.url=jdbc:h2:mem:digital;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1",
-      "spring.datasource.username=sa",
+      "spring.datasource.url=${AFI_EXEC_TEST_DB_URL:jdbc:h2:mem:digital;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1}",
+      "spring.datasource.username=${AFI_EXEC_TEST_DB_USER:sa}",
       "spring.datasource.password=",
       "afi.demo-enabled=false",
       "afi.mail-enabled=false",
@@ -163,7 +163,7 @@ class DigitalFormIntegrationTest {
   void addressRequestUsesOneDeclarationAndCorroboratingEvidenceBeforeApproval() throws Exception {
     var f = form();
     f.put("requestType", "ADDRESS_CHANGE");
-    f.put("mailingAddress", "2 Fictional Road");
+    f.put("mailingAddress", "2 Fictional Road #05-01");
     f.put("taxDeclaration", false);
     var initial =
         json(
@@ -190,7 +190,7 @@ class DigitalFormIntegrationTest {
                       "customer_reference",
                       reference,
                       "mailing_address",
-                      corrected ? "2 Fictional Road" : "9 Wrong Road")
+                      corrected ? "2 Fictional Road #05-01" : "9 Wrong Road")
                   .forEach(
                       (k, v) -> {
                         var field = fields.addObject();
@@ -241,6 +241,8 @@ class DigitalFormIntegrationTest {
     String support = "";
     for (var d : bad.path("documents"))
       if (d.path("type").asText().equals("SUPPORTING_DOCUMENT")) support = d.path("id").asText();
+    assertThat(s.db.queryForObject("SELECT mailing_address FROM customer_profiles WHERE customer_id=?",
+        String.class, customer)).isEqualTo("1 Fictional Road");
     var fixed =
         json(
             mvc.perform(
@@ -267,7 +269,22 @@ class DigitalFormIntegrationTest {
                 "SELECT mailing_address FROM customer_profiles WHERE customer_id=?",
                 String.class,
                 customer))
-        .isEqualTo("1 Fictional Road");
+        .isEqualTo("2 Fictional Road #05-01 Singapore 018989");
+    assertThat(s.db.queryForObject("SELECT address_json FROM customer_registered_addresses "
+        + "WHERE customer_id=? AND address_type='MAILING'", String.class, customer))
+        .contains("#05-01", "018989");
+    var currentProfile = json(mvc.perform(get("/api/customer/me")
+        .header("Authorization", "Bearer " + token)).andExpect(status().isOk()).andReturn());
+    assertThat(currentProfile.path("bankingProfile").path("mailingAddress").asText())
+        .isEqualTo("2 Fictional Road #05-01 Singapore 018989");
+    mvc.perform(post("/api/documents/submissions/" + id + "/route")
+        .with(httpBasic("reviewer", "reviewer-demo"))).andExpect(status().isOk());
+    assertThat(s.db.queryForList(
+        "SELECT details FROM audit_logs WHERE exception_id=? AND event_type='DOCUMENT_SERVICE_REQUEST_EXECUTED'",
+        String.class, id)).singleElement().asString().contains("1 Fictional Road", "#05-01", "018989");
+    assertThat(s.db.queryForObject(
+        "SELECT COUNT(*) FROM audit_logs WHERE exception_id=? AND event_type='DOCUMENT_AUTOMATICALLY_APPROVED'",
+        Integer.class, id)).isEqualTo(1);
   }
 
   @Test
@@ -1152,6 +1169,11 @@ class DigitalFormIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn());
     assertThat(result.path("submission").path("status").asText()).isEqualTo("OPERATIONS");
+    var account = s.db.queryForMap("SELECT account_reference,account_type,currency"
+        + " FROM customer_additional_accounts WHERE submission_id=? AND customer_id=?", id(result), customer);
+    assertThat(account).containsEntry("account_type", "SAVINGS").containsEntry("currency", "SGD");
+    assertThat(account.get("account_reference")).isNotEqualTo(s.db.queryForObject(
+        "SELECT existing_account_reference FROM customer_profiles WHERE customer_id=?", String.class, customer));
     assertThat(s.db.queryForObject(
         "SELECT risk_level FROM document_submissions WHERE id=?", String.class, id(result))).isEqualTo("LOW");
     assertThat(s.db.queryForObject(
@@ -1173,7 +1195,7 @@ class DigitalFormIntegrationTest {
     verify(dispatcher.mail, times(1)).send(sent.capture());
     assertThat(sent.getValue().getSubject()).isEqualTo(CustomerEmailDispatcher.GENERIC_SUBJECT);
     assertThat(sent.getValue().getText()).startsWith(CustomerEmailDispatcher.GENERIC_BODY)
-        .contains("Your request has been approved for processing.");
+        .contains("Your request was completed successfully.");
     assertThat(sent.getValue().getFrom()).isEqualTo("AFI Resolve <demo@example.invalid>");
     assertThat(s.db.queryForObject(
         "SELECT o.status FROM customer_email_outbox o JOIN customer_notifications n ON o.notification_id=n.id"

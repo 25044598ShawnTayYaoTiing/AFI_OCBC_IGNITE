@@ -183,7 +183,7 @@ export function StatusChart({ metrics }: { metrics: Metrics }) {
           <div key={status} className="chart-row">
             <span className="chart-label">
               <i className={`chart-dot tone-${tone}`} aria-hidden="true" />
-              {status === "OPERATIONS" ? "With Operations" : label(status)}
+              {status === "OPERATIONS" ? "Completed" : label(status)}
             </span>
             <div className="chart-track" aria-hidden="true">
               <div
@@ -352,6 +352,7 @@ const eventNames: Record<string, string> = {
   AUTOMATION_COMPLETED: "Automatic resolution complete",
   AUTOMATION_BLOCKED: "Automatic action blocked",
   AUTOMATION_FAILED: "Automatic action failed",
+  SERVICE_REQUEST_EXECUTED: "Approved service request completed",
   ROUTED: "Sent to Operations",
   UPLOADED: "Document uploaded",
   REPLACED: "Document replaced",

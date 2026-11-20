@@ -110,7 +110,7 @@ export function DocumentWorkspace() {
       await post(`${BASE}/submissions/${id}/${action}`, input);
       await result.refresh();
       setNotice({
-        approve: "Case completed and sent to Operations.",
+        approve: "Case completed.",
         hold: "Case suspended.",
         "request-correction": "Correction request sent.",
         cancel: "Case cancelled.",
