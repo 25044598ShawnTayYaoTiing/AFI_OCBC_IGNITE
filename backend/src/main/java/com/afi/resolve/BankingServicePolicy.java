@@ -689,13 +689,12 @@ final class BankingServicePolicy {
                           "field_value",
                           duplicateId,
                           "supporting_text",
-                          "Existing ADDITIONAL_ACCOUNT request "
-                              + duplicateId
-                              + " already covers "
+                          "An open additional-account request already covers "
                               + accType
                               + " ("
                               + ccy
-                              + ")."));
+                              + "). Choose a different account type or currency, or cancel the"
+                              + " earlier request."));
                 }
                 yield formatOk && profileComplete && duplicateId == null;
               }
