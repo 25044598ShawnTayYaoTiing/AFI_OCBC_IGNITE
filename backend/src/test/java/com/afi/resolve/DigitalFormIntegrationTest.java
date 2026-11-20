@@ -851,14 +851,17 @@ class DigitalFormIntegrationTest {
     // A local mock transport verifies outbox claiming and duplicate prevention; no real email is
     // sent.
     s.db.update(
-        "UPDATE customer_email_outbox SET status='PENDING' WHERE notification_id IN (SELECT id FROM"
-            + " customer_notifications WHERE submission_id=?)",
+        "UPDATE customer_profiles SET email='correction@example.test',email_verified_test=TRUE"
+            + " WHERE customer_id=?",
+        customer);
+    s.db.update(
+        "UPDATE customer_email_outbox SET recipient='correction@example.test',status='PENDING'"
+            + " WHERE notification_id IN (SELECT id FROM customer_notifications WHERE"
+            + " submission_id=?)",
         id);
     var dispatcher =
         new CustomerEmailDispatcher(
             s, manager, true, "localhost", 1025, "", "", "demo@example.invalid", false);
-    s.db.update(
-        "UPDATE customer_profiles SET email_verified_test=TRUE WHERE customer_id=?", customer);
     dispatcher.mail = mock(JavaMailSenderImpl.class);
     dispatcher.dispatch();
     dispatcher.dispatch();
@@ -1111,7 +1114,9 @@ class DigitalFormIntegrationTest {
     dispatcher.dispatch();
     var sent = org.mockito.ArgumentCaptor.forClass(SimpleMailMessage.class);
     verify(dispatcher.mail, times(1)).send(sent.capture());
-    assertThat(sent.getValue().getSubject()).contains("approved for processing");
+    assertThat(sent.getValue().getSubject()).isEqualTo(CustomerEmailDispatcher.GENERIC_SUBJECT);
+    assertThat(sent.getValue().getText()).isEqualTo(CustomerEmailDispatcher.GENERIC_BODY);
+    assertThat(sent.getValue().getFrom()).isEqualTo("AFI Resolve <demo@example.invalid>");
     assertThat(s.db.queryForObject(
         "SELECT o.status FROM customer_email_outbox o JOIN customer_notifications n ON o.notification_id=n.id"
             + " WHERE n.submission_id=? AND n.notification_type='OPERATIONS_READY'", String.class, id(result)))

@@ -17,11 +17,23 @@ public class CustomerEmailDispatcher {
   final boolean enabled;
   final String from;
 
-  @Value("${afi.customer-portal-url:https://ocbc-customer-portal.vercel.app}")
-  String portalUrl = "https://ocbc-customer-portal.vercel.app";
+  static final String GENERIC_SUBJECT = "[TEST] AFI Resolve \u2013 Hackathon Prototype";
+  static final String GENERIC_BODY =
+      "This is a test notification from AFI Resolve, an independent student hackathon prototype.\n\n"
+          + "This email demonstrates the system's automated SMTP notification functionality.\n\n"
+          + "No real banking transactions or customer information are involved. This prototype is"
+          + " not affiliated with any bank.\n\n"
+          + "Thank you,\n"
+          + "AFI Resolve Project Team";
+
+  @Value("${afi.mail-from-name:AFI Resolve}")
+  String fromName = "AFI Resolve";
 
   @Value("${afi.mail-test-recipients:}")
   String testRecipients = "";
+
+  @Value("${afi.mail-require-allowlist:false}")
+  boolean requireAllowlist = false;
 
   JavaMailSenderImpl mail = new JavaMailSenderImpl();
 
@@ -92,6 +104,25 @@ public class CustomerEmailDispatcher {
                 + " NOT EXISTS (SELECT 1 FROM document_submissions c WHERE c.id=n.submission_id AND"
                 + " c.risk_hold=TRUE) ORDER BY o.created_at LIMIT 10")) {
       String id = (String) row.get("id");
+      String recipient = Objects.toString(row.get("recipient"), "");
+      if (!isAuthorisedRecipient(recipient)) {
+        tx.executeWithoutResult(
+            t -> {
+              s.db.update(
+                  "UPDATE customer_email_outbox SET status='UNVERIFIED_TEST_ADDRESS',updated_at=?"
+                      + " WHERE id=? AND status='PENDING'",
+                  Store.now(),
+                  id);
+              s.audit(
+                  (String) row.get("submission_id"),
+                  "SYSTEM",
+                  "CUSTOMER_EMAIL_BLOCKED_UNAUTHORISED",
+                  "Recipient is not in the authorised project team allowlist",
+                  "UNVERIFIED_TEST_ADDRESS",
+                  null);
+            });
+        continue;
+      }
       Integer claimed =
           tx.execute(
               t ->
@@ -104,24 +135,7 @@ public class CustomerEmailDispatcher {
       if (!Integer.valueOf(1).equals(claimed)) continue;
       String result = "SENT";
       try {
-        var message = new SimpleMailMessage();
-        message.setFrom(from);
-        message.setTo((String) row.get("recipient"));
-        message.setSubject("OPERATIONS_READY".equals(row.get("notification_type"))
-            ? "AFI Resolve: request approved for processing" : "AFI Resolve: correction requested");
-        message.setText(
-            row.get("message")
-                + "\nApplication: "
-                + row.get("submission_id")
-                + "\n"
-                + "Sign in at "
-                + portalUrl
-                + "/submissions/"
-                + row.get("submission_id")
-                + " for instructions. Do not email identity"
-                + " documents.\n"
-                + "Synthetic hackathon demonstration.");
-        mail.send(message);
+        mail.send(genericMessage(recipient));
       } catch (Exception e) {
         result = "DELIVERY_UNKNOWN";
       } // SMTP can accept DATA before a connection fails.
@@ -144,6 +158,44 @@ public class CustomerEmailDispatcher {
     }
   }
 
+  String formattedFrom() {
+    String trimmed = Objects.toString(from, "").trim();
+    if (trimmed.isEmpty() || trimmed.contains("<")) return trimmed;
+    String cleanName =
+        Objects.toString(fromName, "AFI Resolve").replaceAll("[\\r\\n]+", " ").trim();
+    if (cleanName.isEmpty()) cleanName = "AFI Resolve";
+    return cleanName + " <" + trimmed + ">";
+  }
+
+  SimpleMailMessage genericMessage(String recipient) {
+    var message = new SimpleMailMessage();
+    message.setFrom(formattedFrom());
+    message.setTo(recipient);
+    message.setSubject(GENERIC_SUBJECT);
+    message.setText(GENERIC_BODY);
+    return message;
+  }
+
+  boolean isStrictAllowlistConfigured() {
+    return requireAllowlist || !Objects.toString(testRecipients, "").isBlank();
+  }
+
+  boolean isAuthorisedRecipient(String recipient) {
+    if (recipient == null
+        || !BankingServicePolicy.validEmail(recipient)
+        || recipient.toLowerCase(Locale.ROOT).endsWith(".invalid")) return false;
+    var allowlist =
+        Arrays.stream(Objects.toString(testRecipients, "").split(","))
+            .map(String::trim)
+            .filter(s -> !s.isEmpty())
+            .map(s -> s.toLowerCase(Locale.ROOT))
+            .collect(java.util.stream.Collectors.toSet());
+    if (!allowlist.isEmpty()) {
+      return allowlist.contains(recipient.toLowerCase(Locale.ROOT));
+    }
+    return !requireAllowlist;
+  }
+
   public void sendContactCode(String recipient, String code) {
     if (!canVerifyContact(recipient))
       throw new ApiException(
@@ -151,31 +203,18 @@ public class CustomerEmailDispatcher {
           "OTP_UNAVAILABLE",
           "Configure an authorised SMTP test channel and a deliverable profile/contact email before"
               + " requesting verification. No OTP has been verified.");
-    var message = new SimpleMailMessage();
-    message.setFrom(from);
-    message.setTo(recipient);
-    message.setSubject("AFI Resolve synthetic contact verification");
-    message.setText(
-        "Your synthetic contact-update code is: "
-            + code
-            + "\n"
-            + "It expires in 5 minutes and authorises only this request revision. Never share real"
-            + " banking codes. This is a hackathon test.");
-    mail.send(message);
+    mail.send(genericMessage(recipient));
   }
 
   public boolean canVerifyContact(String recipient) {
-    return enabled
-        && BankingServicePolicy.validEmail(recipient)
-        && !recipient.toLowerCase(Locale.ROOT).endsWith(".invalid")
-        && (Arrays.stream(testRecipients.split(","))
-                .map(String::trim)
-                .anyMatch(address -> address.equalsIgnoreCase(recipient))
-            || s.db.queryForObject(
-                    "SELECT COUNT(*) FROM customer_profiles WHERE LOWER(email)=? AND"
-                        + " email_verified_test=TRUE",
-                    Integer.class,
-                    recipient.toLowerCase(Locale.ROOT))
-                > 0);
+    if (!enabled || !isAuthorisedRecipient(recipient)) return false;
+    if (!Objects.toString(testRecipients, "").isBlank()) return true;
+    if (requireAllowlist) return false;
+    return s.db.queryForObject(
+            "SELECT COUNT(*) FROM customer_profiles WHERE LOWER(email)=? AND"
+                + " email_verified_test=TRUE",
+            Integer.class,
+            recipient.toLowerCase(Locale.ROOT))
+        > 0;
   }
 }

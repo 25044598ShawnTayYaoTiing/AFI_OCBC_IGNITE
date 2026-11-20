@@ -13,6 +13,9 @@ public class CustomerNotifications {
   @org.springframework.beans.factory.annotation.Value("${afi.mail-enabled:false}")
   boolean mailEnabled;
 
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  CustomerEmailDispatcher emailDispatcher;
+
   public CustomerNotifications(Store s) {
     this.s = s;
   }
@@ -65,7 +68,9 @@ public class CustomerNotifications {
                   ? "UNVERIFIED_TEST_ADDRESS"
                   : (email == null || email.isBlank() || email.toLowerCase(Locale.ROOT).endsWith(".invalid"))
                       ? "NO_DELIVERABLE_ADDRESS"
-                      : "PENDING";
+                      : (emailDispatcher != null && !emailDispatcher.isAuthorisedRecipient(email))
+                          ? "UNVERIFIED_TEST_ADDRESS"
+                          : "PENDING";
       s.db.update(
           "INSERT INTO customer_email_outbox VALUES(?,?,?,?,?,0,?,?)",
           s.id("EMAIL"),

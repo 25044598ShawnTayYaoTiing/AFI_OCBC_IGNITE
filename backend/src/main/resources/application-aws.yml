@@ -5,8 +5,8 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 afi:
-  # Pause outbound SMTP in the deployed environment.
-  mail-enabled: false
+  mail-enabled: ${SMTP_ENABLED:false}
+  mail-require-allowlist: true
   demo-enabled: ${DEMO_ENABLED:false}
   reviewer-password: ${REVIEWER_PASSWORD}
   rules-admin-password: ${RULES_ADMIN_PASSWORD}

@@ -12,6 +12,9 @@ public class CustomerAdminController {
   final DemoService demo;
   final org.springframework.security.crypto.password.PasswordEncoder passwords;
 
+  @org.springframework.beans.factory.annotation.Autowired(required = false)
+  CustomerEmailDispatcher emailDispatcher;
+
   public CustomerAdminController(
       CustomerService customers, Store s, SyntheticCustomerSeeder seeder, DemoService demo, org.springframework.security.crypto.password.PasswordEncoder passwords) {
     this.customers = customers;
@@ -81,6 +84,13 @@ public class CustomerAdminController {
         || !email.matches("[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+"))
       throw new ApiException(
           400, "INVALID_EMAIL", "Provide a valid authorised synthetic test mailbox");
+    if (emailDispatcher != null
+        && emailDispatcher.isStrictAllowlistConfigured()
+        && !emailDispatcher.isAuthorisedRecipient(email))
+      throw new ApiException(
+          403,
+          "UNAUTHORISED_RECIPIENT",
+          "Outbound email is restricted to authorised project team members");
     if (s.db.update(
             "UPDATE customer_profiles SET email=?,email_verified_test=TRUE,updated_at=? WHERE"
                 + " customer_id=?",

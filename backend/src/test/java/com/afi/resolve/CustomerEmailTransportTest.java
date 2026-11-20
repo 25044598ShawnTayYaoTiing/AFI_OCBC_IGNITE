@@ -71,15 +71,39 @@ class CustomerEmailTransportTest {
               "",
               "demo@example.invalid",
               false);
-      var message = new SimpleMailMessage();
-      message.setFrom("demo@example.invalid");
-      message.setTo("synthetic@example.invalid");
-      message.setSubject("Synthetic correction");
-      message.setText("Open your synthetic case for correction instructions.");
+      var message = dispatcher.genericMessage("synthetic@example.invalid");
       dispatcher.mail.send(message);
-      assertThat(received.get(5, TimeUnit.SECONDS))
-          .contains("Synthetic correction", "synthetic@example.invalid", "correction instructions");
+      String raw = received.get(5, TimeUnit.SECONDS);
+      assertThat(raw)
+          .contains("AFI Resolve <demo@example.invalid>")
+          .contains("[TEST]_AFI_Resolve_=E2=80=93_Hackathon_Prototype")
+          .contains("independent student hackathon prototype")
+          .doesNotContain("OCBC");
     }
+  }
+
+  @Test
+  void strictAllowlistBlocksUnauthorisedRecipientsAndGenericContentIsForced() {
+    var dispatcher =
+        new CustomerEmailDispatcher(
+            mock(Store.class),
+            mock(PlatformTransactionManager.class),
+            true,
+            "127.0.0.1",
+            1025,
+            "",
+            "",
+            "afiresolve.demo@gmail.com",
+            false);
+    dispatcher.testRecipients = "team@example.test";
+    dispatcher.requireAllowlist = true;
+    assertThat(dispatcher.isAuthorisedRecipient("team@example.test")).isTrue();
+    assertThat(dispatcher.isAuthorisedRecipient("TEAM@EXAMPLE.TEST")).isTrue();
+    assertThat(dispatcher.isAuthorisedRecipient("stranger@example.test")).isFalse();
+    assertThat(dispatcher.isAuthorisedRecipient("team@example.invalid")).isFalse();
+    assertThat(dispatcher.formattedFrom()).isEqualTo("AFI Resolve <afiresolve.demo@gmail.com>");
+    dispatcher.testRecipients = "";
+    assertThat(dispatcher.isAuthorisedRecipient("anyone@example.test")).isFalse();
   }
 
   @Test
